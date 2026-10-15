@@ -1,84 +1,91 @@
-# Native engine implementation
+# Engine architecture
 
-SwiftPods resolves and installs dependencies, writes lockfiles, and generates and
-integrates Xcode projects in its own Swift engine. The production bundle contains
-that executable and our Ruby DSL adapter. Ruby is installed separately and is
-used for user Podfiles, podspecs, helpers, plugins and hooks. The bundle contains
-no reference engine, third-party installation gems or Ruby interpreter.
+SwiftPods uses a Swift engine for dependency resolution, downloads, caching,
+lockfiles, Xcode project generation and integration. An external CRuby executes
+Podfiles, podspecs, helpers, plugins and hooks through the SwiftPods adapter.
+The distribution contains the executable and adapter; Ruby is installed
+separately.
 
-The compatibility profile remains experimental until stable acceptance is
-established. Passing fixtures certify the scope recorded in their reports.
-Compatibility preserves existing inputs and their meaning. The native engine
-may use simpler implementations and correct reference bugs; tested improvements
-are reported explicitly. BridgeSupport's corrected aggregate header path is one
-such improvement and no longer blocks acceptance.
+## Installation pipeline
 
-Implemented functionality includes:
+The engine evaluates declarations, combines requirements and resolves the
+selected dependency graph. It preserves applicable version, source and revision
+pins. It fetches and verifies source artifacts, prepares independent working
+copies, selects files and builds project variants for the consumers.
 
-- Native version comparison, requirements and backtracking; default and explicit
-  subspec selections; platform constraints; targeted updates that unlock
-  transitive dependencies while preserving unrelated pins.
-- Local, Git, HTTP archive, SVN and Mercurial source adapters; CDN and Git spec
-  repositories; multiple sources and explicit source identity; revision and
-  checksum pins; integrity-checked raw and prepared caches; offline installs.
-  External podspec checksums use the profile serialization without repeating Ruby
-  evaluation; legacy raw checksums remain accepted for the same input.
-- All 26 baseline Podfile methods, 15 installation options and 53 declared
-  podspec attributes in the Ruby adapter. Unknown declarations fail explicitly.
-  Inheritance, platform setters, defaults and consumer values are compared with
-  an independently executed reference.
-- Native effects for Swift version requirements, modules, nested public/private
-  headers, ARC, prefix headers, xcconfig, library/framework linkage, resources,
-  bundles, localization, privacy manifests and on-demand resource tags.
-- Variants for selected subspecs, packaging, linkage, platforms and deployment
-  requirements. Compatible consumers share targets. Swift versions satisfy the
-  intersection of consumer constraints. Scope labels follow the reference
-  algorithm, including abbreviated long suffixes.
-- Xcode projects, custom configurations and schemes; multiple generated projects
-  and custom pod project names; explicit cross-project dependencies; conditional
-  resources and binaries; consumer project analysis and aggregate xcconfig files.
-- Mach-O and XCFramework validation, destination slice selection, static linking
-  and dynamic embedding. Device, simulator and Mac Catalyst are distinct.
-- Library, test and app specs with isolated dependencies, resources and scripts;
-  standalone/hosted XCTest, app-spec hosts and UI runners; generated schemes.
-- Four ordered Ruby hook phases with stable public installer/spec/target objects,
-  typed build types, live project objects and preserved project mutations.
-  Root/abstract/concrete target definitions retain their tree and identity;
-  generation results are exposed at the appropriate hook phases.
-  Skipped project generation retains consumer objects and the correct hook order;
-  BridgeSupport uses the Apple metadata tool for aggregate declarations.
-  Declared plugins use explicit isolated gem environments.
-- Native spec/lib lint with isolated real Xcode builds; publication to registered
-  Git spec repositories; immutable published versions; rejected pushes leave the
-  registered checkout unchanged. Repository updates use fast-forward merges.
-- Inspection, graph, why, outdated, doctor, integrity, cache/repo management,
-  deintegration, journal/recovery and concurrent mutation protection. Cancellation
-  forwards signals to owned process groups and escalates bounded cleanup.
-- CMake regeneration/reintegration and coexistence with existing Swift packages,
-  preserving package objects and Package.resolved. Known duplicate SDK identities
-  fail explicitly. SwiftPM DSL additions remain opt-in.
+Variants account for platform, deployment minimum, selected subspecs, linkage
+and packaging. Compatible consumers share products; incompatible build
+requirements produce separate variants or a diagnostic. Swift version
+requirements must have a valid intersection.
 
-Run the complete native corpus with:
+The project generator writes pod targets, aggregate targets, support files,
+configurations, resources and schemes. Integration connects those products to
+the user projects and workspace. It preserves existing Swift package objects
+and records ownership of managed files for later updates and deintegration.
+
+## Source and artifact handling
+
+Source adapters support local directories, Git, HTTP archives, SVN and
+Mercurial. Specification repositories use CDN or Git access. Revision pins,
+specification checksums and artifact digests protect distinct parts of the
+installation. Raw and prepared caches verify content before reuse. Local
+working directories remain development sources rather than cached copies.
+
+Binary validation checks Mach-O payloads and XCFramework metadata. Slice
+selection includes the platform and variant in addition to architecture.
+Linking, embedding, resources and signing follow the selected product type.
+
+## Ruby host and hooks
+
+One Ruby host remains alive throughout an installation. Closures, helper state
+and public objects retain their identity across the four hook phases.
+Project operations are applied through the Swift project model and saved at the
+appropriate phase. Hook file accessors use the same file-selection rules as the
+project generator.
+
+The adapter validates declarations, installation options and specification
+attributes. Plugins run with explicitly configured gem environments. Unsupported
+operations fail with a diagnostic. A plugin's private implementation is not a
+public API contract.
+
+## Build integration
+
+The generator handles headers and modules, ARC, prefix headers, xcconfig,
+conditional configurations, resources, bundles, localization, privacy manifests
+and on-demand resources. Library, test and app specs produce separate targets
+with their own dependency and resource scopes.
+
+Multiple generated projects use explicit cross-project dependencies. Custom
+configurations apply consistently to linking, embedding and resource copying.
+User xcconfig includes and inherited settings remain part of the consumer's
+configuration. CMake-generated projects can be reintegrated after regeneration.
+
+## Commands and recovery
+
+Lint uses isolated Xcode builds. Repository publication validates the spec,
+preserves published versions and leaves the registered checkout unchanged when
+a push is rejected. Graph inspection, integrity checks, cache management and
+project diagnostics use the same native models as installation.
+
+Mutating operations use locks and a recovery journal. Cancellation reaches
+owned child process groups and bounds cleanup. The engine checks managed files
+for external changes before overwriting them. Recovery distinguishes completed
+operations from interrupted ones and reports effects outside managed state.
+
+## Verification
+
+Run the full corpus against a distribution with:
 
 ```sh
 python3 scripts/check.py --full --package dist/SwiftPods
 ```
 
-The full runner prepares isolated frozen reference gems, finishes compilation
-before fixtures, and verifies the assembled distribution. `--skip-apple` is an
-explicitly incomplete smoke check. See [full acceptance](Full-Acceptance.md).
-Each report records the source digest, host, toolchain, exact verified scope and
-remaining limits. A source change invalidates earlier evidence. Packaging attaches
-only passing reports for the packaged source snapshot.
+Compilation finishes before fixtures execute. The runner verifies native
+behavior, input contracts, project effects and the packaged executable.
+`--skip-apple` omits required checks and cannot establish stable acceptance.
 
-[Compatibility verification](Compatibility.md) maps scenarios to their checks.
-Reference code and gems live only under test storage and are excluded from
-runtime preparation and distribution packaging.
-
-Remaining acceptance boundaries are remote authenticated operations, actual
-clean Homebrew installation from published assets, distribution signing/notarization, physical devices,
-Intel execution, Swift binary module stability and supplementary hosts across
-every Apple platform. The Mercurial adapter requires external `hg` and has local locked-revision,
-selected-update, cache-integrity and offline fixtures. Arbitrary private plugin APIs and unknown SDK identities hidden
-inside Swift packages are outside the supported profile. Exact Xcode project
-bytes are not an acceptance claim.
+The [input contract](Compatibility.md) describes supported behavior;
+[full acceptance](Full-Acceptance.md) defines current-evidence requirements.
+Reports apply only to their recorded source, package, toolchain and executed
+scope. Source changes invalidate earlier evidence. Required external gates
+remain unverified until their dedicated checks have passed.

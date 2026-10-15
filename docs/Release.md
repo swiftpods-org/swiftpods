@@ -7,16 +7,12 @@ or native gem extensions are included in the distribution.
 
 ## Homebrew
 
-After publishing the formula and assets to the public release repository:
-
 ```sh
-brew tap swiftpods-org/release https://github.com/swiftpods-org/swiftpods-release.git
-brew trust --formula swiftpods-org/release/swiftpods
 brew install swiftpods
 ```
 
-Omit `brew trust` on versions without that command. The formula installs Ruby
-as a separate Homebrew dependency. Upgrades use `brew upgrade swiftpods`.
+Homebrew installs a compatible Ruby as a separate dependency.
+Upgrades use `brew upgrade swiftpods`.
 
 ## CI
 
@@ -44,7 +40,7 @@ and `swiftpods-site`. Source preparation does not publish changes automatically.
 brew install ruby@3.4 cmake subversion mercurial
 python3 scripts/bootstrap.py
 python3 scripts/check.py --full --package dist/SwiftPods-native
-python3 scripts/release.py --version 0.1.0-dev \
+python3 scripts/release.py --version VERSION \
   --bundle dist/SwiftPods-native --evidence test-results/evidence.zip \
   --destination dist/release-native
 ```
@@ -54,8 +50,8 @@ assets in `swiftpods-release`. Copy the generated Homebrew Formula and README to
 that repository. The formula downloads those assets; archive files are not Git
 source files. The site is maintained separately at swiftpods.org.
 
-A native package is not certified by old engine reports. Architecture, macOS,
-Ruby, Xcode and signing evidence apply only to the actual tested package. Intel,
+A package requires acceptance reports for its own source revision and payload.
+Architecture, macOS, Ruby, Xcode and signing evidence apply only to the actual tested package. Intel,
 remote CI and physical-device acceptance require independent runs.
 
 `scripts/sign_release.py` signs included native binaries and a CMS manifest

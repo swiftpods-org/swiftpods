@@ -9,16 +9,11 @@ dependencies in a Podfile, install them, and build your app in Xcode.
 
 ## Installation
 
-Connect the SwiftPods Homebrew tap once:
-
 ```sh
-brew tap swiftpods-org/release https://github.com/swiftpods-org/swiftpods-release.git
-brew trust --formula swiftpods-org/release/swiftpods
 brew install swiftpods
 ```
 
-On Homebrew versions without `brew trust`, omit that step. Homebrew installs
-Ruby as a separate dependency.
+Homebrew installs a compatible Ruby as a separate dependency.
 
 Upgrade with:
 

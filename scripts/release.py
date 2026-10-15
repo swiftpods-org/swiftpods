@@ -144,7 +144,7 @@ def prepare(args, destination):
     formula = destination / 'homebrew-tap/Formula/swiftpods.rb'
     formula.parent.mkdir(parents=True)
     formula.write_text(homebrew_formula(args.version, assets))
-    (formula.parents[1] / 'README.md').write_text('''# SwiftPods Homebrew tap
+    (formula.parents[1] / 'README.md').write_text('''# SwiftPods
 
 Install [SwiftPods](https://swiftpods.org), a dependency manager for Apple
 platform projects, with Homebrew.
@@ -152,13 +152,10 @@ platform projects, with Homebrew.
 ## Installation
 
 ```sh
-brew tap swiftpods-org/release https://github.com/swiftpods-org/swiftpods-release.git
-brew trust --formula swiftpods-org/release/swiftpods
 brew install swiftpods
 ```
 
-On Homebrew versions without `brew trust`, omit that step. Ruby is installed as
-a separate Homebrew dependency.
+Homebrew installs a compatible Ruby as a separate dependency.
 
 ## Upgrade
 

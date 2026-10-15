@@ -1,277 +1,104 @@
-# Compatibility verification
+# Input and project compatibility
 
-The compatibility target preserves the meaning of existing input manifests,
-helpers, supported public hooks and lockfiles. The 1.17.0 reference is used only
-in isolated tests; its bugs are not inherited. Tested native improvements remain
-visible in the acceptance reports. Production
-resolution, installation, lockfile and Xcode integration execute our Swift code.
+SwiftPods accepts Podfiles, podspecs, JSON specifications and Podfile.lock files.
+The input contract covers dependency declarations, target inheritance, sources,
+build settings and supported public hooks. Installation resolves dependencies,
+fetches their sources and integrates the resulting products into Xcode.
 
-`swift test` covers native versions, requirements, resolution/backtracking,
-subspec cycles, platform checks, lock pins, project round trips and the existing
-integrity, graph, lock and recovery infrastructure.
-It also checks XCFramework metadata against Mach-O payloads, device/simulator
-selection with identical arm64 architectures, rejected slices/paths and legacy
-ARM architecture names.
-Script-phase units cover option validation, execution positions, stable updates,
-removal, non-inherited subspec phases and nested hardened restrictions.
-Supplementary units cover selector expansion, default exclusion, inheritance,
-dependency isolation, host validation and independent deployment minimums.
+## Manifests and Ruby
 
-`scripts/native_integration.py` exercises real Ruby Podfile/podspec helpers,
-prepare and four live hooks, native project generation, mixed-language macOS
-build/run with static framework, dynamic framework and static library, localized resources, privacy manifests and offline deployment reinstall.
-It explicitly rejects attempts to load the reference engine. No runtime gems are
-needed. The native test report records its exact executed scope and limitations.
+Podfiles and Ruby podspecs execute with an external CRuby through the SwiftPods
+DSL adapter. Ruby helpers can use `require_relative`, methods, variables and
+closures. JSON specifications use the same specification model.
 
-`scripts/native_vendor_tests.py` builds actual SDKs with different macOS, iOS
-device and simulator binary values and headers. It checks raw static/dynamic
-frameworks and static libraries, framework/library XCFrameworks, three source
-wrapper linkage modes, transitive binary pods from pinned Git, dynamic embedding,
-SDK removal, missing SDK rejection and preserved pod search paths. macOS and iOS
-simulator consumers execute; the unsigned iOS device consumer builds from the
-same install. `native-vendor.json` records this separate scope. Producer fixtures
-and Xcode projects are built without reference-engine or Ruby project libraries.
+Ruby is a separate dependency. Homebrew installs it alongside SwiftPods;
+manual and CI installations select a compatible executable with
+`SWIFTPODS_RUBY`. SwiftPods checks the runtime's version, ABI and architecture
+before executing project code. User gems and plugins require an explicitly
+imported environment rather than an implicit selection of global gems.
 
-`scripts/native_script_phase_tests.py` builds and runs a generated-header consumer
-with static library/static framework/dynamic framework pods. It checks all five
-positions, podspec aliases and platform/subspec declarations, Podfile scripts,
-native build environment, file lists/dependency files, no-op and changed-input
-builds, always-out-of-date execution, declared sandbox inputs/outputs, removal
-preserving unrelated user scripts, build failure propagation and rejection of
-invalid phases before managed changes. Hardened JSON rejects nested script
-declarations without a Ruby interpreter. Install/reinstall never executes the
-declared build phases. Evidence is recorded in `native-script-phases.json`.
+The versioned API registry in `Profiles/contract.json` maps Podfile methods,
+installation options, podspec attributes and public hook operations to checks.
+Unsupported declarations and operations produce a diagnostic rather than a
+successful no-op. Private monkey patches and unverified plugin internals require
+an additional supported profile.
 
-`scripts/native_supplementary_tests.py` builds and executes actual macOS XCTest
-cases and app-spec executables with static frameworks, dynamic frameworks and
-static libraries. It checks default exclusion and explicit selection, own sources,
-Info.plist and resources, resource bundles, test-only/app-only dependencies,
-consumer isolation, scheme environment, higher test deployment minimums,
-generated/named app hosts, offline deployment reinstall and managed scheme
-removal. Hardened JSON selects tests/apps and executes XCTest without Ruby.
-Selecting an unknown test type fails before managed changes.
-Standalone, generated-host and named-host tests execute in Debug and Release
-for every library linkage mode. `native-supplementary.json` records these checks
-and remaining platform limits.
+## Versions, sources and lockfiles
 
-`scripts/native_ui_tests.py` runs actual UI interaction on a disposable iOS
-simulator, using Swift tests and a Swift app spec. The test launches its named
-app host, reads a library-derived value, taps a button and verifies the new value.
-The suite also executes a generated UIKit UI host, standalone/hosted Swift unit
-tests, own resources/Info.plist entries and scheme environment. It checks UI
-runner host associations separately from unit-test bundle loading, three library
-linkage modes, consumer isolation, removal, offline reinstall and hardened JSON
-selection without Ruby. Simulator products use ad-hoc signing; this does not
-certify distribution signing or physical-device execution. The suite owns and
-removes its simulator. Named/generated UI and standalone/hosted unit scenarios
-run in Debug and Release for every selected linkage mode. Evidence is
-`native-ui.json`; `--bundle PATH` runs the
-packaged binary and records `native-packaged-ui.json`.
+`swiftpods install` preserves locked versions and spec sources when the manifest
+and lockfile are unchanged. Changes to requirements must satisfy the remaining
+pins. `swiftpods update NAME` unlocks the selected dependency and the necessary
+transitive dependencies while retaining unrelated pins.
 
-The legacy corpus under `Tests/Reference/LegacyHarness` needs adaptation to
-independent native/reference runs. It is not included in the native passed count.
-Full DSL/API parity, complete Apple/Intel matrices, physical devices, signing and release acceptance
-remain separate requirements. See `Implementation-Status.md` for implementation
-boundaries. Unsupported features must fail rather than silently disappear.
+Resolution considers combined version requirements, explicit prereleases,
+subspec selections and deployment minimums. Warning and configuration options
+do not grant permission to select prerelease versions.
 
-`scripts/reference_compare.py --gem-home PATH` runs the independent 1.17.0
-reference with separately prepared test gems and compares the mixed-language
-fixture. This optional test environment is never copied into a native release.
+Sources include local directories, Git, HTTP archives, SVN and Mercurial.
+Specifications can come from CDN or Git repositories, with an explicit source
+selected per dependency. Lockfiles retain version, source, revision and checksum
+information. Compatible metadata fields and identifiers are accepted for
+existing projects. Additional integrity metadata verifies artifacts without
+replacing dependency resolution.
 
-`scripts/script_phase_reference.py --gem-home PATH` compares independently
-generated pod/Podfile phase order and all options against the 1.17.0 reference.
-Both engines build/run the same fixture, skip its generator on a no-op rebuild
-and regenerate after an input-file-list dependency changes. This comparison
-has its own `native-script-reference.json` evidence and the same isolated test
-gem boundary.
+`swiftpods install --deployment` rejects changes requiring a new lockfile.
+`--offline` requires cached specifications and sources. A missing or corrupted
+cache entry is an error; it does not authorize selecting another version.
 
-`scripts/supplementary_reference.py --gem-home PATH` compares selected spec names
-and test/app product types against isolated 1.17.0 projects. Both engines execute
-the same XCTest assertions and app-spec program, checking dependency/resource
-isolation, Info.plist entries and the test scheme environment. Its evidence is
-`native-supplementary-reference.json`; hosted tests and exact project/lock bytes
-are outside this reference comparison.
+## Hooks and project objects
 
-`scripts/native_host_platform_tests.py` builds app specs, standalone and
-generated/named unit tests, and generated/named UI runners for tvOS Simulator,
-visionOS Simulator and Mac Catalyst in all three library linkage modes and both
-Debug/Release configurations. It compiles the actual generated host source, so
-unavailable platform APIs fail acceptance. These are build checks; execution,
-device SDK hosts, watchOS supplementary products and macOS UI interaction remain
-separate acceptance work. The report is `native-host-platforms.json`.
+The four installation hooks run in order: `pre_install`, `pre_integrate`,
+`post_install` and `post_integrate`. Supported installer, sandbox, specification,
+target, file accessor and Xcode project objects retain their identity between
+phases. Targets with the same name in different projects remain distinct.
 
-`scripts/ui_reference.py --gem-home PATH` independently installs native and
-1.17.0 iOS UI projects, compares test product types and named/generated host
-associations, and executes the same button interaction in both engines. It also
-checks Swift app/test sources, UI resources, Info.plist and scheme environment.
-Its evidence is `native-ui-reference.json`; generated host implementation parity
-and other UI execution platforms remain outside this comparison.
-Both UI executions set `TOOLCHAIN_DIR` to the toolchain containing the installed
-`swiftc`. This avoids Xcode 27 expanding reference Swift library search paths
-through the separate Metal toolchain, which has no Swift runtime libraries.
-Compiler and linker diagnostics remain enabled.
+Hooks can inspect selected files and resources, change build settings, create
+project groups and phases, and save supported project mutations. The file
+selection model is shared with project generation so hooks observe the same
+public, private and project headers, source files and resource bundles.
 
-`scripts/native_batch_tests.py` checks custom Debug/Staging/Release configurations,
-all three library linkage modes, target inheritance, per-file ARC, prefix/header
-rules, direct localized resources and asset catalogs, multiple pod projects and
-multi-platform macOS/iOS builds. It verifies live DSL project saves, hook saves and
-execution, object identity, byte-stable offline deployment, deintegration with
-preserved settings/user edits, reinstall and stale workspace cleanup.
-`--bundle PATH` repeats these checks using a packaged executable.
+Plugins use declared options and explicit gem profiles. Each supported plugin
+version needs checks for its public operations, phase ordering and saved effects.
 
-`scripts/native_management_tests.py` checks Git revision pins across a fresh cache
-and branch advance, selected update, offline deployment, repo/cache commands,
-inspection, plugin contexts/options/source providers/whitelist/lifecycle, and
-disabled project generation. These tests use isolated caches and Git repositories.
+See [project hooks](Projects-and-Configurations.md#project-hooks) and
+[script phases](Script-Phases.md).
 
-`scripts/batch_reference.py --gem-home PATH` independently runs the combined fixture
-with multiple pod projects in both engines. Debug/Staging/Release executable
-results, inheritance, ARC, prefix headers, resources and hook behavior must match.
-Its evidence is `native-batch-reference.json`; exact project bytes, private plugin
-APIs and the complete platform matrix are outside this comparison.
+## Xcode integration
 
-`scripts/native_layout_tests.py` runs macOS test/app specs with isolated pod
-projects in all three linkage modes, including generated/named unit-test hosts.
-It also runs iOS UI interaction with named/generated hosts, hosted unit tests and
-hardened split-project installation without Ruby. It checks immediate hook saves,
-project/configuration identity, root settings that affect compilation, plugin
-project lists, source project preservation, byte-stable offline deployment and
-receipt-based cleanup preserving edited files. `--bundle PATH` verifies the
-packaged executable. Reports are `native-layout.json` and
-`native-packaged-layout.json`.
+The build contract covers static libraries, static frameworks and dynamic
+frameworks, with source and binary dependencies. Device, simulator and Mac
+Catalyst destinations select distinct binary slices, even when they share a CPU
+architecture. Dynamic products are embedded; static products are linked.
 
-`scripts/layout_reference.py --gem-home PATH` compares independently generated
-child ownership and scheme containers, live hook objects, public context project
-lists, real macOS XCTest/app results and named-host iOS UI interaction against the
-isolated reference. Its evidence is `native-layout-reference.json`. Exact project
-bytes, complete APIs and other destination/linkage combinations remain outside
-this comparison. Configuration objects remain live; a reference sort can replace
-their build-settings Hash, so Hash identity is not a shared compatibility claim.
+File patterns, exclusions, header visibility, module maps, ARC, prefix headers,
+conditional xcconfig settings, include chains and `$(inherited)` retain their
+meaning. Custom configurations control the products linked, embedded and copied
+into each consumer. Resources include bundles, localization, asset catalogs,
+privacy manifests and on-demand resource tags.
 
-`scripts/native_configuration_tests.py` exercises configuration-filtered SDK
-linking/embedding and direct, localized, compiled and bundled resources. macOS
-Debug/Staging/Release applications run with static framework, dynamic framework
-and static library pods. Raw SDKs and XCFrameworks include static/dynamic
-frameworks and archives. The fixture checks paths with spaces, same-configuration
-incremental exclusion, preserved user resources/exclusions, offline deployment,
-deintegration and hardened JSON without Ruby. Enabled/disabled iOS applications
-execute on an owned simulator. `--bundle PATH` repeats the suite on the release
-binary. Evidence is `native-configuration.json` or
-`native-packaged-configuration.json`.
+Library, test and app specs have their own dependencies and products. Selected
+tests can use generated hosts or declared app specs. Multiple generated projects
+preserve cross-project dependencies and project ownership.
 
-`scripts/configuration_reference.py --gem-home PATH` independently installs both
-engines and checks the same macOS Debug/Staging/Release outputs and iOS enabled/
-disabled simulator results. Static XCFramework and dynamic raw-framework pod
-scenarios compare compiled/localized/direct resources, bundles and SDK link/embed
-behaviour. Evidence is `native-configuration-reference.json`; other resource
-formats, destination/linkage combinations and distribution signing remain outside
-this comparison.
-The shared fixture hook marks reference copy/embed scripts as always run to give
-empty-output configurations an explicit scheduling contract. Xcode diagnostics
-remain enabled; reference incremental script scheduling is not compared.
+Existing Swift package references and `Package.resolved` are preserved. CMake
+projects can be regenerated and then reintegrated with `swiftpods install`.
+Repeated installation avoids duplicate references and phases. Deintegration
+removes recognized managed integration while preserving user-owned content.
+External edits to managed files are detected before replacement.
 
+See [projects and configurations](Projects-and-Configurations.md),
+[test and app specs](Test-and-App-Specs.md) and [BridgeSupport](BridgeSupport.md).
 
-`scripts/native_variant_tests.py` runs six simultaneous macOS consumers with
-five variants of one pod and four variants of its transitive dependency. The
-matrix covers different subspecs, archive/static/dynamic framework packaging,
-consumer deployment requirements, isolated public headers, XCFrameworks,
-framework embedding and direct/bundled resources. It executes
-Debug/Staging/Release applications and independent test/app spec variants;
-offline deployment preserves project bytes. Reinstall changes split projects to
-a single project and replaces old explicit variant dependencies. Deintegration
-and reintegration use the same user projects and build outputs. `--bundle PATH`
-checks the packaged executable. Reports are `native-variants.json` and
-`native-packaged-variants.json`.
+## Verifying a release
 
-`scripts/variant_reference.py --gem-home PATH` compares independently installed
-graphs: variant counts, source sets, packaging/linkage, build minima, test/app
-scheme counts and hook settings. Evidence is `native-variant-reference.json`.
-This comparison does not execute reference variant products: the simultaneous
-reference XCFramework fixture produces duplicate copy outputs. Reference archive
-header isolation, identical project bytes and other destination/API combinations are not certified.
+A successful parse is insufficient: acceptance checks the chosen graph, hook
+results, generated files, builds, resources, applications and repeat installs.
+The [specification](SwiftPods-Specification-v0.1.md) defines T-001–T-025 and
+AC-001–AC-010. [Full acceptance](Full-Acceptance.md) describes the reproducible
+runner and evidence format.
 
-
-## Complete contract and operational checks
-
-The current corpus includes these independent checks:
-
-| Report | Executed scope |
-|---|---|
-| `native-contract-reference.json` | All 26 baseline Podfile methods, 15 installation options and 53 attribute declarations/consumer values; defaults, inheritance, platform setters, aliases, negative types and hook calls |
-| `native-contract.json` | Real Swift language-mode selection, nested framework/archive headers, stable typed public hook objects, live pod/consumer mutations, scheme sharing, aggregate xcconfig, lint builds, publication and rejected-push preservation, iOS ODR asset packs |
-| `native-runtime.json` | SIGINT with resistant Ruby descendants, bounded cleanup, status 130, busy mutation rejection/recovery, overlapping HTTP downloads, clean/preserve/permissions/incremental source options |
-| `native-source-contract.json` | HTTP headers/checksum, external archive snapshots, offline/deployment lock preservation, tampering detection, targeted cleanup, fresh-cache SVN pins and updates, imported Bundler version checks |
-| `native-ecosystem.json` | Real CMake Xcode generation/regeneration and app runs; existing local Swift package build/link, PBX and Package.resolved preservation, duplicate detection, platform-aware init and silent/verbose/outdated output, generation-skip hook semantics and BridgeSupport metadata |
-| `native-ecosystem-reference.json` | The same ecosystem checks, return to the upstream installer after explicit native deintegration, then direct native replacement, byte-preserved 1.16.2/1.17.0 deployment without Pods, app runs and separately compared BridgeSupport metadata |
-| `native-platforms.json` | 60 Debug/Release builds across three linkage modes and ten destinations; 18 separate unsigned device/macOS/Mac Catalyst archives; real XCFramework slices including watchOS arm64_32 |
-| `native-variant-reference.json` | Exact library target labels as well as selected sources, packaging/linkage, minima, supplementary scheme counts and hook settings |
-
-The SDK matrix uses the installed Xcode default toolchain explicitly. Simulator
-builds are distinct from unsigned device archives. These checks do not establish
-physical-device execution, signed distribution, Swift binary module stability,
-every supplementary host/destination combination, Intel or remote CI acceptance.
-Mercurial requires external `hg`; its independent fixture checks pinned checkout,
-selected update, fresh-cache reinstall, offline deployment and cache integrity.
-
-The complete native runner requires Xcode, CMake, Subversion and Mercurial alongside Swift
-and external Ruby. Isolated comparisons additionally require separately prepared
-reference-only test gems. Production commands never activate those gems.
-
-The required corpus maps to the native suites as follows:
-
-| Specification corpus | Evidence suites |
-|---|---|
-| T-001–T-004: manifests, helpers, DSL and attributes | sources, integration, contract, contract-reference, supplementary, scripts |
-| T-005–T-008: versions, repositories and source pins | units, sources, management, runtime, source-contract |
-| T-009–T-014: targets, hooks, binaries, languages, resources and settings | batch, layout, variants, configuration, vendor, platforms, contract, supplementary, UI and their reference comparisons |
-| T-015–T-016: legacy locks and no-op installs | units, management, variants, configuration, layout, source-contract |
-| T-017–T-018: CMake and existing SwiftPM | ecosystem and ecosystem-reference |
-| T-019: external Ruby and distribution | runtime selection units, source-contract, distribution; remote Homebrew/signing acceptance remains separate |
-| T-020–T-024: offline, integrity, failure/recovery and restrictions | sources, management, runtime, source-contract, integration, layout, configuration |
-| T-025: upstream return | ecosystem-reference after explicit deintegration |
-
-An attribute registry comparison proves declaration/consumer semantics. Actual
-build effects are proved by the separate build fixtures, within their recorded
-scope. Neither a registry count nor one successful build certifies every possible
-combination of attributes, plugins and destinations.
-
-
-BridgeSupport comparisons run both installers with the same Apple-tool environment,
-without reference-only Bundler variables leaking into that external tool. The
-reference currently supplies a nonexistent aggregate header path; the native
-installer supplies its generated header. This is a recorded, tested reference bug
-fix under the input-compatible contract and does not block acceptance. A failed
-tool invocation is tested separately in both engines; it warns and retains the
-missing resource reference. No direct-tool fallback is counted as installer parity.
-The [BridgeSupport diagnosis](BridgeSupport.md) includes the reproducer, arguments,
-source-level cause and observable consequences.
-
-Compatibility preserves the syntax and meaning of existing input files and the
-supported public hook API. It does not require reproducing reference bugs or
-internal implementation details. `Profiles/contract.json` lists tested
-improvements with evidence for unchanged inputs and correct effects. Reports
-retain the raw difference and its classification. Unregistered or unproven
-differences remain blocking; a more concise implementation does not permit losing
-settings, changing locked dependencies or silently ignoring declarations.
-
-The authoritative aggregate is `test-results/check.json`, produced by
-`check.py --full --package PATH`. It records source/contract digests, revision,
-executable hashes, host/toolchain, requirement/API mappings and external gates.
-Missing, stale, skipped or replaced evidence is rejected. Local passing reports
-never imply stable acceptance while an external gate is unverified.
-
-Additional regressions are `native-compatibility-reference.json` (locked sources,
-hard version constraints, compatible requirement edits, prerelease removal,
-shared update pins and lock-graph string deduplication, empty public-header patterns and
-FileAccessor/project operations and target-tree/hook lifecycle),
-`native-resolver-reference.json` (32 seeded dependency graphs plus four cycle and
-version-backtracking cases), `native-xcconfig-reference.json` (external projects and user
-include-chains), `native-swift-binary.json` (public swiftinterface consumption,
-Debug/Release builds and executed applications), `native-benchmarks.json` (three
-local cold/warm/no-op/update samples and unchanged build-input timestamps), and
-`native-acceptance-harness.json` (rejected incomplete or tampered evidence).
-Supplementary reference fixtures also compare actual installation-result objects
-and preserve mutations made through their test/app native targets.
-
-See [Full acceptance](Full-Acceptance.md) for the reproducible invocation and
-remaining infrastructure requirements.
+Reports identify the source revision, contract digest, distribution, toolchain
+and actual platform matrix. A mapped test does not establish every combination
+of inputs. Signing, notarization, physical devices, Intel execution, the minimum
+macOS and clean installations require their own evidence. An unavailable or
+skipped required check remains unverified.

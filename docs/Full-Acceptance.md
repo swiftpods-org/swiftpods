@@ -40,22 +40,22 @@ alone reports `stable_acceptance: not_established`.
 
 The compatibility contract is `input_compatible`: preserve existing manifests,
 helpers, supported public hooks and lockfiles while permitting simpler native
-implementations and corrected behavior. Reference bugs are not inherited.
+implementations and corrected behavior.
 `compatibility_policy.improvements` in `Profiles/contract.json` links each tested
 improvement to unchanged-input and correct-effect cases. The aggregate retains
 `compatibility_differences`, including raw `parity: false`, and records the
 classification. `blocking_compatibility_differences` excludes only improvements
-whose current evidence satisfies that policy. BridgeSupport's corrected header
-path is the first such case. This does not waive required reports or external
-acceptance gates.
+whose current evidence satisfies that policy. The BridgeSupport aggregate header
+path has dedicated input and effect checks. This does not waive required reports
+or external acceptance gates.
 
 ## External evidence
 
 Signing/notarization, physical devices, native Intel execution, the minimum macOS,
 clean Homebrew installation, remote CI and cross-compiler Swift module stability
 require their own infrastructure. Signed Apple product archives and the remaining
-reference-supported supplementary host matrix also have explicit gates. Ordinary simulator runs, cross-compilation and
-same-toolchain swiftinterface consumption do not close those gates.
+required supplementary host matrix also have explicit gates. Ordinary simulator
+runs, cross-compilation and same-toolchain swiftinterface consumption do not close those gates.
 
 For signing, use a clean committed checkout and an explicit identity/profile:
 
@@ -128,8 +128,9 @@ certify a pristine machine or any other macOS/architecture.
 `swiftpods-code` owns implementation, contracts and evidence generation.
 `swiftpods-release` receives prepared archives, checksums, installer and root
 `Formula/swiftpods.rb`; archives are release assets rather than source files.
-`swiftpods-site` describes capabilities confirmed by the selected release's
-evidence at swiftpods.org. Updating these repositories does not imply publication.
+`swiftpods-site` documents the product workflow at swiftpods.org. Release
+metadata and acceptance evidence identify the actual published artifacts and
+their verified scope. Updating these repositories does not imply publication.
 Release assembly requires one matching full evidence archive per distribution.
 It verifies archive inventory, source/toolchain and tested manifest/executable
 identities before producing a destination. Failed assembly leaves no partial
