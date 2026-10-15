@@ -43,6 +43,24 @@ final class NativeVariantTests: XCTestCase {
         XCTAssertEqual(plan.consumers, reordered.consumers)
         XCTAssertEqual(plan.variants.mapValues(\.label), reordered.variants.mapValues(\.label))
     }
+    func testScopedDynamicFrameworkCannotShadowAnotherVariantsLinkerInput() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data("int kit(void) { return 1; }".utf8).write(to: root.appendingPathComponent("Kit.c"))
+        let kit = try NativeSpec(data: ["name": "Kit", "version": "1.0", "source_files": "Kit.c"], directory: root)
+        let resolution = NativeResolution(specs: ["Kit": kit], requests: [])
+        for scoped in [true, false] {
+            var targets = [target("Dynamic", mode: "dynamic", selection: "Kit")]
+            if scoped { targets.append(target("Static", mode: "static", selection: "Kit")) }
+            let engine = try NativeXcode(project: root, manifest: ["targets": targets], resolution: resolution, integrateUserProjects: false)
+            try engine.generate()
+            let dynamic = try XCTUnwrap(engine.graph.objects.values.first { $0["isa"] as? String == "XCBuildConfiguration" && ($0["buildSettings"] as? [String: Any])?["MACH_O_TYPE"] as? String == "mh_dylib" })
+            let settings = try XCTUnwrap(dynamic["buildSettings"] as? [String: Any])
+            XCTAssertEqual(settings["GENERATE_INTERMEDIATE_TEXT_BASED_STUBS"] as? String, scoped ? "NO" : nil)
+            XCTAssertEqual(settings["EAGER_LINKING"] as? String, scoped ? "NO" : nil)
+        }
+    }
     func testStaticFrameworkOverrideStillPreservesLibraryPackaging() throws {
         let resolved = NativeResolution(specs: ["Kit": try spec(staticFramework: true)], requests: [])
         let plan = try NativeVariantPlan(manifest: ["targets": [target("Library"), target("Static", mode: "static"), target("Dynamic", mode: "dynamic")]], resolution: resolved)

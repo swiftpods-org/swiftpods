@@ -2,6 +2,20 @@ import XCTest
 @testable import SwiftPodsCore
 
 final class NativeContractTests: XCTestCase {
+    func testCXXDriverDoesNotLinkItsStandardLibraryTwice() {
+        let sources = [URL(fileURLWithPath: "/SDK/Bridge.mm")]
+        XCTAssertEqual(NativeBuildSettings.libraryFlags(["c++", "z"], sources: sources, settings: [:], linkingWithClang: true), ["-lz"])
+        XCTAssertEqual(NativeBuildSettings.libraryFlags(["c++", "z"], sources: sources, settings: [:], linkingWithClang: false), ["-lc++", "-lz"])
+        for settings in [["LINK_WITH_STANDARD_LIBRARIES": "NO"], ["LDPLUSPLUS": "custom-driver"], ["LD": "custom-driver"], ["CLANG_CXX_LIBRARY": "other-library"]] {
+            XCTAssertEqual(NativeBuildSettings.libraryFlags(["c++"], sources: sources, settings: settings, linkingWithClang: true), ["-lc++"])
+        }
+    }
+    func testCAndSwiftTargetsKeepExplicitCXXRuntimeDependencies() {
+        for language in ["c", "m", "swift"] {
+            XCTAssertEqual(NativeBuildSettings.libraryFlags(["c++"], sources: [URL(fileURLWithPath: "/SDK/Bridge." + language)], settings: [:], linkingWithClang: true), ["-lc++"])
+        }
+    }
+
     func testSwiftVersionUsesIntersectionAndHighestCompatibleSpecVersion() throws {
         let spec = try NativeSpec(data: ["name": "Kit", "version": "1", "swift_versions": ["4.2", "5.0", "5.9", "6.0"]])
         XCTAssertEqual(try NativeSwiftVersion.select(spec: spec, targets: [["name": "A", "swift_version_requirements": [">= 5"]], ["name": "B", "swift_version_requirements": ["< 6"]]]), "5.9")

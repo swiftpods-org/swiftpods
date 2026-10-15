@@ -2,6 +2,17 @@ import Foundation
 import Darwin
 
 enum NativeBuildSettings {
+    static func libraryFlags(_ libraries: [String], sources: [URL], settings: [String: Any], linkingWithClang: Bool) -> [String] {
+        let cxx = Set(["mm", "cc", "cpp", "cxx", "c++"])
+        let implicitCXX = linkingWithClang && sources.contains { cxx.contains($0.pathExtension) } &&
+            (settings["LINK_WITH_STANDARD_LIBRARIES"] as? String ?? "YES") != "NO" &&
+            settings["LD"] == nil && settings["LDPLUSPLUS"] == nil
+        let standardLibrary = settings["CLANG_CXX_LIBRARY"] as? String ?? "libc++"
+        return libraries.filter { library in
+            !(implicitCXX && standardLibrary == "lib" + library)
+        }.map { "-l" + $0 }
+    }
+
     static func merge(_ old: [String: Any], _ new: [String: Any]) -> [String: Any] {
         old.merging(new) { previous, value in
             if let text = value as? String { return text.replacingOccurrences(of: "$(inherited)", with: nativeStrings(previous).joined(separator: " ")).replacingOccurrences(of: "${inherited}", with: nativeStrings(previous).joined(separator: " ")) }

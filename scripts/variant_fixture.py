@@ -5,7 +5,7 @@ import shutil
 import subprocess
 from batch_fixture import user_project
 from native_integration import serialize
-from vendor_fixture import run
+from vendor_fixture import fixture_derived_data, run
 
 CONSUMERS = [('LibraryA', None, 'A', '13.0', True), ('LibraryB', None, 'B', '13.0', False), ('StaticB', 'static', 'B', '13.1', False), ('DynamicA', 'dynamic', 'A', '13.0', True), ('NewerA', 'static', 'A', '14.0', False), ('SameA', None, 'A', '13.0', False)]
 
@@ -130,7 +130,7 @@ def build_consumers(work, group, configuration='Debug'):
         entries.append(f'<BuildActionEntry buildForTesting="YES" buildForRunning="YES" buildForProfiling="YES" buildForArchiving="YES" buildForAnalyzing="YES"><BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="{key}" BuildableName="{product}" BlueprintName="{target["name"]}" ReferencedContainer="container:Pods/Pods.xcodeproj"/></BuildActionEntry>')
     schemes = work / 'Variants.xcworkspace/xcshareddata/xcschemes'; schemes.mkdir(parents=True, exist_ok=True)
     schemes.joinpath('AllConsumers.xcscheme').write_text('<?xml version="1.0" encoding="UTF-8"?><Scheme LastUpgradeVersion="2700" version="1.3"><BuildAction parallelizeBuildables="YES" buildImplicitDependencies="YES"><BuildActionEntries>' + ''.join(entries) + '</BuildActionEntries></BuildAction></Scheme>')
-    run(['xcodebuild', '-workspace', 'Variants.xcworkspace', '-scheme', 'AllConsumers', '-configuration', configuration, '-destination', 'platform=macOS,arch=arm64', '-derivedDataPath', group / 'DerivedData', 'CODE_SIGNING_ALLOWED=NO', 'TOOLCHAIN_DIR=' + toolchain, 'build'], work, group / ('AllConsumers-' + configuration + '.log'))
+    run(['xcodebuild', '-workspace', 'Variants.xcworkspace', '-scheme', 'AllConsumers', '-configuration', configuration, '-destination', 'platform=macOS,arch=arm64', '-derivedDataPath', fixture_derived_data(group), 'CODE_SIGNING_ALLOWED=NO', 'TOOLCHAIN_DIR=' + toolchain, 'build'], work, group / ('AllConsumers-' + configuration + '.log'))
     for name, mode, leaf, deployment, supplementary in CONSUMERS:
         app = group / 'DerivedData/Build/Products' / configuration / (name + '.app')
         output = subprocess.check_output([str(app / 'Contents/MacOS' / name)], text=True).strip()
@@ -147,10 +147,10 @@ def supplementary(work, group):
     assert len(tests) == 2 and len(apps) == 2, (tests, apps)
     for scheme in tests + apps:
         action = 'test' if scheme in tests else 'build'
-        text = run(['xcodebuild', '-project', 'Pods/Pods.xcodeproj', '-scheme', scheme, '-configuration', 'Debug', '-destination', 'platform=macOS,arch=arm64', '-derivedDataPath', group / 'DerivedData', 'CODE_SIGNING_ALLOWED=NO', action], work, group / (scheme + '.log'))
+        text = run(['xcodebuild', '-project', 'Pods/Pods.xcodeproj', '-scheme', scheme, '-configuration', 'Debug', '-destination', 'platform=macOS,arch=arm64', '-derivedDataPath', fixture_derived_data(group), 'CODE_SIGNING_ALLOWED=NO', action], work, group / (scheme + '.log'))
         if action == 'test': assert 'testVariantAndOwnResources' in text and '** TEST SUCCEEDED **' in text
         else:
-            app = next(group.rglob(scheme + '.app/Contents/MacOS/' + scheme))
+            app = next((group / 'DerivedData/Build/Products').rglob(scheme + '.app/Contents/MacOS/' + scheme))
             assert subprocess.check_output([str(app)], text=True).strip() == 'variant-example=53'
 
 

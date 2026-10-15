@@ -116,7 +116,7 @@ extension NativeXcode {
             var values = nativeStrings(settings[key]); if values.isEmpty { values = ["$(inherited)"] }
             for path in paths.map(NativeBuildSetting.path) where !values.contains(path) { values.append(path) }; settings[key] = values
         }
-        settings["OTHER_LDFLAGS"] = ["$(inherited)"] + nativeStrings(settings["OTHER_LDFLAGS"]) + nativeStrings(attributes["libraries"]).map { "-l" + $0 }
+        settings["OTHER_LDFLAGS"] = ["$(inherited)"] + nativeStrings(settings["OTHER_LDFLAGS"]) + NativeBuildSettings.libraryFlags(nativeStrings(attributes["libraries"]), sources: sources, settings: settings, linkingWithClang: true)
         let mac = request.platform == "osx"
         settings["LD_RUNPATH_SEARCH_PATHS"] = ["$(inherited)", mac ? "@executable_path/../Frameworks" : "@executable_path/Frameworks", mac ? "@loader_path/../Frameworks" : "@loader_path/Frameworks", "$(PLATFORM_DIR)/Developer/Library/Frameworks"] + nativeStrings(settings["LD_RUNPATH_SEARCH_PATHS"])
         if let host {

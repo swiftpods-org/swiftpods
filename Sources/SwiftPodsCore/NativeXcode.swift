@@ -250,6 +250,12 @@ final class NativeXcode {
             if variant.scoped { settings["CONFIGURATION_BUILD_DIR"] = "$(BUILD_DIR)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)/" + targetName }
             if let arc = attributes["requires_arc"] as? Bool { settings["CLANG_ENABLE_OBJC_ARC"] = arc ? "YES" : "NO" }
             settings.merge(NativeSpec.xcconfig(attributes, key: "pod_target_xcconfig")) { _, new in new }
+            if variant.scoped && dynamic {
+                // Xcode's shared intermediate TBD directory uses the module
+                // name, so its stub can shadow a different static variant.
+                settings["GENERATE_INTERMEDIATE_TEXT_BASED_STUBS"] = "NO"
+                settings["EAGER_LINKING"] = "NO"
+            }
             settings["PRODUCT_NAME"] = module; settings["PRODUCT_MODULE_NAME"] = module
             settings["PODS_ROOT"] = project.appendingPathComponent("Pods").path
             settings["PODS_PODFILE_DIR_PATH"] = project.path
@@ -296,7 +302,7 @@ final class NativeXcode {
                 frameworks.append(buildFile(file(sdk.url.path, type: sdk.fileType), target: targetName))
             }
             vendorSDKs[variantKey(name, platform)] = sdks
-            settings["OTHER_LDFLAGS"] = ["$(inherited)"] + nativeStrings(settings["OTHER_LDFLAGS"]) + nativeStrings(attributes["libraries"]).map { "-l" + $0 }
+            settings["OTHER_LDFLAGS"] = ["$(inherited)"] + nativeStrings(settings["OTHER_LDFLAGS"]) + NativeBuildSettings.libraryFlags(nativeStrings(attributes["libraries"]), sources: all, settings: settings, linkingWithClang: dynamic)
             // Recursive pod-root search would expose headers from every
             // XCFramework slice, bypassing Xcode's destination selection.
             let headerDirectories = Set(all.filter { NativeFileSelection.headers.contains($0.pathExtension) }.map { $0.deletingLastPathComponent().path }).sorted()
