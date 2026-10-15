@@ -70,12 +70,37 @@ def contract_digest():
     ).hexdigest()
 
 
+def option_value(name, arguments=None):
+    """Read either option spelling without raising before report invalidation.
+
+    None means absent; an empty string means a missing or empty value. Validation
+    belongs inside execute(), so malformed arguments cannot leave stale evidence.
+    """
+    arguments = sys.argv[1:] if arguments is None else arguments
+    value = None
+    for index, argument in enumerate(arguments):
+        if argument == "--":
+            break
+        if argument.startswith(name + "="):
+            value = argument[len(name) + 1 :]
+        elif argument == name:
+            value = arguments[index + 1] if index + 1 < len(arguments) else ""
+            if value.startswith("--"):
+                return ""
+        else:
+            continue
+        if not value:
+            return ""
+    return value
+
+
 def binary_identity():
     path = ROOT / ".build/debug/swiftpods"
-    if "--bundle" in sys.argv:
-        path = (
-            Path(sys.argv[sys.argv.index("--bundle") + 1]).resolve() / "bin/swiftpods"
-        )
+    bundle = option_value("--bundle")
+    if bundle is not None:
+        if not bundle:
+            raise RuntimeError("--bundle requires a distribution path")
+        path = Path(bundle).resolve() / "bin/swiftpods"
     elif Path(sys.argv[0]).name == "native_distribution_tests.py" and len(sys.argv) > 1:
         path = Path(sys.argv[1]).resolve() / "bin/swiftpods"
     return (

@@ -4,13 +4,12 @@
 import argparse
 import json
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
 from bootstrap import ROOT, environment
 from native_supplementary_tests import install
-from reporting import execute
+from reporting import execute, option_value
 from ui_test_fixture import build, create, declarative, podfile, simulator
 
 
@@ -207,5 +206,8 @@ def main():
 
 if __name__ == "__main__":
     execute(
-        main, "native-packaged-ui.json" if "--bundle" in sys.argv else "native-ui.json"
+        main,
+        "native-packaged-ui.json"
+        if option_value("--bundle") is not None
+        else "native-ui.json",
     )

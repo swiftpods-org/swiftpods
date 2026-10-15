@@ -4,6 +4,7 @@
 import hashlib
 import json
 import os
+import runpy
 import subprocess
 import sys
 import tempfile
@@ -152,6 +153,62 @@ class EvidenceTests(unittest.TestCase):
             installer.select_asset(
                 manifest, "1.0.0", architecture="arm64", macos="12.9.9"
             )
+
+    def testBundleArgumentSpellingsSelectPackagedBinaryAndReport(self):
+        bundle = self.root / "packaged release"
+        binary = bundle / "bin/swiftpods"
+        binary.parent.mkdir(parents=True)
+        binary.write_bytes(b"packaged executable")
+        expected = {
+            "path": str(binary.resolve()),
+            "sha256": hashlib.sha256(binary.read_bytes()).hexdigest(),
+        }
+        scripts = {
+            "native_variant_tests.py": "variants",
+            "native_configuration_tests.py": "configuration",
+            "native_layout_tests.py": "layout",
+            "native_ui_tests.py": "ui",
+        }
+        for arguments in [["--bundle", str(bundle)], ["--bundle=" + str(bundle)]]:
+            with (
+                self.subTest(arguments=arguments),
+                patch.object(sys, "argv", ["fixture.py", *arguments]),
+            ):
+                self.assertEqual(reporting.binary_identity(), expected)
+                for script, name in scripts.items():
+                    with patch.object(reporting, "execute") as execute_fixture:
+                        runpy.run_path(
+                            str(ROOT / "scripts" / script), run_name="__main__"
+                        )
+                    self.assertEqual(
+                        execute_fixture.call_args[0][1],
+                        "native-packaged-" + name + ".json",
+                    )
+
+    def testMissingBundlePathInvalidatesThePackagedFailureReport(self):
+        name = "native-packaged-variants.json"
+        for arguments in [["--bundle"], ["--bundle="], ["--bundle", "--other-option"]]:
+            self.write(name, self.report)
+            with (
+                self.subTest(arguments=arguments),
+                patch.object(sys, "argv", ["fixture.py", *arguments]),
+                patch.object(reporting, "ROOT", self.root),
+                patch.object(reporting, "source_digest", return_value="source"),
+                patch.object(reporting, "contract_digest", return_value="contract"),
+                patch.object(reporting, "source_revision", return_value=self.revision),
+                patch.object(
+                    reporting,
+                    "toolchain_identity",
+                    return_value=self.report["toolchain"],
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError, "requires a distribution path"
+                ):
+                    reporting.execute(lambda: self.fail("fixture must not run"), name)
+            result = json.loads((self.root / "test-results" / name).read_text())
+            self.assertEqual(result["status"], "failed")
+            self.assertEqual(result["error"], "--bundle requires a distribution path")
 
     def testToolchainProbeFailureInvalidatesPreviousPassingReport(self):
         with (

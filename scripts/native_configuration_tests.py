@@ -4,7 +4,6 @@
 import argparse
 import json
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
@@ -12,7 +11,7 @@ from bootstrap import ROOT, environment
 from configuration_fixture import build, create, podfile, products, simulator_run
 from native_integration import serialize
 from native_supplementary_tests import install
-from reporting import execute
+from reporting import execute, option_value
 from ui_test_fixture import simulator
 
 
@@ -222,6 +221,6 @@ if __name__ == "__main__":
     execute(
         main,
         "native-packaged-configuration.json"
-        if "--bundle" in sys.argv
+        if option_value("--bundle") is not None
         else "native-configuration.json",
     )

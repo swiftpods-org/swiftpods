@@ -10,7 +10,7 @@ from pathlib import Path
 from bootstrap import ROOT, environment
 from layout_fixture import contract, enable
 from native_supplementary_tests import build, install
-from reporting import execute
+from reporting import execute, option_value
 from supplementary_fixture import create
 from ui_test_fixture import (
     build as build_ui,
@@ -256,6 +256,6 @@ if __name__ == "__main__":
     execute(
         main,
         "native-packaged-layout.json"
-        if "--bundle" in __import__("sys").argv
+        if option_value("--bundle") is not None
         else "native-layout.json",
     )

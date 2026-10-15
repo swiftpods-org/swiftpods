@@ -4,13 +4,12 @@
 import argparse
 import json
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
 from bootstrap import ROOT, environment
 from native_supplementary_tests import install
-from reporting import execute
+from reporting import execute, option_value
 from variant_fixture import (
     CONSUMERS,
     build_consumers,
@@ -136,6 +135,6 @@ if __name__ == "__main__":
     execute(
         main,
         "native-packaged-variants.json"
-        if "--bundle" in sys.argv
+        if option_value("--bundle") is not None
         else "native-variants.json",
     )
