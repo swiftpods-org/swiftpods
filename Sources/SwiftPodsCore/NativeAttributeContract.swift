@@ -2,9 +2,31 @@ import Foundation
 
 /// Attribute behaviour shared by native analysis and build planning.
 enum NativeAttributeContract {
-    static let known: Set<String> = ["app_host_name", "authors", "changelog", "cocoapods_version", "compiler_flags", "default_subspecs", "dependencies", "deprecated", "deprecated_in_favor_of", "description", "documentation_url", "exclude_files", "frameworks", "header_dir", "header_mappings_dir", "homepage", "info_plist", "libraries", "license", "module_map", "module_name", "name", "on_demand_resources", "platforms", "pod_target_xcconfig", "prefix_header_contents", "prefix_header_file", "prepare_command", "preserve_paths", "private_header_files", "project_header_files", "public_header_files", "readme", "requires_app_host", "requires_arc", "resource_bundles", "resources", "scheme", "screenshots", "script_phases", "social_media_url", "source", "source_files", "static_framework", "summary", "swift_versions", "test_type", "user_target_xcconfig", "vendored_frameworks", "vendored_libraries", "version", "weak_frameworks", "xcconfig"]
-    static let inherited: Set<String> = ["authors", "changelog", "cocoapods_version", "compiler_flags", "default_subspecs", "dependencies", "deprecated", "deprecated_in_favor_of", "description", "documentation_url", "frameworks", "header_dir", "header_mappings_dir", "homepage", "libraries", "license", "module_map", "module_name", "platforms", "pod_target_xcconfig", "prefix_header_contents", "prefix_header_file", "prepare_command", "readme", "requires_arc", "screenshots", "social_media_url", "source", "static_framework", "summary", "swift_versions", "user_target_xcconfig", "version", "weak_frameworks", "xcconfig"]
-    static let arrays: Set<String> = ["compiler_flags", "default_subspecs", "exclude_files", "frameworks", "libraries", "preserve_paths", "private_header_files", "project_header_files", "public_header_files", "resources", "screenshots", "script_phases", "source_files", "swift_versions", "vendored_frameworks", "vendored_libraries", "weak_frameworks"]
+    static let known: Set<String> = [
+        "app_host_name", "authors", "changelog", "cocoapods_version", "compiler_flags", "default_subspecs",
+        "dependencies", "deprecated", "deprecated_in_favor_of", "description", "documentation_url", "exclude_files",
+        "frameworks", "header_dir", "header_mappings_dir", "homepage", "info_plist", "libraries", "license",
+        "module_map", "module_name", "name", "on_demand_resources", "platforms", "pod_target_xcconfig",
+        "prefix_header_contents", "prefix_header_file", "prepare_command", "preserve_paths", "private_header_files",
+        "project_header_files", "public_header_files", "readme", "requires_app_host", "requires_arc",
+        "resource_bundles", "resources", "scheme", "screenshots", "script_phases", "social_media_url", "source",
+        "source_files", "static_framework", "summary", "swift_versions", "test_type", "user_target_xcconfig",
+        "vendored_frameworks", "vendored_libraries", "version", "weak_frameworks", "xcconfig",
+    ]
+    static let inherited: Set<String> = [
+        "authors", "changelog", "cocoapods_version", "compiler_flags", "default_subspecs", "dependencies", "deprecated",
+        "deprecated_in_favor_of", "description", "documentation_url", "frameworks", "header_dir", "header_mappings_dir",
+        "homepage", "libraries", "license", "module_map", "module_name", "platforms", "pod_target_xcconfig",
+        "prefix_header_contents", "prefix_header_file", "prepare_command", "readme", "requires_arc", "screenshots",
+        "social_media_url", "source", "static_framework", "summary", "swift_versions", "user_target_xcconfig",
+        "version", "weak_frameworks", "xcconfig",
+    ]
+    static let arrays: Set<String> = [
+        "compiler_flags", "default_subspecs", "exclude_files", "frameworks", "libraries", "preserve_paths",
+        "private_header_files", "project_header_files", "public_header_files", "resources", "screenshots",
+        "script_phases", "source_files", "swift_versions", "vendored_frameworks", "vendored_libraries",
+        "weak_frameworks",
+    ]
     static let types: [String: Set<String>] = [
         "app_host_name": ["String"],
         "authors": ["Array", "Hash", "String"],
@@ -58,6 +80,6 @@ enum NativeAttributeContract {
         "vendored_libraries": ["Array", "String"],
         "version": ["String"],
         "weak_frameworks": ["Array", "String"],
-        "xcconfig": ["Hash", "String"]
+        "xcconfig": ["Hash", "String"],
     ]
 }

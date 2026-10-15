@@ -15,17 +15,28 @@ enum NativeFileSelection {
         var result = Set<URL>()
         let extensions = headersOnly ? headers : headers.union(sources)
         for pattern in nativeStrings(patterns) {
-        for path in try nativeGlob(pattern, root: root) {
-            if (try? path.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
-                let relative = path.path == root.standardizedFileURL.path ? "." : String(path.path.dropFirst(root.standardizedFileURL.path.count + 1))
-                guard relative.caseInsensitiveCompare(pattern.trimmingCharacters(in: CharacterSet(charactersIn: "/"))) == .orderedSame else { continue }
-                for child in try FileManager.default.contentsOfDirectory(at: path, includingPropertiesForKeys: [.isRegularFileKey]) {
-                    try NativeCancellation.check()
-                    guard extensions.contains(child.pathExtension.lowercased()) else { continue }
-                    if (try? child.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true { result.insert(child.standardizedFileURL) }
+            for path in try nativeGlob(pattern, root: root) {
+                if (try? path.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
+                    let relative =
+                        path.path == root.standardizedFileURL.path
+                        ? "." : String(path.path.dropFirst(root.standardizedFileURL.path.count + 1))
+                    guard
+                        relative.caseInsensitiveCompare(pattern.trimmingCharacters(in: CharacterSet(charactersIn: "/")))
+                            == .orderedSame
+                    else { continue }
+                    for child in try FileManager.default.contentsOfDirectory(
+                        at: path, includingPropertiesForKeys: [.isRegularFileKey])
+                    {
+                        try NativeCancellation.check()
+                        guard extensions.contains(child.pathExtension.lowercased()) else { continue }
+                        if (try? child.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true {
+                            result.insert(child.standardizedFileURL)
+                        }
+                    }
+                } else {
+                    result.insert(path)
                 }
-            } else { result.insert(path) }
-        }
+            }
         }
         return result.sorted { $0.path < $1.path }
     }

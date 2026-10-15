@@ -8,31 +8,46 @@ struct NativeScriptPhase {
     let object: [String: Any]
 
     init(_ value: [String: Any]) throws {
-        let strings = ["shell_path": "shellPath", "dependency_file": "dependencyFile", "always_out_of_date": "alwaysOutOfDate"]
-        let paths = ["input_files": "inputPaths", "output_files": "outputPaths", "input_file_lists": "inputFileListPaths", "output_file_lists": "outputFileListPaths"]
-        let allowed = Set(["name", "script", "execution_position", "show_env_vars_in_log"] + Array(strings.keys) + Array(paths.keys))
+        let strings = [
+            "shell_path": "shellPath", "dependency_file": "dependencyFile", "always_out_of_date": "alwaysOutOfDate",
+        ]
+        let paths = [
+            "input_files": "inputPaths", "output_files": "outputPaths", "input_file_lists": "inputFileListPaths",
+            "output_file_lists": "outputFileListPaths",
+        ]
+        let allowed = Set(
+            ["name", "script", "execution_position", "show_env_vars_in_log"] + Array(strings.keys) + Array(paths.keys))
         guard Set(value.keys).isSubset(of: allowed), let name = value["name"] as? String, !name.isEmpty,
-              !name.contains("\0"), let script = value["script"] as? String, !script.contains("\0") else {
-            throw Diagnostic("SP-SCRIPT-SCHEMA", stage: "integrate", "Script phase requires name/script strings and known options")
+            !name.contains("\0"), let script = value["script"] as? String, !script.contains("\0")
+        else {
+            throw Diagnostic(
+                "SP-SCRIPT-SCHEMA", stage: "integrate", "Script phase requires name/script strings and known options")
         }
         self.name = name
         position = value["execution_position"] as? String ?? "any"
-        guard (value["execution_position"] == nil || value["execution_position"] is String),
-              ["before_compile", "after_compile", "before_headers", "after_headers", "any"].contains(position) else {
-            throw Diagnostic("SP-SCRIPT-POSITION", stage: "integrate", "Invalid execution position for script phase \(name)")
+        guard value["execution_position"] == nil || value["execution_position"] is String,
+            ["before_compile", "after_compile", "before_headers", "after_headers", "any"].contains(position)
+        else {
+            throw Diagnostic(
+                "SP-SCRIPT-POSITION", stage: "integrate", "Invalid execution position for script phase \(name)")
         }
-        var object: [String: Any] = ["isa": "PBXShellScriptBuildPhase", "name": Self.prefix + name,
+        var object: [String: Any] = [
+            "isa": "PBXShellScriptBuildPhase", "name": Self.prefix + name,
             "buildActionMask": "2147483647", "runOnlyForDeploymentPostprocessing": "0", "files": [],
-            "shellPath": "/bin/sh", "shellScript": script]
+            "shellPath": "/bin/sh", "shellScript": script,
+        ]
         for (key, field) in strings where value[key] != nil && !(value[key] is NSNull) {
-            guard let text = value[key] as? String, !text.contains("\0"), key != "always_out_of_date" || ["0", "1"].contains(text) else {
+            guard let text = value[key] as? String, !text.contains("\0"),
+                key != "always_out_of_date" || ["0", "1"].contains(text)
+            else {
                 throw Diagnostic("SP-SCRIPT-SCHEMA", stage: "integrate", "Invalid \(key) for script phase \(name)")
             }
             object[field] = text
         }
         for (key, field) in paths {
             guard value[key] == nil || value[key] is NSNull || value[key] is [String] else {
-                throw Diagnostic("SP-SCRIPT-SCHEMA", stage: "integrate", "\(key) must be an array of paths for script phase \(name)")
+                throw Diagnostic(
+                    "SP-SCRIPT-SCHEMA", stage: "integrate", "\(key) must be an array of paths for script phase \(name)")
             }
             let entries = value[key] as? [String] ?? []
             guard entries.allSatisfy({ !$0.contains("\0") && !$0.contains("\n") && !$0.contains("\r") }) else {
@@ -42,7 +57,9 @@ struct NativeScriptPhase {
         }
         if let flag = value["show_env_vars_in_log"], !(flag is NSNull) {
             guard let text = flag as? String, ["0", "1"].contains(text) else {
-                throw Diagnostic("SP-SCRIPT-SCHEMA", stage: "integrate", "show_env_vars_in_log must be '0' or '1' for script phase \(name)")
+                throw Diagnostic(
+                    "SP-SCRIPT-SCHEMA", stage: "integrate",
+                    "show_env_vars_in_log must be '0' or '1' for script phase \(name)")
             }
             if text == "0" { object["showEnvVarsInLog"] = "0" }
         }
@@ -53,7 +70,8 @@ struct NativeScriptPhase {
         guard let value, !(value is NSNull) else { return [] }
         if let phase = value as? [String: Any] { return [try Self(phase)] }
         guard let phases = value as? [[String: Any]] else {
-            throw Diagnostic("SP-SCRIPT-SCHEMA", stage: "integrate", "Script phases must be a hash or an array of hashes")
+            throw Diagnostic(
+                "SP-SCRIPT-SCHEMA", stage: "integrate", "Script phases must be a hash or an array of hashes")
         }
         return try phases.map(Self.init)
     }
@@ -74,10 +92,13 @@ struct NativeScriptPhase {
             if !order.contains(id) { order.append(id) }
             guard phase.position != "any" else { continue }
             let type = phase.position.hasSuffix("headers") ? "PBXHeadersBuildPhase" : "PBXSourcesBuildPhase"
-            guard let anchor = order.firstIndex(where: { graph.objects[$0]?["isa"] as? String == type }), let index = order.firstIndex(of: id) else { continue }
+            guard let anchor = order.firstIndex(where: { graph.objects[$0]?["isa"] as? String == type }),
+                let index = order.firstIndex(of: id)
+            else { continue }
             let before = phase.position.hasPrefix("before_")
             if (before && index > anchor) || (!before && index < anchor) {
-                order.remove(at: index); order.insert(id, at: anchor)
+                order.remove(at: index)
+                order.insert(id, at: anchor)
             }
         }
         graph.objects[target]?["buildPhases"] = order
