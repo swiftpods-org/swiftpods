@@ -35,7 +35,7 @@ def main():
         contract(group / 'mac', ['SpecKit', 'TestHelper', 'AppHelper']); contract(group / 'ios', ['UIWidget'])
         assert 'testScopedDependenciesAndResources' in build(group / 'mac', group, 'SpecKit-Unit-Tests', 'test')
         build(group / 'mac', group, 'SpecKit-Example')
-        app = next(group.rglob('SpecKit-Example.app/Contents/MacOS/SpecKit-Example'))
+        app = next((group / 'DerivedData/Build/Products').rglob('SpecKit-Example.app/Contents/MacOS/SpecKit-Example'))
         assert subprocess.check_output([str(app)], text=True).strip() == 'app-value=16 resources=ok'
     with simulator(parent) as device:
         for name in ['native', 'reference']:

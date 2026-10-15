@@ -40,7 +40,7 @@ def main():
         assert 'SWIFTPODS_INSTALLATION_RESULT_MARKER' in (work / 'Pods/Pods.xcodeproj/project.pbxproj').read_text()
         assert build(work, parent, 'SpecKit-Unit-Tests', 'test').find('** TEST SUCCEEDED **') >= 0
         build(work, parent, 'SpecKit-Example')
-        candidates = list(parent.rglob('SpecKit-Example.app/Contents/MacOS/SpecKit-Example'))
+        candidates = list((parent / 'DerivedData/Build/Products').rglob('SpecKit-Example.app/Contents/MacOS/SpecKit-Example'))
         assert len(candidates) == 1, candidates
         assert subprocess.check_output([str(candidates[0])], text=True).strip() == 'app-value=16 resources=ok'
     report = {'status': 'passed', 'engine': 'swift', 'reference': '1.17.0', 'fixture': str(base),
