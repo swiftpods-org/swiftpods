@@ -33,10 +33,21 @@ final class NativePBX {
         original = try FileFingerprint.tree(url)
     }
     static func serialize(_ value: Any, level: Int = 0) -> String {
+        let indentation = String(repeating: "\t", count: level)
+        let childIndentation = indentation + "\t"
         if let dictionary = value as? [String: Any] {
-            return "{\n" + dictionary.keys.sorted().map { String(repeating: "\t", count: level + 1) + quote($0) + " = " + serialize(dictionary[$0]!, level: level + 1) + ";" }.joined(separator: "\n") + "\n" + String(repeating: "\t", count: level) + "}"
+            let entries: [String] = dictionary.keys.sorted().map { key in
+                let serialized = serialize(dictionary[key]!, level: level + 1)
+                return "\(childIndentation)\(quote(key)) = \(serialized);"
+            }
+            return "{\n\(entries.joined(separator: "\n"))\n\(indentation)}"
         }
-        if let array = value as? [Any] { return "(\n" + array.map { String(repeating: "\t", count: level + 1) + serialize($0, level: level + 1) + "," }.joined(separator: "\n") + "\n" + String(repeating: "\t", count: level) + ")" }
+        if let array = value as? [Any] {
+            let entries: [String] = array.map { element in
+                "\(childIndentation)\(serialize(element, level: level + 1)),"
+            }
+            return "(\n\(entries.joined(separator: "\n"))\n\(indentation))"
+        }
         return quote(String(describing: value))
     }
     private static func quote(_ value: String) -> String {
@@ -413,14 +424,19 @@ final class NativeXcode {
                 }
                 graph.objects[phase]?["files"] = files
             }
+            let libraryDirectories = librarySearchDirectories(roots, platform: platform)
+            let frameworkDirectories = sdks.filter { !$0.isXCFramework && $0.isFramework }.map { $0.url.deletingLastPathComponent().path }
+            let staticDirectories = sdks.filter { !$0.isXCFramework && !$0.isFramework }.map { $0.url.deletingLastPathComponent().path }
+            let sdkHeaderDirectories = sdks.filter { !$0.isXCFramework }.compactMap { $0.slices.first?.headers?.path }
+            let searchPaths: [String: [String]] = [
+                "FRAMEWORK_SEARCH_PATHS": ["$(BUILT_PRODUCTS_DIR)"] + libraryDirectories + frameworkDirectories,
+                "LIBRARY_SEARCH_PATHS": ["$(BUILT_PRODUCTS_DIR)"] + libraryDirectories + staticDirectories,
+                "SWIFT_INCLUDE_PATHS": libraryDirectories,
+                "HEADER_SEARCH_PATHS": headerSettings(roots, platform: platform) + sdkHeaderDirectories
+            ]
             for config in configurations[label].map({ Array($0.values) }) ?? [] {
                 var settings = graph.objects[config]?["buildSettings"] as? [String: Any] ?? [:]
-                for (key, paths) in [
-                    "FRAMEWORK_SEARCH_PATHS": ["$(BUILT_PRODUCTS_DIR)"] + librarySearchDirectories(roots, platform: platform) + sdks.filter { !$0.isXCFramework && $0.isFramework }.map { $0.url.deletingLastPathComponent().path },
-                    "LIBRARY_SEARCH_PATHS": ["$(BUILT_PRODUCTS_DIR)"] + librarySearchDirectories(roots, platform: platform) + sdks.filter { !$0.isXCFramework && !$0.isFramework }.map { $0.url.deletingLastPathComponent().path },
-                    "SWIFT_INCLUDE_PATHS": librarySearchDirectories(roots, platform: platform),
-                    "HEADER_SEARCH_PATHS": headerSettings(roots, platform: platform) + sdks.filter { !$0.isXCFramework }.compactMap { $0.slices.first?.headers?.path }
-                ] {
+                for (key, paths) in searchPaths {
                     var values = nativeStrings(settings[key]); if values.isEmpty { values = ["$(inherited)"] }
                     for path in paths.map(NativeBuildSetting.path) where !values.contains(path) { values.append(path) }; settings[key] = values
                 }
