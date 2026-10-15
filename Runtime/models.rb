@@ -170,7 +170,7 @@ module Pod
     PATH_ARRAYS = %w[source_files headers public_headers private_headers project_headers arc_source_files non_arc_source_files other_source_files resources preserve_paths vendored_frameworks vendored_libraries resource_bundle_files on_demand_resources_files vendored_frameworks_headers vendored_xcframeworks vendored_static_frameworks vendored_dynamic_frameworks vendored_static_xcframeworks vendored_dynamic_xcframeworks vendored_static_libraries vendored_dynamic_libraries vendored_static_artifacts vendored_dynamic_artifacts specs docs].freeze
     def initialize(path_list, consumer)
       raise Informative, 'Attempt to initialize File Accessor without a specification consumer.' unless consumer
-      @path_list = path_list.respond_to?(:root) ? path_list : OpenStruct.new(root: Pathname(path_list))
+      @path_list = path_list.respond_to?(:root) ? path_list : SwiftPods::Record.new(root: Pathname(path_list))
       @spec_consumer = consumer
     end
     def root = Pathname(path_list.root)
@@ -269,7 +269,7 @@ end
 
 class Pod::Installer
   def installation_options = @installation_options ||= podfile.installation_options
-  def analysis_result = @analysis_result ||= OpenStruct.new(pod_targets: pod_targets, targets: aggregate_targets, specifications: sandbox.specifications.values)
+  def analysis_result = @analysis_result ||= SwiftPods::Record.new(pod_targets: pod_targets, targets: aggregate_targets, specifications: sandbox.specifications.values)
   def target_installation_results
     @target_installation_results ||= TargetInstallationResults.new({}, {})
     @target_installation_results.pod_target_installation_results.replace(pod_targets.to_h { |target| [target.name, target.installation_result] })
@@ -317,7 +317,6 @@ class Pod::Sandbox
   def manifest = manifest_path.file? ? Pod::Lockfile.from_file(manifest_path) : nil
   def specifications_root = root + 'Local Podspecs'
   def specification_path(name) = specifications_root + (name.split('/').first + '.podspec.json')
-  def private_headers = OpenStruct.new(root: root + 'Headers/Private')
 end
 
 class Pod::Lockfile

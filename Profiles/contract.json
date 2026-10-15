@@ -1502,6 +1502,9 @@
       },
       "Podfile.replace_duplicate_pre_install": {
         "report": "native-compatibility-reference.json"
+      },
+      "HookValues.unknown_getter_rejected": {
+        "report": "native-compatibility-reference.json"
       }
     }
   },

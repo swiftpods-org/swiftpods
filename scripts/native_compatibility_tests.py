@@ -24,6 +24,21 @@ pre_install do |installer|
   values['root'] = accessor.root.basename.to_s
   values['spec'] = accessor.spec.name
   values['platform_name'] = accessor.platform_name.to_s
+  values['unknown_getters_rejected'] = [installer.analysis_result, installer.sandbox.public_headers, accessor.path_list].all? do |value|
+    begin
+      value.public_send(:swiftpods_unknown_getter)
+      false
+    rescue NoMethodError
+      true
+    end
+  end
+  begin
+    installer.sandbox.private_headers
+    values['unknown_getters_rejected'] = false
+  rescue NoMethodError
+    # The baseline has no Sandbox.private_headers operation.
+  end
+  raise 'Unknown public hook getter silently succeeded' unless values['unknown_getters_rejected']
   File.write('file-api.json', JSON.pretty_generate(values))
   created = Xcodeproj::Project.new(File.join(Dir.pwd, 'Hook.xcodeproj'))
   target = created.new_target(:static_library, 'Hook', :osx, '13.0')
@@ -219,6 +234,7 @@ def main():
     cases = ['FileAccessor.' + name for name in ['source_files', 'headers', 'public_headers', 'private_headers', 'project_headers', 'arc_source_files', 'non_arc_source_files', 'resources', 'resource_bundles', 'resource_bundle_files', 'on_demand_resources', 'on_demand_resources_files', 'root', 'spec', 'platform_name']]
     cases += ['Project.' + name for name in ['new', 'new_target', 'new_group', 'new_file', 'save', 'unknown_setter_rejected']]
     cases += duplicate_cases
+    cases += ['HookValues.unknown_getter_rejected']
     report = {'status': 'passed', 'engine': 'swift', 'fixture': str(parent), 'verified': verified, 'verified_cases': cases, 'unverified': ['arbitrary private plugin APIs', 'remote authenticated sources']}
     name = 'native-compatibility-reference.json' if args.gem_home else 'native-compatibility.json'
     if args.gem_home: report['reference'] = '1.17.0'

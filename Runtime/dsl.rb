@@ -9,6 +9,13 @@ require 'ostruct'
 
 module SwiftPods
   class Unsupported < StandardError; end
+  class Record
+    def initialize(values)
+      @values = values.transform_keys(&:to_sym).freeze
+      @values.each_key { |name| define_singleton_method(name) { @values.fetch(name) } }
+    end
+    def to_h = @values.dup
+  end
   module EngineIsolation
     def require(path)
       if %w[xcodeproj xcodeproj/project cocoapods cocoapods-core cocoapods/version cocoapods-core/version cocoapods-core/platform cocoapods-core/requirement cocoapods-core/specification cocoapods-core/specification/dsl cocoapods/target/build_type cocoapods/installer cocoapods/hooks_manager cocoapods/installer/base_install_hooks_context cocoapods/installer/pre_install_hooks_context cocoapods/installer/post_install_hooks_context cocoapods/installer/source_provider_hooks_context].include?(path.to_s)
@@ -142,7 +149,7 @@ module Pod
     def initialize(root); @root = Pathname(root); @directories = {}; @specifications = {}; end
     def pod_dir(name) = Pathname(@directories[name] || (@root + name).to_s)
     def specification(name) = @specifications[name]
-    def public_headers = OpenStruct.new(:root => @root + 'Headers/Public')
+    def public_headers = @public_headers ||= SwiftPods::Record.new(:root => @root + 'Headers/Public')
   end
   class Installer
     attr_accessor :pods_project, :aggregate_targets, :pod_targets, :sandbox, :podfile, :generated_projects
