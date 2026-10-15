@@ -19,7 +19,8 @@ Compilation finishes before fixture execution; the debug executable must not be
 relinked while fixtures run. A source edit invalidates the aggregate.
 
 XCTest build products use an owned system temporary directory, with a fixture
-`DerivedData` symlink for inspection during the run. This avoids test runners
+`DerivedData` symlink for inspection during the run. Explicit `SYMROOT` and
+`OBJROOT` arguments keep project-level overrides in that same directory. This avoids test runners
 blocking while opening libraries under a privacy-protected Desktop when the Mac
 is locked. Project sources stay in the fixture; command and XCTest diagnostic
 logs are retained there before temporary products are cleaned up. Timed-out or

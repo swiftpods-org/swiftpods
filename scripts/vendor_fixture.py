@@ -24,6 +24,14 @@ def fixture_derived_data(parent):
     return Path(_derived_data[parent].name)
 
 
+def fixture_build_arguments(parent):
+    directory = fixture_derived_data(parent)
+    # A project's explicit SYMROOT can otherwise escape -derivedDataPath.
+    return ['-derivedDataPath', directory,
+            'SYMROOT=' + str(directory / 'Build/Products'),
+            'OBJROOT=' + str(directory / 'Build/Intermediates.noindex')]
+
+
 def _cleanup_derived_data():
     for parent, temporary in _derived_data.items():
         diagnostics = Path(temporary.name) / 'Logs/Test'

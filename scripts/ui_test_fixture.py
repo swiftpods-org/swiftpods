@@ -8,7 +8,7 @@ import subprocess
 from bootstrap import ROOT
 from native_integration import project
 from script_phase_fixture import ruby
-from vendor_fixture import fixture_derived_data, run
+from vendor_fixture import fixture_build_arguments, run
 
 
 APP = '''import UIKit
@@ -194,7 +194,7 @@ def build(work, parent, scheme, device=None, action='build-for-testing', configu
     # the installed Metal toolchain, which has no Swift runtime libraries.
     swift = Path(subprocess.check_output(['xcrun', '--find', 'swiftc'], text=True).strip())
     arguments = ['xcodebuild', '-project', 'Pods/Pods.xcodeproj', '-scheme', scheme,
-                 '-configuration', configuration, '-destination', destination, '-derivedDataPath', fixture_derived_data(parent),
+                 '-configuration', configuration, '-destination', destination, *fixture_build_arguments(parent),
                  '-parallel-testing-enabled', 'NO', 'CODE_SIGNING_ALLOWED=YES', 'CODE_SIGN_IDENTITY=-',
                  'TOOLCHAIN_DIR=' + str(swift.parents[2]), action]
     prefix = scheme + '-' + configuration + '-' + action
