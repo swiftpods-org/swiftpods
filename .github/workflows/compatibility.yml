@@ -25,10 +25,15 @@ jobs:
           python-version: '3.13.16'
       - name: Install external Ruby
         run: |
+          brew update
           brew install ruby@3.4 cmake subversion mercurial
+          brew upgrade ruby@3.4
           echo "SWIFTPODS_RUBY=$(brew --prefix ruby@3.4)/bin/ruby" >> "$GITHUB_ENV"
       - name: Prepare native DSL adapter
-        run: python3 scripts/bootstrap.py
+        run: |
+          set -o pipefail
+          mkdir -p test-results
+          python3 scripts/bootstrap.py 2>&1 | tee test-results/bootstrap.log
       - name: Run compatibility and relocation corpus
         run: python3 scripts/check.py --full --package dist/SwiftPods-${{ matrix.runner }}
       - name: Install and test the generated Homebrew formula

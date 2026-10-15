@@ -40,7 +40,9 @@ jobs:
       - run: /usr/bin/ditto -x -k .build/download/producer.zip .build/imported
       - name: Install external Ruby
         run: |
+          brew update
           brew install ruby@3.4
+          brew upgrade ruby@3.4
           echo "SWIFTPODS_RUBY=$(brew --prefix ruby@3.4)/bin/ruby" >> "$GITHUB_ENV"
       - run: python3 scripts/bootstrap.py
       - run: swift build -Xswiftc -warnings-as-errors

@@ -30,7 +30,9 @@ jobs:
           python3 -c 'import json, os; assert json.load(open("Profiles/baseline.json"))["swiftpods_version"] == os.environ["RELEASE_VERSION"]'
       - name: Install external Ruby
         run: |
+          brew update
           brew install ruby@3.4 cmake subversion mercurial
+          brew upgrade ruby@3.4
           echo "SWIFTPODS_RUBY=$(brew --prefix ruby@3.4)/bin/ruby" >> "$GITHUB_ENV"
       - run: python3 scripts/bootstrap.py
       - name: Import explicitly configured release credentials
