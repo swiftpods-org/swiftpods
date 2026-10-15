@@ -46,7 +46,11 @@ def select_asset(manifest, version, architecture=None, macos=None):
     macos = macos or platform.mac_ver()[0]
     if not macos:
         raise RuntimeError("SwiftPods requires macOS")
-    numbers = lambda value: tuple(map(int, value.split(".")))
+
+    def numbers(value):
+        components = tuple(map(int, value.split(".")))
+        return components + (0,) * max(0, 3 - len(components))
+
     candidates = [
         asset
         for asset in manifest["assets"]

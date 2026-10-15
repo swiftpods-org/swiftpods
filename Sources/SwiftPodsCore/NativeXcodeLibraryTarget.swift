@@ -1,0 +1,325 @@
+import Foundation
+
+extension NativeXcode {
+    /// Builds one library variant and its headers, resources and binary dependencies.
+    func generateLibraryTarget(_ variant: NativePodVariant) throws {
+        selectVariant(variant)
+        let platform = variant.platform
+        let name = variant.root
+        guard let spec = resolution.specs[name], let directory = spec.directory else { return }
+        let requests = try variant.names.map {
+            try NativeDependency(["name": $0], platform: platform, deployment: variant.consumerDeployment)
+        }
+        let attributes = try NativeVariantPlan.attributes(spec, names: variant.names, platform: platform)
+        let targetName = variant.label
+        var module = spec.moduleName
+        if attributes["module_name"] == nil, module.first?.isNumber == true { module = "_" + module }
+        guard module.range(of: #"\A[A-Za-z_][A-Za-z0-9_]*\z"#, options: .regularExpression) != nil else {
+            throw Diagnostic("SP-XCODE-MODULE", stage: "integrate", "Invalid module name", file: name)
+        }
+        let mode = variant.mode
+        let useFramework = mode != "library"
+        let dynamic = mode == "dynamic"
+        let minimum =
+            (attributes["platforms"] as? [String: Any])?[platform] as? String ?? attributes["deployment_target"]
+            as? String ?? variant.consumerDeployment
+        var settings = baseSettings(platform: platform, deployment: minimum)
+        settings["HEADERMAP_INCLUDES_PROJECT_HEADERS"] = "NO"
+        if variant.scoped {
+            settings["CONFIGURATION_BUILD_DIR"] =
+                "$(BUILD_DIR)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)/" + targetName
+        }
+        if let arc = attributes["requires_arc"] as? Bool { settings["CLANG_ENABLE_OBJC_ARC"] = arc ? "YES" : "NO" }
+        settings.merge(NativeSpec.xcconfig(attributes, key: "pod_target_xcconfig")) { _, new in new }
+        if variant.scoped && dynamic {
+            // Xcode's shared intermediate TBD directory uses the module
+            // name, so its stub can shadow a different static variant.
+            settings["GENERATE_INTERMEDIATE_TEXT_BASED_STUBS"] = "NO"
+            settings["EAGER_LINKING"] = "NO"
+        }
+        settings["PRODUCT_NAME"] = module
+        settings["PRODUCT_MODULE_NAME"] = module
+        settings["PODS_ROOT"] = project.appendingPathComponent("Pods").path
+        settings["PODS_PODFILE_DIR_PATH"] = project.path
+        settings["PODS_TARGET_SRCROOT"] = directory.path
+        settings["PRODUCT_BUNDLE_IDENTIFIER"] = "org.swiftpods." + module.replacingOccurrences(of: "_", with: "-")
+        settings["SWIFT_VERSION"] = variant.swiftVersion ?? "5.0"
+        if inhibitWarnings(variant) {
+            settings["GCC_WARN_INHIBIT_ALL_WARNINGS"] = "YES"
+            settings["SWIFT_SUPPRESS_WARNINGS"] = "YES"
+        }
+        if manifest["set_arc_compatibility_flag"] as? Bool == true, attributes["requires_arc"] as? Bool != false {
+            settings["OTHER_LDFLAGS"] = ["$(inherited)", "-fobjc-arc"]
+        }
+        if useFramework { settings["MACH_O_TYPE"] = dynamic ? "mh_dylib" : "staticlib" }
+        if dynamic { settings["LD_DYLIB_INSTALL_NAME"] = "@rpath/$(EXECUTABLE_PATH)" }
+        if attributes["compiler_flags"] != nil {
+            settings["OTHER_CFLAGS"] =
+                "$(inherited) " + nativeStrings(attributes["compiler_flags"]).joined(separator: " ")
+        }
+        let all = try NativeFileSelection.sourceFiles(attributes, root: directory)
+        let supplementarySources = try variant.supplementary.flatMap { request -> [URL] in
+            let own = try spec.supplementaryAttributes(request.name, platform: platform)
+            return try NativeFileSelection.sourceFiles(own, root: directory)
+        }
+        let modular = requiresModule(variant, attributes: attributes, sources: all + supplementarySources)
+        settings["DEFINES_MODULE"] = modular ? "YES" : "NO"
+        let rules = try NativeFileRules(attributes, root: directory, files: all)
+        try compileSettings(attributes, root: directory, label: targetName, settings: &settings)
+        var sources: [String] = []
+        var headers: [String] = []
+        for source in all {
+            let reference = file(source.path)
+            if NativeFileSelection.headers.contains(source.pathExtension) {
+                // Archives expose headers through the sandbox's mappings;
+                // a Headers phase would flatten them into usr/local/include.
+                if useFramework {
+                    headers.append(buildFile(reference, target: targetName, settings: rules.headerSettings(source)))
+                }
+            } else if NativeFileSelection.sources.contains(source.pathExtension) {
+                sources.append(buildFile(reference, target: targetName, settings: rules.sourceSettings(source)))
+            }
+        }
+        if sources.isEmpty {
+            let dummy = project.appendingPathComponent("Pods/Target Support Files/" + targetName + "/dummy.m")
+            try FileManager.default.createDirectory(
+                at: dummy.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data("void swiftpods_\(module)_dummy(void) {}\n".utf8).writeIfChanged(to: dummy)
+            sources.append(buildFile(file(dummy.path), target: targetName))
+        }
+        let linkedFrameworks = nativeStrings(attributes["frameworks"])
+        let weakFrameworks = nativeStrings(attributes["weak_frameworks"])
+        var frameworks = (linkedFrameworks + weakFrameworks).map { framework in
+            buildFile(
+                file(
+                    "System/Library/Frameworks/" + framework + ".framework", type: "wrapper.framework",
+                    sourceTree: "SDKROOT"), target: targetName,
+                settings: weakFrameworks.contains(framework) ? ["ATTRIBUTES": ["Weak"]] : [:])
+        }
+        let sdks = try loadVendoredSDKs(attributes, root: directory, platform: platform)
+        for sdk in sdks {
+            frameworks.append(buildFile(file(sdk.url.path, type: sdk.fileType), target: targetName))
+        }
+        vendorSDKs[variantKey(name, platform)] = sdks
+        settings["OTHER_LDFLAGS"] =
+            ["$(inherited)"] + nativeStrings(settings["OTHER_LDFLAGS"])
+            + NativeBuildSettings.libraryFlags(
+                nativeStrings(attributes["libraries"]), sources: all, settings: settings, linkingWithClang: dynamic)
+        // Recursive pod-root search would expose headers from every
+        // XCFramework slice, bypassing Xcode's destination selection.
+        let headerDirectories = Set(
+            all.filter { NativeFileSelection.headers.contains($0.pathExtension) }.map {
+                $0.deletingLastPathComponent().path
+            }
+        ).sorted()
+        for (key, paths) in [
+            "HEADER_SEARCH_PATHS": [
+                directory.path, project.appendingPathComponent(headerDirectory(name, platform: platform)).path,
+            ] + headerDirectories + sdks.filter { !$0.isXCFramework }.compactMap { $0.slices.first?.headers?.path },
+            "FRAMEWORK_SEARCH_PATHS": sdks.filter { !$0.isXCFramework && $0.isFramework }.map {
+                $0.url.deletingLastPathComponent().path
+            },
+            "LIBRARY_SEARCH_PATHS": sdks.filter { !$0.isXCFramework && !$0.isFramework }.map {
+                $0.url.deletingLastPathComponent().path
+            },
+        ] {
+            var values = nativeStrings(settings[key])
+            if values.isEmpty { values = ["$(inherited)"] }
+            for path in paths.map(NativeBuildSetting.path) where !values.contains(path) { values.append(path) }
+            settings[key] = values
+        }
+        if !useFramework {
+            let publicRoot = project.appendingPathComponent(
+                headerDirectory(name, platform: platform) + "/"
+                    + (try NativeFileRules.headerDirectory(attributes, module: module)))
+            try FileManager.default.createDirectory(at: publicRoot, withIntermediateDirectories: true)
+            let publicHeaders = rules.publicHeaders.sorted { $0.path < $1.path }
+            var destinations = Set<String>()
+            for header in publicHeaders {
+                let relative = try NativeFileRules.headerPath(header, attributes: attributes, root: directory)
+                guard destinations.insert(relative).inserted else {
+                    throw Diagnostic(
+                        "SP-SPEC-HEADER-COLLISION", stage: "integrate",
+                        "Multiple public headers map to " + relative, file: name)
+                }
+                let destination = publicRoot.appendingPathComponent(relative)
+                try FileManager.default.createDirectory(
+                    at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+                if FileManager.default.fileExists(atPath: destination.path) {
+                    try FileManager.default.removeItem(at: destination)
+                }
+                try FileManager.default.createSymbolicLink(at: destination, withDestinationURL: header)
+            }
+            let umbrella = publicRoot.appendingPathComponent(module + "-umbrella.h")
+            let content =
+                "#ifdef __OBJC__\n#import <Foundation/Foundation.h>\n#endif\n"
+                + (try publicHeaders.map {
+                    "#include \"" + (try NativeFileRules.headerPath($0, attributes: attributes, root: directory))
+                        + "\""
+                }).joined(separator: "\n") + "\n"
+            try Data(content.utf8).writeIfChanged(to: umbrella, options: .atomic)
+            let modulemap = publicRoot.appendingPathComponent("module.modulemap")
+            if modular {
+                try Data(
+                    ("module " + module + " { umbrella header \"" + umbrella.lastPathComponent
+                        + "\" export * module * { export * } }\n").utf8
+                ).writeIfChanged(to: modulemap, options: .atomic)
+                if attributes["module_map"] == nil { settings["MODULEMAP_FILE"] = modulemap.path }
+            } else if FileManager.default.fileExists(atPath: modulemap.path) {
+                try FileManager.default.removeItem(at: modulemap)
+            }
+        }
+        if useFramework && attributes["module_map"] == nil {
+            let support = project.appendingPathComponent("Pods/Target Support Files/" + targetName)
+            try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+            let umbrella = support.appendingPathComponent(module + "-umbrella.h")
+            let publicHeaders = rules.publicHeaders.sorted { $0.path < $1.path }
+            let content =
+                "#ifdef __OBJC__\n#import <Foundation/Foundation.h>\n#endif\n"
+                + (try publicHeaders.map {
+                    "#include \"" + (try NativeFileRules.headerPath($0, attributes: attributes, root: directory))
+                        + "\""
+                }).joined(separator: "\n") + "\n"
+            try Data(content.utf8).writeIfChanged(to: umbrella, options: .atomic)
+            headers.append(buildFile(file(umbrella.path), target: targetName, settings: ["ATTRIBUTES": ["Public"]]))
+            let modulemap = support.appendingPathComponent(module + ".modulemap")
+            try Data(
+                ("framework module " + module + " { umbrella header \"" + umbrella.lastPathComponent
+                    + "\" export * module * { export * } }\n").utf8
+            ).writeIfChanged(to: modulemap, options: .atomic)
+            settings["MODULEMAP_FILE"] = modulemap.path
+        }
+        if useFramework, let additional = attributes["info_plist"] as? [String: Any] {
+            let info = project.appendingPathComponent("Pods/Target Support Files/" + targetName + "/Info.plist")
+            try FileManager.default.createDirectory(
+                at: info.deletingLastPathComponent(), withIntermediateDirectories: true)
+            var plist: [String: Any] = [
+                "CFBundleExecutable": "$(EXECUTABLE_NAME)", "CFBundleIdentifier": "$(PRODUCT_BUNDLE_IDENTIFIER)",
+                "CFBundleName": "$(PRODUCT_NAME)", "CFBundlePackageType": "FMWK", "CFBundleVersion": "1",
+                "CFBundleShortVersionString": spec.version.description,
+            ]
+            plist.merge(additional) { _, new in new }
+            try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0).writeIfChanged(
+                to: info, options: .atomic)
+            settings["INFOPLIST_FILE"] = info.path
+            settings["GENERATE_INFOPLIST_FILE"] = "NO"
+        }
+        let product = graph.add(
+            "product:" + targetName,
+            [
+                "isa": "PBXFileReference", "explicitFileType": useFramework ? "wrapper.framework" : "archive.ar",
+                "path": useFramework ? module + ".framework" : "lib" + module + ".a",
+                "sourceTree": "BUILT_PRODUCTS_DIR",
+            ])
+        products.append(product)
+        productRoots[product] = name
+        productPlatforms[product] = platform
+        productVariants[product] = variant.key
+        productBuildPaths[product] =
+            (variant.scoped ? targetName + "/" : "")
+            + (useFramework ? module + ".framework" : "lib" + module + ".a")
+        let list = configList(targetName, settings: settings)
+        let identifier = graph.add(
+            "target:" + targetName,
+            [
+                "isa": "PBXNativeTarget", "name": targetName, "productName": module, "productReference": product,
+                "productType": useFramework
+                    ? "com.apple.product-type.framework" : "com.apple.product-type.library.static",
+                "buildConfigurationList": list,
+                "buildPhases": [
+                    phase("PBXHeadersBuildPhase", target: targetName, files: headers),
+                    phase("PBXSourcesBuildPhase", target: targetName, files: sources),
+                    phase("PBXFrameworksBuildPhase", target: targetName, files: frameworks),
+                ], "buildRules": [], "dependencies": [],
+            ])
+        var scriptRequests = Set<String>()
+        let scripts = try requests.filter { scriptRequests.insert($0.name).inserted }.flatMap {
+            try spec.scriptPhases(for: $0)
+        }
+        NativeScriptPhase.apply(scripts, target: identifier, graph: graph)
+        targetIDs.append(identifier)
+        targetOwners[identifier] = name
+        libraryTargets[variantKey(name, platform)] = identifier
+        if useFramework, attributes["header_mappings_dir"] != nil {
+            try mapFrameworkHeaders(
+                rules.publicHeaders, attributes: attributes, root: directory, target: identifier, label: targetName)
+        }
+        let directPaths = try NativeFileSelection.paths(
+            attributes["resources"], attributes: attributes, root: directory)
+        if dynamic {
+            let refs = try NativeResources.references(directPaths, owner: targetName, graph: graph)
+            if !refs.isEmpty {
+                var phases = graph.objects[identifier]?["buildPhases"] as? [String] ?? []
+                phases.append(
+                    phase(
+                        "PBXResourcesBuildPhase", target: targetName,
+                        files: refs.map { buildFile($0, target: targetName) }))
+                graph.objects[identifier]?["buildPhases"] = phases
+            }
+        } else {
+            staticResources[variantKey(name, platform)] = directPaths
+        }
+        for (bundle, patterns) in attributes["resource_bundles"] as? [String: Any] ?? [:] {
+            guard bundle.range(of: #"\A[A-Za-z0-9_][A-Za-z0-9_.+-]*\z"#, options: .regularExpression) != nil else {
+                throw Diagnostic(
+                    "SP-XCODE-RESOURCE", stage: "integrate", "Invalid resource bundle name", file: name)
+            }
+            let bundleLabel =
+                variant.scoped
+                ? targetName + "-" + bundle : platformNames.count > 1 ? bundle + "-" + platform : bundle
+            let resourceReferences = try NativeResources.references(
+                NativeFileSelection.paths(patterns, attributes: attributes, root: directory), owner: bundleLabel,
+                graph: graph)
+            let resources = resourceReferences.map { buildFile($0, target: bundleLabel) }
+            let bundleProduct = graph.add(
+                "product:" + bundleLabel,
+                [
+                    "isa": "PBXFileReference", "explicitFileType": "wrapper.cfbundle", "path": bundle + ".bundle",
+                    "sourceTree": "BUILT_PRODUCTS_DIR",
+                ])
+            var bundleSettings = baseSettings(platform: platform, deployment: minimum).merging([
+                "PRODUCT_NAME": bundle, "PRODUCT_BUNDLE_IDENTIFIER": "org.swiftpods." + bundle,
+            ]) { _, new in new }
+            if variant.scoped {
+                bundleSettings["CONFIGURATION_BUILD_DIR"] =
+                    "$(BUILD_DIR)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)/" + targetName
+            }
+            let bundleTarget = graph.add(
+                "target:" + bundleLabel,
+                [
+                    "isa": "PBXNativeTarget", "name": bundleLabel, "productName": bundle,
+                    "productReference": bundleProduct, "productType": "com.apple.product-type.bundle",
+                    "buildConfigurationList": configList(bundleLabel, settings: bundleSettings),
+                    "buildPhases": [phase("PBXResourcesBuildPhase", target: bundleLabel, files: resources)],
+                    "buildRules": [], "dependencies": [],
+                ])
+            products.append(bundleProduct)
+            productPlatforms[bundleProduct] = platform
+            targetIDs.append(bundleTarget)
+            targetOwners[bundleTarget] = name
+            self.resources.append(bundle + ".bundle")
+            resourceRoots[bundle + ".bundle"] = name
+            productVariants[bundleProduct] = variant.key
+            resourceBundleTargets[variant.key, default: []].append(bundleTarget)
+            productBuildPaths[bundleProduct] = (variant.scoped ? targetName + "/" : "") + bundle + ".bundle"
+            let resourceDependency = graph.add(
+                "dependency:" + identifier + ":" + bundleTarget,
+                ["isa": "PBXTargetDependency", "target": bundleTarget])
+            var resourceDependencies = graph.objects[identifier]?["dependencies"] as? [String] ?? []
+            resourceDependencies.append(resourceDependency)
+            graph.objects[identifier]?["dependencies"] = resourceDependencies
+            if dynamic {
+                frameworkResourceBundles.insert(bundleProduct)
+                var phases = graph.objects[identifier]?["buildPhases"] as? [String] ?? []
+                let resourcePhase =
+                    phases.first { graph.objects[$0]?["isa"] as? String == "PBXResourcesBuildPhase" }
+                    ?? phase("PBXResourcesBuildPhase", target: targetName, files: [])
+                var files = graph.objects[resourcePhase]?["files"] as? [String] ?? []
+                files.append(buildFile(bundleProduct, target: targetName))
+                graph.objects[resourcePhase]?["files"] = files
+                if !phases.contains(resourcePhase) { phases.append(resourcePhase) }
+                graph.objects[identifier]?["buildPhases"] = phases
+            }
+        }
+    }
+}

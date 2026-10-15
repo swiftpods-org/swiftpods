@@ -1,4 +1,5 @@
 # frozen_string_literal: true
+
 module Pod
   Project = Xcodeproj::Project
   Podfile = SwiftPods::Podfile
@@ -7,14 +8,28 @@ module Pod
     attr_accessor :installation_root, :verbose, :silent
     def self.instance = @instance ||= new
 
-    def initialize; @installation_root = Pathname(Dir.pwd); @verbose = false; @silent = false; end
+    def initialize
+      @installation_root = Pathname(Dir.pwd)
+      @verbose = false
+      @silent = false
+    end
+
     def sandbox_root = installation_root + "Pods"
     def podfile_path = installation_root + "Podfile"
     def lockfile_path = installation_root + "Podfile.lock"
   end
 
   class Dependency
+    SOURCE_OPTIONS = %w[
+      path git branch tag commit podspec http sha1 sha256 type flatten headers svn folder revision hg submodules
+    ].freeze
     attr_reader :name, :requirement, :external_source
+    def self.from_manifest(entry)
+      source = entry.fetch("options", {}).select { |key, _| SOURCE_OPTIONS.include?(key.to_s) }.transform_keys(&:to_sym)
+      arguments = [entry.fetch("name"), *entry.fetch("requirements", [">= 0"])]
+      arguments << source unless source.empty?
+      new(*arguments)
+    end
 
     def initialize(name, *versions)
       @name = name
@@ -24,7 +39,10 @@ module Pod
 
     def root_name = name.split("/").first
     def to_s = name
-    def ==(other) = other.is_a?(Dependency) && name == other.name && requirement == other.requirement && external_source == other.external_source
+
+    def ==(other)
+      other.is_a?(Dependency) && name == other.name && requirement == other.requirement && external_source == other.external_source
+    end
 
     alias eql? ==
 
@@ -34,7 +52,7 @@ end
 
 class SwiftPods::Podfile
   def dependencies
-    to_hash["targets"].flat_map { |target| target.fetch("dependencies", []) }.map { |entry| Pod::Dependency.new(entry["name"], *entry["requirements"]) }.uniq { |dependency| dependency.name }
+    to_hash["targets"].flat_map { |target| target.fetch("dependencies", []) }.map { |entry| Pod::Dependency.from_manifest(entry) }.uniq
   end
 
   def podspec(options = nil)
@@ -47,8 +65,14 @@ class SwiftPods::Podfile
     selection = options[:subspecs] || options[:subspec]
     specs = selection ? Array(selection).map { |name| spec.subspec_by_name(spec.name + "/" + name) } : [spec]
     platform = @stack.reverse.filter_map { |entry| entry["platform"] }.first
-    dependencies = specs.flat_map { |selected| [selected, *selected.recursive_subspecs].flat_map { |child| child.dependencies(platform && platform["name"].to_sym) } }.uniq
-    dependencies.reject { |dependency| dependency.root_name == spec.name }.each { |dependency| pod(dependency.name, *dependency.requirement.requirements.map { |operation, version| operation + " " + version.to_s }) }
+    platform_name = platform && platform["name"].to_sym
+    dependencies = specs.flat_map do |selected|
+      [selected, *selected.recursive_subspecs].flat_map { |child| child.dependencies(platform_name) }
+    end.uniq
+    dependencies.reject { |dependency| dependency.root_name == spec.name }.each do |dependency|
+      requirements = dependency.requirement.requirements.map { |operation, version| operation + " " + version.to_s }
+      pod(dependency.name, *requirements)
+    end
   end
 
   def ensure_bundler!(*versions)

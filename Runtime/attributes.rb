@@ -1,11 +1,16 @@
 # frozen_string_literal: true
+
 module Pod
   class Specification
     module DSL
       class Attribute
         attr_reader :name, :metadata
 
-        def initialize(name, metadata); @name = name.to_sym; @metadata = metadata; end
+        def initialize(name, metadata)
+          @name = name.to_sym
+          @metadata = metadata
+        end
+
         def container = metadata["container"] && Object.const_get(metadata["container"])
         def types = metadata["types"].map { |name| Object.const_get(name) }
         def supported_types = [*types, container].compact
@@ -18,7 +23,9 @@ module Pod
       end
 
       CONTRACT = JSON.parse(File.read(File.join(__dir__, "attributes.json"))).freeze
-      def self.attributes = @attributes ||= CONTRACT.to_h { |name, metadata| [name.to_sym, Attribute.new(name, metadata)] }
+      def self.attributes
+        @attributes ||= CONTRACT.to_h { |name, metadata| [name.to_sym, Attribute.new(name, metadata)] }
+      end
     end
 
     ALIASES = DSL::CONTRACT.filter_map { |name, metadata| [metadata["singular"], name] if metadata["singular"] }.to_h.freeze
@@ -47,8 +54,14 @@ module Pod
       value.to_h { |key, item| [key.to_sym, recursive && item.is_a?(Hash) ? convert_keys_to_symbol(item) : item] }
     end
 
-    def module_name = root.data["module_name"] || root.data["header_dir"] || root.name.gsub(/[^a-zA-Z0-9_]/, "_").sub(/\A(?=[0-9])/, "_")
-    def swift_versions = (Array(root.data["swift_versions"]) + Array(root.data["swift_version"])).map { |value| Version.new(value) }.uniq.sort
+    def module_name
+      root.data["module_name"] || root.data["header_dir"] || root.name.gsub(/[^a-zA-Z0-9_]/, "_").sub(/\A(?=[0-9])/, "_")
+    end
+
+    def swift_versions
+      (Array(root.data["swift_versions"]) + Array(root.data["swift_version"])).map { |value| Version.new(value) }.uniq.sort
+    end
+
     def swift_version = swift_versions.last
 
     def authors
@@ -60,20 +73,31 @@ module Pod
     alias author authors
 
     def license
-      value = root.data["license"]; value.is_a?(String) ? { "type" => value } : value
+      value = root.data["license"]
+      value.is_a?(String) ? { "type" => value } : value
     end
 
     def cocoapods_version = Requirement.new(root.data["cocoapods_version"] || ">= 0")
     def subspecs = children("subspecs") + children("testspecs") + children("appspecs")
 
     def available_platforms
-      values = data["platforms"]
-      values = values.is_a?(Hash) ? values : Array(values).to_h { |name| [name.to_s, nil] }
-      values = parent ? parent.available_platforms.to_h { |platform| [platform.name.to_s, platform.deployment_target&.to_s] } : %w[osx ios tvos visionos watchos].to_h { |name| [name, nil] } if values.empty?
-      values.map { |name, version| Pod::Platform.new(name, version) }
+      names = platform_requirements.keys
+      if names.empty?
+        names = parent ? parent.available_platforms.map(&:name) : %w[osx ios tvos visionos watchos]
+      end
+      names.map { |name| Pod::Platform.new(name, deployment_target(name)) }
     end
 
-    def deployment_target(platform) = available_platforms.find { |value| value.name == platform.to_sym }&.deployment_target&.to_s
+    def platform_requirements
+      values = data["platforms"]
+      values.is_a?(Hash) ? values : Array(values).to_h { |name| [name.to_s, nil] }
+    end
+
+    private :platform_requirements
+
+    def deployment_target(platform)
+      platform_requirements[platform.to_s] || parent&.deployment_target(platform)
+    end
 
     def supported_on_platform?(platform)
       value = platform.is_a?(Pod::Platform) ? platform : Pod::Platform.new(platform)
@@ -89,7 +113,22 @@ module Pod
       platforms.flat_map { |value| consumer(value).dependencies }.uniq
     end
 
-    def all_dependencies(platform = nil) = dependencies(platform) + subspecs.flat_map { |spec| spec.all_dependencies(platform) }
+    def subspec_dependencies(platform = nil)
+      selection = default_subspecs
+      selected = if selection == :none
+          []
+        elsif selection.empty?
+          subspecs.reject(&:non_library_specification?)
+        else
+          selection.map { |subspec| root.subspec_by_name(name + "/" + subspec.to_s) }
+        end
+      selected = selected.select { |spec| spec.supported_on_platform?(platform) } if platform
+      selected.map { |spec| Dependency.new(spec.name, version) }
+    end
+
+    def all_dependencies(platform = nil)
+      dependencies(platform) + subspec_dependencies(platform)
+    end
 
     def to_hash
       value = data.dup
@@ -98,7 +137,8 @@ module Pod
       end
       %w[subspecs testspecs appspecs].each { |key| value.delete(key) }
       { "testspecs" => test_specs, "appspecs" => app_specs, "subspecs" => children("subspecs") }.each { |key, specs| value[key] = specs.map(&:to_hash) unless specs.empty? }
-      value.delete("swift_version"); value["swift_version"] = swift_version.to_s if swift_version
+      value.delete("swift_version")
+      value["swift_version"] = swift_version.to_s if swift_version
       value
     end
 
@@ -127,13 +167,18 @@ module Pod
       end
     end
 
-    def respond_to_missing?(method, _private = false) = DSL.attributes.key?(ALIASES.fetch(method.to_s.delete_suffix("="), method.to_s.delete_suffix("=")).to_sym) || %w[ios osx tvos watchos visionos].include?(method.to_s) || super
+    def respond_to_missing?(method, _private = false)
+      DSL.attributes.key?(ALIASES.fetch(method.to_s.delete_suffix("="), method.to_s.delete_suffix("=")).to_sym) || %w[ios osx tvos watchos visionos].include?(method.to_s) || super
+    end
 
     module DSL
       class PlatformProxy
         attr_reader :spec, :platform
 
-        def initialize(spec, platform); @spec = spec; @platform = platform; end
+        def initialize(spec, platform)
+          @spec = spec
+          @platform = platform
+        end
 
         def deployment_target=(value)
           (spec.data["platforms"] ||= {})[platform.to_s] = value
@@ -159,8 +204,17 @@ module Pod
     end
 
     class Consumer
-      def pod_target_xcconfig = merge(effective(spec, DSL.attributes.fetch(:xcconfig)), effective(spec, DSL.attributes.fetch(:pod_target_xcconfig)), DSL.attributes.fetch(:pod_target_xcconfig)) || {}
-      def user_target_xcconfig = merge(effective(spec, DSL.attributes.fetch(:xcconfig)), effective(spec, DSL.attributes.fetch(:user_target_xcconfig)), DSL.attributes.fetch(:user_target_xcconfig)) || {}
+      def pod_target_xcconfig = effective_xcconfig(:pod_target_xcconfig)
+
+      def user_target_xcconfig = effective_xcconfig(:user_target_xcconfig)
+
+      def effective_xcconfig(name)
+        legacy = effective(spec, DSL.attributes.fetch(:xcconfig))
+        attribute = DSL.attributes.fetch(name)
+        merge(legacy, effective(spec, attribute), attribute) || {}
+      end
+
+      private :effective_xcconfig
 
       def dependencies
         attribute = DSL.attributes.fetch(:dependencies)
@@ -196,18 +250,23 @@ module Pod
         return value if attribute.types.include?(TrueClass)
         return Array(old) + Array(value) if attribute.container == Array
         if attribute.container == Hash
-          return old.merge(value) do |_, first, last|
-                   if attribute.name == :info_plist || spec.non_library_specification? && %i[xcconfig pod_target_xcconfig user_target_xcconfig].include?(attribute.name)
-                     last
-                   elsif first.is_a?(Array) || last.is_a?(Array)
-                     Array(first) + Array(last)
-                   else
-                     first.to_s + " " + last.to_s
-                   end
-                 end
+          return old.merge(value) { |_, first, last| merge_hash_value(first, last, attribute) }
         end
         value
       end
+
+      def merge_hash_value(first, last, attribute)
+        xcconfig = %i[xcconfig pod_target_xcconfig user_target_xcconfig].include?(attribute.name)
+        if attribute.name == :info_plist || (spec.non_library_specification? && xcconfig)
+          last
+        elsif first.is_a?(Array) || last.is_a?(Array)
+          Array(first) + Array(last)
+        else
+          first.to_s + " " + last.to_s
+        end
+      end
+
+      private :merge_hash_value
 
       def prepare(value, attribute)
         value = value.is_a?(Hash) ? [value] : Array(value).compact if attribute.container == Array

@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 
 extension NativeSources {
@@ -9,6 +8,7 @@ extension NativeSources {
     }
     func sourceSnapshot(_ original: [String: Any], pod: String) throws -> URL {
         var source = original
+        source["revision"] = try NativeSourceOptions.revision(source["revision"], file: pod)
         if !shouldUpdate(pod), source["revision"] == nil, let pin = pinnedCheckouts[pod],
             let revision = pin["revision"],
             ["svn", "hg"].contains(where: { source[$0] as? String != nil && source[$0] as? String == pin[$0] }),
@@ -45,30 +45,7 @@ extension NativeSources {
         var checkout: [String: String] = [:]
         if let archive {
             for key in ["http", "sha256", "sha1"] { if let value = source[key] as? String { checkout[key] = value } }
-            let data = try Data(contentsOf: archive)
-            if let expected = source["sha256"] as? String, digest(data) != expected.lowercased() {
-                throw Diagnostic("SP-SOURCE-CHECKSUM", stage: "download", "Archive SHA-256 mismatch", file: pod)
-            }
-            if let expected = source["sha1"] as? String, NativeLock.sha1(data) != expected.lowercased() {
-                throw Diagnostic("SP-SOURCE-CHECKSUM", stage: "download", "Archive SHA-1 mismatch", file: pod)
-            }
-            try ExecutionPolicy.validateArchive(archive.path)
-            try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
-            try command("/usr/bin/tar", ["-xf", archive.path, "-C", staging.path])
-            let children = try FileManager.default.contentsOfDirectory(
-                at: staging, includingPropertiesForKeys: [.isDirectoryKey]
-            ).filter { $0.lastPathComponent != "__MACOSX" }
-            if source["flatten"] as? Bool != false, children.count == 1,
-                (try children[0].resourceValues(forKeys: [.isDirectoryKey])).isDirectory == true
-            {
-                for child in try FileManager.default.contentsOfDirectory(
-                    at: children[0], includingPropertiesForKeys: nil)
-                {
-                    try FileManager.default.moveItem(
-                        at: child, to: staging.appendingPathComponent(child.lastPathComponent))
-                }
-                try FileManager.default.removeItem(at: children[0])
-            }
+            try NativeArchive.extract(archive, source: source, destination: staging, pod: pod)
         } else {
             checkout = try NativeVCS.export(source, destination: staging)
         }

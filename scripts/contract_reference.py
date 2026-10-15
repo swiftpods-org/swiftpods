@@ -88,11 +88,7 @@ else
 end
 output['project_attributes'] = normalize(project_attributes)
 
-if NATIVE
-  $swiftpods_channel.puts(JSON.generate(output))
-else
-  puts JSON.generate(output)
-end
+puts JSON.generate(output)
 """
 
 
@@ -167,10 +163,9 @@ def main():
         declarations[hook] = (
             hook + " { |installer| $contract_hooks << '" + hook + "' }\ntarget 'App'"
         )
-    option_names = re.findall(
-        r"'([a-z_]+)'\s*=>",
-        ROOT.joinpath("Runtime/options.rb").read_text().split("}.freeze", 1)[0],
-    )
+    # Coverage comes from the versioned contract, independent of Ruby formatting.
+    registry = json.loads(ROOT.joinpath("Profiles/contract.json").read_text())
+    option_names = list(registry["api"]["installation_options"])
     for name in option_names:
         value = "3" if name == "parallel_pod_download_thread_pool_size" else "false"
         declarations["option:" + name] = (
@@ -213,7 +208,7 @@ def main():
             ruby,
             "-e",
             "NATIVE=true; require "
-            + json.dumps(str(ROOT / "Runtime/dsl.rb"))
+            + json.dumps(str(ROOT / "Runtime/runtime.rb"))
             + ";"
             + RUBY,
             payload,

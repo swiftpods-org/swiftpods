@@ -1,13 +1,12 @@
 """Build actual binary SDKs with distinct platform payloads; no Ruby project tools."""
 
 import atexit
-import os
 import plistlib
 import shutil
-import signal
-import subprocess
 import tempfile
 from pathlib import Path
+
+from processes import run_logged
 
 _derived_data = {}
 
@@ -54,40 +53,10 @@ def _cleanup_derived_data():
 atexit.register(_cleanup_derived_data)
 
 
-def _cancel_command(process):
-    try:
-        os.killpg(process.pid, signal.SIGINT)
-    except ProcessLookupError:
-        pass
-    try:
-        process.wait(timeout=2)
-    except subprocess.TimeoutExpired:
-        pass
-    # A parent can exit after SIGINT while its descendants remain alive.
-    try:
-        os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    process.wait()
-
-
 def run(arguments, cwd, log, env=None, timeout=300):
-    with log.open("wb") as output:
-        process = subprocess.Popen(
-            [str(arg) for arg in arguments],
-            cwd=cwd,
-            env=env,
-            stdout=output,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
-        try:
-            process.wait(timeout=timeout)
-        except BaseException:
-            _cancel_command(process)
-            raise
+    status = run_logged(arguments, cwd, log, env=env, timeout=timeout)
     text = log.read_text(errors="replace")
-    if process.returncode or " warning:" in text or "\nwarning:" in text:
+    if status or " warning:" in text or "\nwarning:" in text:
         raise RuntimeError("SDK fixture command failed or warned: " + str(log))
     return text
 

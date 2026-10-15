@@ -40,6 +40,10 @@ enum NativeMaintenance {
         else { throw Diagnostic("SP-CLI-ARGUMENT", stage: "cache", "Use cache list [POD] or cache clean POD/--all") }
         let query = args.first { !$0.hasPrefix("-") }
         let store = try ContentStore(cacheRoot: cache)
+        let podspecCache = NativePodspecCache(cache: cache)
+        let podspecEntries = try podspecCache.entries().filter {
+            query == nil || ($0["name"] as? String ?? "").localizedCaseInsensitiveContains(query!)
+        }
         let prepared = cache.appendingPathComponent("prepared")
         var preparedEntries: [[String: Any]] = []
         for directory
@@ -110,13 +114,17 @@ enum NativeMaintenance {
             let archives = try store.list().filter {
                 query == nil || String(describing: $0["origin"] ?? "").localizedCaseInsensitiveContains(query!)
             }
-            return ["entries": archives + gitEntries + preparedEntries + snapshotEntries]
+            return ["entries": archives + gitEntries + preparedEntries + snapshotEntries + podspecEntries]
         }
         guard query != nil || args.contains("--all") else {
             throw Diagnostic("SP-CLI-ARGUMENT", stage: "cache", "Choose a pod or use --all explicitly")
         }
         let archives = try store.clean(query)
         var removed = archives
+        for entry in podspecEntries {
+            try podspecCache.remove(entry)
+            removed += 1
+        }
         for entry in preparedEntries {
             let directory = prepared.appendingPathComponent(entry["id"] as! String)
             try FileManager.default.removeItem(at: directory)

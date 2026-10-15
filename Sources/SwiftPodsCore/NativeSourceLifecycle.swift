@@ -159,6 +159,7 @@ extension NativeSources {
 
 enum NativeVCS {
     static func export(_ source: [String: Any], destination: URL) throws -> [String: String] {
+        try NativeSourceOptions.validate(source, file: destination.path)
         var checkout: [String: String] = [:]
         if let location = source["svn"] as? String {
             guard !location.hasPrefix("-") else {
@@ -168,7 +169,9 @@ enum NativeVCS {
             let url =
                 suffix.map { location.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/" + $0 } ?? location
             var info = ["svn", "info", "--non-interactive", "--show-item", "revision"]
-            if let revision = source["revision"] { info += ["-r", String(describing: revision)] }
+            if let revision = try NativeSourceOptions.revision(source["revision"], file: location) {
+                info += ["-r", revision]
+            }
             let result = try ToolProcess.run("/usr/bin/env", info + ["--", url])
             guard result.status == 0 else {
                 throw Diagnostic("SP-SOURCE-SVN", stage: "download", String(decoding: result.error, as: UTF8.self))
@@ -183,7 +186,9 @@ enum NativeVCS {
             guard !location.hasPrefix("-") else {
                 throw Diagnostic("SP-SOURCE-URL", stage: "download", "Invalid Mercurial source")
             }
-            let revision = source["revision"] as? String ?? source["tag"] as? String ?? source["branch"] as? String
+            let revision =
+                try NativeSourceOptions.revision(source["revision"], file: location) ?? source["tag"] as? String
+                ?? source["branch"] as? String
             try command(
                 "/usr/bin/env",
                 ["hg", "clone"] + (revision.map { ["-u", $0] } ?? []) + ["--", location, destination.path])

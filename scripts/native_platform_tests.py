@@ -2,7 +2,7 @@
 """Build and archive native pods against real SDK slices for every Apple platform."""
 
 import json
-import platform
+import platform as host_platform
 import plistlib
 import shutil
 import subprocess
@@ -14,16 +14,22 @@ from reporting import execute
 from vendor_fixture import run, sdk
 
 DESTINATIONS = [
-    ("osx", "13.0", "macosx", "macOS", platform.machine()),
+    ("osx", "13.0", "macosx", "macOS", host_platform.machine()),
     ("ios", "15.0", "iphoneos", "iOS", "arm64"),
-    ("ios", "15.0", "iphonesimulator", "iOS Simulator", platform.machine()),
+    ("ios", "15.0", "iphonesimulator", "iOS Simulator", host_platform.machine()),
     ("tvos", "15.0", "appletvos", "tvOS", "arm64"),
-    ("tvos", "15.0", "appletvsimulator", "tvOS Simulator", platform.machine()),
+    ("tvos", "15.0", "appletvsimulator", "tvOS Simulator", host_platform.machine()),
     ("watchos", "10.0", "watchos", "watchOS", "arm64_32"),
-    ("watchos", "10.0", "watchsimulator", "watchOS Simulator", platform.machine()),
+    ("watchos", "10.0", "watchsimulator", "watchOS Simulator", host_platform.machine()),
     ("visionos", "1.0", "xros", "visionOS", "arm64"),
-    ("visionos", "1.0", "xrsimulator", "visionOS Simulator", platform.machine()),
-    ("ios", "15.0", "maccatalyst", "macOS,variant=Mac Catalyst", platform.machine()),
+    ("visionos", "1.0", "xrsimulator", "visionOS Simulator", host_platform.machine()),
+    (
+        "ios",
+        "15.0",
+        "maccatalyst",
+        "macOS,variant=Mac Catalyst",
+        host_platform.machine(),
+    ),
 ]
 
 

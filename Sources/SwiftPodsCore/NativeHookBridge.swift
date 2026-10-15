@@ -81,7 +81,11 @@ enum NativeHookGraph {
             guard id.range(of: #"\A[A-Fa-f0-9]{24}\z"#, options: .regularExpression) != nil, object["isa"] is String
             else { throw Diagnostic("SP-HOOK-GRAPH", stage: "hook", "Invalid PBX object", file: id) }
             for key in ["targets", "buildPhases", "dependencies", "buildConfigurations", "children", "files"] {
-                if let ids = object[key] as? [String], ids.contains(where: { objects[$0] == nil }) {
+                guard let value = object[key] else { continue }
+                guard let ids = value as? [String] else {
+                    throw Diagnostic("SP-HOOK-GRAPH", stage: "hook", "Invalid \(key) reference list", file: id)
+                }
+                if ids.contains(where: { objects[$0] == nil }) {
                     throw Diagnostic("SP-HOOK-GRAPH", stage: "hook", "Dangling \(key) reference", file: id)
                 }
             }

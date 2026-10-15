@@ -3,8 +3,8 @@
 
 import json
 import re
-import subprocess
 
+from processes import run_logged
 from reporting import ROOT, execute
 
 
@@ -22,12 +22,9 @@ def main():
         "-Werror",
     ]
     log = ROOT / "test-results/native-units.log"
-    with log.open("wb") as output:
-        result = subprocess.run(
-            command, cwd=ROOT, stdout=output, stderr=subprocess.STDOUT
-        )
+    status = run_logged(command, ROOT, log)
     text = log.read_text(errors="replace")
-    if result.returncode or re.search(r"(?im)^.*\bwarning:", text):
+    if status or re.search(r"(?im)^.*\bwarning:", text):
         raise RuntimeError("Swift build/tests failed; see " + str(log))
     counts = [
         int(value)

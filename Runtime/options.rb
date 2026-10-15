@@ -1,6 +1,8 @@
 # frozen_string_literal: true
+
 module Pod
-  class Informative < StandardError; end
+  class Informative < StandardError
+  end
 
   class Installer
     class InstallationOptions

@@ -28,6 +28,80 @@ def required_reports():
     }
 
 
+def collect_external_artifacts(report, files):
+    """Make passed external gates verifiable after their runner is gone."""
+    artifacts = []
+    for gate_name, gate in report.get("external_gates", {}).items():
+        if gate.get("status") != "passed":
+            continue
+        for position, item in enumerate(gate.get("evidence", [])):
+            path = Path(item["path"])
+            data = path.read_bytes()
+            if digest(data) != item["sha256"]:
+                raise RuntimeError("External gate evidence changed: " + str(path))
+            name = "external/" + gate_name + "/" + str(position) + "/" + path.name
+            files[name] = data
+            artifacts.append(
+                {
+                    "gate": gate_name,
+                    "path": str(path),
+                    "archive_path": name,
+                    "sha256": item["sha256"],
+                }
+            )
+    return artifacts
+
+
+def validate_external_artifacts(archive, index, acceptance):
+    """Keep old nonstable archives readable; stable gates require their bytes."""
+    gates = acceptance.get("external_gates", {})
+    registry = json.loads((ROOT / "Profiles/contract.json").read_text())
+    if acceptance["stable_acceptance"] == "established" and (
+        set(gates) != set(registry["external_gates"])
+        or any(gate.get("status") != "passed" for gate in gates.values())
+        or acceptance["source_revision"].get("dirty") is not False
+    ):
+        raise RuntimeError(
+            "Stable evidence has incomplete external gates or dirty sources"
+        )
+    if (
+        "external_artifacts" not in index
+        and acceptance["stable_acceptance"] != "established"
+    ):
+        return
+    artifacts = index.get("external_artifacts", [])
+    expected = []
+    for gate_name, gate in gates.items():
+        if gate.get("status") != "passed":
+            continue
+        if not gate.get("evidence"):
+            raise RuntimeError("Passed external gate has no evidence: " + gate_name)
+        for item in gate["evidence"]:
+            matches = [
+                entry
+                for entry in artifacts
+                if entry.get("gate") == gate_name
+                and entry.get("path") == item["path"]
+                and entry.get("sha256") == item["sha256"]
+            ]
+            if len(matches) != 1:
+                raise RuntimeError(
+                    "Missing or duplicated external gate artifact: " + gate_name
+                )
+            entry = matches[0]
+            name = entry["archive_path"]
+            if (
+                name not in index["files"]
+                or digest(archive.read(name)) != item["sha256"]
+            ):
+                raise RuntimeError(
+                    "External gate artifact checksum mismatch: " + gate_name
+                )
+            expected.append(entry)
+    if expected != artifacts:
+        raise RuntimeError("Evidence contains unclaimed external gate artifacts")
+
+
 def export(destination):
     from acceptance import collect
 
@@ -118,6 +192,7 @@ def export(destination):
                 raise RuntimeError("Missing Homebrew verification log")
             files["supplemental/native-homebrew.json"] = supplemental.read_bytes()
             files["supplemental/homebrew.log"] = log.read_bytes()
+    external_artifacts = collect_external_artifacts(report, files)
     index = {
         key: report[key]
         for key in [
@@ -133,6 +208,7 @@ def export(destination):
         schema_version=1,
         bundles=list(bundles.values()),
         files={name: digest(data) for name, data in sorted(files.items())},
+        external_artifacts=external_artifacts,
     )
     destination = Path(destination).absolute()
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -194,6 +270,7 @@ def validate(path, metadata=None, manifest_sha256=None):
         ]:
             if index[key] != acceptance[key]:
                 raise RuntimeError("Evidence identity mismatch: " + key)
+        validate_external_artifacts(archive, index, acceptance)
         reports = acceptance["reports"]
         if {entry["report"] for entry in reports} != required_reports() or len(
             reports

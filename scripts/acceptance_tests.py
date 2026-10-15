@@ -7,6 +7,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import zipfile
@@ -14,9 +15,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 import acceptance
+import check as check_tools
 import evidence as evidence_tools
+import install as installer
 import reporting
 import swift_binary_producer as swift_producer
+from processes import run_logged
 from reporting import ROOT, execute
 from vendor_fixture import run as fixture_command
 
@@ -134,6 +138,179 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(
             result["external_gates"]["physical_devices"]["status"], "unverified"
         )
+
+    def testInstallerTreatsMissingMacOSPatchComponentAsZero(self):
+        asset = {"os": "macos", "architecture": "arm64", "minimum_macos": "13.0.0"}
+        manifest = {"schema_version": 1, "version": "1.0.0", "assets": [asset]}
+        self.assertEqual(
+            installer.select_asset(
+                manifest, "1.0.0", architecture="arm64", macos="13.0"
+            ),
+            asset,
+        )
+        with self.assertRaisesRegex(RuntimeError, "No compatible SwiftPods asset"):
+            installer.select_asset(
+                manifest, "1.0.0", architecture="arm64", macos="12.9.9"
+            )
+
+    def testToolchainProbeFailureInvalidatesPreviousPassingReport(self):
+        with (
+            patch.object(reporting, "ROOT", self.root),
+            patch.object(reporting, "source_digest", return_value="source"),
+            patch.object(reporting, "contract_digest", return_value="contract"),
+            patch.object(reporting, "source_revision", return_value=self.revision),
+            patch.object(
+                reporting,
+                "toolchain_identity",
+                side_effect=RuntimeError("missing Ruby"),
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "missing Ruby"):
+                reporting.execute(
+                    lambda: self.fail("fixture must not run"), "fixture.json"
+                )
+        report = json.loads((self.root / "test-results/fixture.json").read_text())
+        self.assertEqual(report["status"], "failed")
+        self.assertEqual(report["error"], "missing Ruby")
+
+    def testMalformedPartialReportDoesNotHideOriginalFixtureFailure(self):
+        def failing_fixture():
+            (self.root / "test-results/fixture.json").write_text("{incomplete")
+            raise RuntimeError("fixture failed")
+
+        with (
+            patch.object(reporting, "ROOT", self.root),
+            patch.object(reporting, "snapshot_metadata", return_value=self.report),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "fixture failed"):
+                reporting.execute(failing_fixture, "fixture.json")
+        report = json.loads((self.root / "test-results/fixture.json").read_text())
+        self.assertEqual(report["status"], "failed")
+        self.assertEqual(report["error"], "fixture failed")
+
+    def testVerificationCancellationStopsRunningCommand(self):
+        state = self.root / "running.json"
+        cancelled = threading.Event()
+        errors = []
+
+        def run():
+            try:
+                run_logged(
+                    [
+                        sys.executable,
+                        "-c",
+                        "import json,os,sys,time;json.dump({'pid':os.getpid()},open(sys.argv[1],'w'));time.sleep(60)",
+                        state,
+                    ],
+                    self.root,
+                    self.root / "cancelled.log",
+                    cancelled=cancelled,
+                )
+            except RuntimeError as error:
+                errors.append(str(error))
+
+        worker = threading.Thread(target=run)
+        worker.start()
+        self.addCleanup(worker.join, 5)
+        self.addCleanup(cancelled.set)
+        deadline = time.monotonic() + 5
+        while not state.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(state.is_file(), "Command did not start")
+        cancelled.set()
+        worker.join(5)
+        self.assertFalse(worker.is_alive(), "Cancelled command did not stop")
+        self.assertEqual(errors, ["Verification cancelled"])
+        with self.assertRaises(ProcessLookupError):
+            os.kill(json.loads(state.read_text())["pid"], 0)
+
+    def testStandardAcceptanceRunsRubyRegressionsBeforeFixtures(self):
+        registry = dict(
+            self.registry,
+            suites=[
+                {
+                    "script": "fixture.py",
+                    "report": "fixture.json",
+                    "reference": False,
+                    "apple": False,
+                }
+            ],
+        )
+        (self.root / "Profiles/contract.json").write_text(json.dumps(registry))
+        (self.root / "Profiles/baseline.json").write_text("{}")
+        commands = []
+
+        def record(stages, command, report=None, env=None):
+            commands.append((command, env))
+            if report:
+                stages.reports.append(report)
+
+        with (
+            patch.object(check_tools, "ROOT", self.root),
+            patch.object(check_tools.VerificationStages, "run", record),
+            patch.object(check_tools, "select_ruby", return_value=(self.binary, {})),
+            patch.object(
+                check_tools,
+                "collect",
+                return_value={
+                    "status": "passed",
+                    "stable_acceptance": "not_established",
+                },
+            ),
+            patch.object(sys, "argv", ["check.py", "--skip-apple"]),
+            patch.dict(
+                os.environ, {"RUBYOPT": "untrusted preload", "GEM_HOME": "user gems"}
+            ),
+        ):
+            check_tools.main()
+        self.assertEqual(commands[0][0][1], "scripts/bootstrap.py")
+        self.assertEqual(commands[1][0][1], "scripts/unit_tests.py")
+        self.assertEqual(commands[2][0], [self.binary, "scripts/ruby_adapter_tests.rb"])
+        self.assertEqual(commands[3][0][1], "fixture.py")
+        self.assertNotIn("RUBYOPT", commands[2][1])
+        self.assertNotIn("GEM_HOME", commands[2][1])
+
+    def testStageCancellationAllowsNestedFixtureToStopItsOwnProcessGroup(self):
+        state = self.root / "nested.json"
+        child = "import json,os,signal,sys,time;signal.signal(signal.SIGINT,signal.SIG_IGN);json.dump({'pid':os.getpid()},open(sys.argv[1],'w'));time.sleep(60)"
+        parent = "import sys;from pathlib import Path;sys.path.insert(0,sys.argv[1]);from processes import run_logged;run_logged([sys.executable,'-c',sys.argv[3],sys.argv[4]],Path(sys.argv[2]),Path(sys.argv[2])/'leaf.log')"
+        stages = check_tools.VerificationStages()
+        errors = []
+
+        def run():
+            try:
+                stages.run(
+                    [
+                        sys.executable,
+                        "-c",
+                        parent,
+                        str(Path(reporting.__file__).parent),
+                        str(self.root),
+                        child,
+                        str(state),
+                    ]
+                )
+            except RuntimeError as error:
+                errors.append(str(error))
+
+        with patch.object(check_tools, "ROOT", self.root):
+            worker = threading.Thread(target=run)
+            worker.start()
+            self.addCleanup(worker.join, 8)
+            self.addCleanup(stages.cancelled.set)
+            deadline = time.monotonic() + 5
+            while not state.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+            self.assertTrue(state.is_file(), "Nested command did not start")
+            stages.cancelled.set()
+            worker.join(8)
+            self.assertFalse(worker.is_alive(), "Nested fixture did not stop")
+        self.assertEqual(errors, ["Verification cancelled"])
+        with self.assertRaises(ProcessLookupError):
+            os.kill(json.loads(state.read_text())["pid"], 0)
+        result = json.loads((self.root / "test-results/check.json").read_text())
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["stages"][0]["error"], "Verification cancelled")
 
     def testFixtureTimeoutStopsDescendantsAfterTheParentExits(self):
         state = self.root / "child.json"
@@ -517,6 +694,73 @@ class EvidenceTests(unittest.TestCase):
             metadata["swiftpods_source"]["base_commit"] = "another-revision"
             with self.assertRaises(RuntimeError):
                 evidence_tools.validate(path, metadata)
+
+    def external_artifact_archive(self, *, include_artifacts=True, stable=True):
+        path, _ = self.evidence_archive()
+        with zipfile.ZipFile(path) as archive:
+            files = {name: archive.read(name) for name in archive.namelist()}
+        index = json.loads(files.pop("index.json"))
+        report = json.loads(files["acceptance.json"])
+        report["external_gates"] = json.loads(self.external_gate().read_text())["gates"]
+        report["stable_acceptance"] = "established" if stable else "not_established"
+        files["acceptance.json"] = json.dumps(report).encode()
+        index["stable_acceptance"] = report["stable_acceptance"]
+        if include_artifacts:
+            index["external_artifacts"] = evidence_tools.collect_external_artifacts(
+                report, files
+            )
+        index["files"] = {
+            name: evidence_tools.digest(data) for name, data in files.items()
+        }
+        with zipfile.ZipFile(path, "w") as archive:
+            archive.writestr("index.json", json.dumps(index))
+            for name, data in files.items():
+                archive.writestr(name, data)
+        return path
+
+    def testPortableEvidenceIncludesExternalArtifactsIndependentOfRunnerPaths(self):
+        with (
+            patch.object(evidence_tools, "ROOT", self.root),
+            patch.object(
+                evidence_tools, "required_reports", return_value=set(self.names)
+            ),
+        ):
+            path = self.external_artifact_archive()
+            (self.root / "device.log").unlink()
+            result = evidence_tools.validate(path)
+            self.assertEqual(result["stable_acceptance"], "established")
+            self.assertEqual(len(result["external_artifacts"]), 1)
+
+    def testStablePortableEvidenceRejectsMissingExternalArtifact(self):
+        with (
+            patch.object(evidence_tools, "ROOT", self.root),
+            patch.object(
+                evidence_tools, "required_reports", return_value=set(self.names)
+            ),
+        ):
+            path = self.external_artifact_archive(include_artifacts=False)
+            with self.assertRaisesRegex(RuntimeError, "external gate artifact"):
+                evidence_tools.validate(path)
+
+    def testLegacyNonstableEvidenceRemainsReadableWithoutExternalArtifacts(self):
+        with (
+            patch.object(evidence_tools, "ROOT", self.root),
+            patch.object(
+                evidence_tools, "required_reports", return_value=set(self.names)
+            ),
+        ):
+            path = self.external_artifact_archive(include_artifacts=False, stable=False)
+            self.assertEqual(
+                evidence_tools.validate(path)["stable_acceptance"], "not_established"
+            )
+
+    def testChangedExternalArtifactCannotBeExported(self):
+        report = {
+            "external_gates": json.loads(self.external_gate().read_text())["gates"]
+        }
+        (self.root / "device.log").write_text("changed")
+        with self.assertRaisesRegex(RuntimeError, "External gate evidence changed"):
+            evidence_tools.collect_external_artifacts(report, {})
 
 
 def main():

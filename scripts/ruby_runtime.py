@@ -53,7 +53,10 @@ def select_ruby(profile, original=None):
             [str(ruby), "-e", code], env=clean_environment(original), timeout=30
         )
     )
-    version = lambda value: tuple(int(item) for item in value.split("."))
+
+    def version(value):
+        return tuple(int(item) for item in value.split("."))
+
     if (
         metadata["engine"] != "ruby"
         or metadata["abi"] != policy["abi"]

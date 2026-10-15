@@ -27,6 +27,7 @@ enum NativeCacheIntegrity {
                 counts[kind, default: 0] += 1
             }
         }
+        counts["podspecs"] = try NativePodspecCache(cache: cache).entries().count
         result["source_snapshots"] = counts
         return result
     }

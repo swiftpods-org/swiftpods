@@ -1,5 +1,4 @@
 import CryptoKit
-import Darwin
 import Foundation
 
 final class NativeSources {
@@ -102,10 +101,9 @@ final class NativeSources {
                 let url = URL(string: path)
                 let file =
                     url?.scheme == "https" || url?.scheme == "http"
-                    ? try download(path) : URL(fileURLWithPath: path, relativeTo: project).standardizedFileURL
-                let data: [String: Any]
-                if path.hasSuffix(".json") { data = try readObject(file) } else { data = try spec(file) }
-                result = [try NativeSpec(data: data, checksum: specChecksum(file, external: true))]
+                    ? try downloadedPodspec(path, pod: request.root)
+                    : URL(fileURLWithPath: path, relativeTo: project).standardizedFileURL
+                result = [try parsedSpec(file, external: true)]
             } else if options["http"] != nil || options["svn"] != nil || options["hg"] != nil {
                 let directory = try sourceSnapshot(options, pod: request.root)
                 result = [try parsedSpec(findSpec(request.root, directory: directory), directory: directory)]
@@ -175,6 +173,14 @@ final class NativeSources {
         found[request.root] = result
         return result
     }
+    /// Content-store object names carry no extension. Preserve a JSON podspec's
+    /// format for both hardened parsing and the Ruby checksum serializer.
+    private func downloadedPodspec(_ location: String, pod: String) throws -> URL {
+        let downloaded = try download(location, pod: pod)
+        guard URL(string: location)?.pathExtension == "json" else { return downloaded }
+        let content = try Data(contentsOf: downloaded)
+        return try NativePodspecCache(cache: cache).project(content)
+    }
     func materialize(_ candidate: NativeSpec) throws -> NativeSpec {
         guard let url = candidate.data["_spec_url"] as? String else { return candidate }
         if let existing = materialized[url] { return existing }
@@ -200,13 +206,13 @@ final class NativeSources {
         }
         return result
     }
-    private func parsedSpec(_ file: URL, repository: String = "", directory: URL? = nil, local: Bool = false) throws
-        -> NativeSpec
-    {
+    private func parsedSpec(
+        _ file: URL, repository: String = "", directory: URL? = nil, local: Bool = false, external: Bool = false
+    ) throws -> NativeSpec {
         let data = try spec(file)
         return try NativeSpec(
             data: data, repository: repository, directory: directory, local: local,
-            checksum: specChecksum(file, external: directory != nil))
+            checksum: specChecksum(file, external: external || directory != nil))
     }
     private func specChecksum(_ file: URL, external: Bool) throws -> String {
         let raw = try NativeLock.sha1(Data(contentsOf: file))
@@ -224,198 +230,7 @@ final class NativeSources {
         }
         throw Diagnostic("SP-SPEC-MISSING", stage: "resolve", "No podspec for \(name)", file: directory.path)
     }
-    func download(_ location: String, pod: String? = nil, headers: [String: String] = [:]) throws -> URL {
-        guard let url = URL(string: location), ["http", "https"].contains(url.scheme ?? "") else {
-            throw Diagnostic("SP-SOURCE-URL", stage: "download", "Expected an HTTP(S) source URL")
-        }
-        var origin: [String: Any] = [
-            "url": Redactor(environment: ProcessInfo.processInfo.environment).scrub(location),
-            "request_identity": digest(Data(location.utf8)), "kind": "native-download",
-        ]
-        if !headers.isEmpty { origin["headers_identity"] = try digest(jsonData(headers)) }
-        let legacy = origin
-        if let pod { origin["pod"] = pod }
-        // Release the content-store lock before network I/O.
-        let cached: [String: Any] = try {
-            let store = try ContentStore(cacheRoot: cache)
-            if pod != nil, try store.get(origin: origin)["status"] as? String == "miss",
-                let path = try store.get(origin: legacy)["path"] as? String
-            {
-                _ = try store.put(file: URL(fileURLWithPath: path), origin: origin)
-            }
-            return try store.get(origin: origin)
-        }()
-        if !refresh || offline, let path = cached["path"] as? String { return URL(fileURLWithPath: path) }
-        guard !offline else {
-            throw Diagnostic("SP-OFFLINE-MISSING", stage: "download", "Source is not cached: \(location)")
-        }
-        let temporary = cache.appendingPathComponent(".download-" + UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: temporary) }
-        let result = try ToolProcess.run(
-            "/usr/bin/curl",
-            [
-                "--fail", "--silent", "--show-error", "--location", "--proto", "=http,https", "--proto-redir",
-                "=http,https", "--connect-timeout", "20", "--max-time", "120", "--output", temporary.path,
-            ] + headers.sorted(by: { $0.key < $1.key }).flatMap { ["--header", $0.key + ": " + $0.value] } + [
-                "--", location,
-            ])
-        guard result.status == 0 else {
-            throw Diagnostic("SP-DOWNLOAD", stage: "download", String(decoding: result.error, as: UTF8.self))
-        }
-        let store = try ContentStore(cacheRoot: cache)
-        _ = try store.put(file: temporary, origin: origin)
-        return URL(fileURLWithPath: try store.get(origin: origin)["path"] as! String)
-    }
-    func checkout(_ location: String, selector: String, fresh: Bool = false, submodules: Bool = false) throws -> URL {
-        guard !location.hasPrefix("-"), !selector.hasPrefix("-"), !selector.isEmpty else {
-            throw Diagnostic("SP-SOURCE-URL", stage: "download", "Invalid Git source or revision")
-        }
-        let identity = digest(Data((location + "\n" + selector + (submodules ? "\nsubmodules" : "")).utf8))
-        let directory = cache.appendingPathComponent("git/" + identity)
-        let cacheLock = try NativeCacheLock(cache: cache, key: identity)
-        defer { cacheLock.release() }
-        let receipt = directory.appendingPathExtension("sha256")
-        if FileManager.default.fileExists(atPath: directory.path), (!refresh && !fresh) || offline {
-            guard let expected = try? String(contentsOf: receipt, encoding: .utf8),
-                try FileFingerprint.tree(directory, requireContainedLinks: true) == expected
-            else {
-                throw Diagnostic(
-                    "SP-CACHE-INTEGRITY", stage: "cache", "Cached Git checkout changed", file: directory.path)
-            }
-            if !FileManager.default.fileExists(atPath: directory.appendingPathExtension("origin.json").path) {
-                guard
-                    selector.range(of: #"\A[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?\z"#, options: .regularExpression) != nil
-                else {
-                    throw Diagnostic(
-                        "SP-CACHE-REVISION", stage: "cache",
-                        "Cached checkout predates revision metadata; refresh it with --repo-update",
-                        file: directory.path)
-                }
-                try jsonData(["commit": selector, "origin_identity": digest(Data(location.utf8))]).write(
-                    to: directory.appendingPathExtension("origin.json"), options: .atomic)
-            }
-            try cacheCommit(directory, location: location)
-            return directory
-        }
-        guard !offline else {
-            throw Diagnostic("SP-OFFLINE-MISSING", stage: "download", "Git source is not cached: \(location)")
-        }
-        try FileManager.default.createDirectory(
-            at: directory.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let staging = directory.deletingLastPathComponent().appendingPathComponent(".git-" + UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: staging) }
-        try command("/usr/bin/git", ["clone", "--no-checkout", "--", location, staging.path])
-        try command("/usr/bin/git", ["-C", staging.path, "checkout", "--detach", selector])
-        if submodules, FileManager.default.fileExists(atPath: staging.appendingPathComponent(".gitmodules").path) {
-            try command("/usr/bin/git", ["-C", staging.path, "submodule", "update", "--init", "--recursive"])
-        }
-        let revision = try ToolProcess.run("/usr/bin/git", ["-C", staging.path, "rev-parse", "HEAD"])
-        guard revision.status == 0 else {
-            throw Diagnostic("SP-SOURCE-REVISION", stage: "download", "Cannot record Git checkout revision")
-        }
-        let commit = String(decoding: revision.output, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-        try FileManager.default.removeItem(at: staging.appendingPathComponent(".git"))
-        let fingerprint = try FileFingerprint.tree(staging, requireContainedLinks: true)
-        if FileManager.default.fileExists(atPath: directory.path) { try FileManager.default.removeItem(at: directory) }
-        try FileManager.default.moveItem(at: staging, to: directory)
-        try Data(fingerprint.utf8).write(to: receipt, options: .atomic)
-        try jsonData(["commit": commit, "origin_identity": digest(Data(location.utf8)), "submodules": submodules])
-            .write(to: directory.appendingPathExtension("origin.json"), options: .atomic)
-        try cacheCommit(directory, location: location)
-        return directory
-    }
-    func install(_ input: NativeSpec) throws -> NativeSpec {
-        var spec = input
-        if spec.local {
-            try prepare(spec)
-            return spec
-        }
-        let destination = project.appendingPathComponent("Pods/" + spec.name)
-        let receipt = project.appendingPathComponent("Pods/Target Support Files/" + spec.name + "/source-state.json")
-        if installationOptions["incremental_installation"] as? Bool == true, !cleanInstall, !shouldUpdate(spec.name),
-            let previous = try? readObject(receipt), previous["identity"] as? String == (try sourceIdentity(spec)),
-            previous["fingerprint"] as? String == (try FileFingerprint.tree(destination, requireContainedLinks: true))
-        {
-            spec.directory = destination
-            spec.checkout = previous["checkout"] as? [String: String] ?? [:]
-            return spec
-        }
-        if FileManager.default.fileExists(atPath: destination.path) {
-            try FileManager.default.removeItem(at: destination)
-        }
-        if let directory = spec.directory {
-            try FileManager.default.copyItem(at: directory, to: destination)
-            if !spec.local {
-                spec.checkout = try sourceCheckoutIdentity(
-                    spec.name, source: external[spec.name] ?? (spec.data["source"] as? [String: Any] ?? [:]),
-                    directory: directory)
-            }
-        } else {
-            let source = spec.data["source"] as? [String: Any] ?? [:]
-            if let git = source["git"] as? String {
-                let directory =
-                    try prefetchedSources[spec.name]
-                    ?? checkout(
-                        git, selector: pinnedSelector(spec.name, source: source), fresh: shouldUpdate(spec.name),
-                        submodules: source["submodules"] as? Bool == true)
-                try FileManager.default.copyItem(at: directory, to: destination)
-                spec.checkout = try checkoutIdentity(spec.name, source: source, directory: directory)
-            } else if let http = source["http"] as? String {
-                let archive =
-                    try prefetchedSources[spec.name]
-                    ?? download(http, pod: spec.name, headers: source["headers"] as? [String: String] ?? [:])
-                let data = try Data(contentsOf: archive)
-                if let sha = source["sha256"] as? String, digest(data) != sha.lowercased() {
-                    throw Diagnostic(
-                        "SP-SOURCE-CHECKSUM", stage: "download", "Archive SHA-256 mismatch for \(spec.name)")
-                }
-                if let sha = source["sha1"] as? String,
-                    Insecure.SHA1.hash(data: data).map({ String(format: "%02x", $0) }).joined() != sha.lowercased()
-                {
-                    throw Diagnostic("SP-SOURCE-CHECKSUM", stage: "download", "Archive SHA-1 mismatch for \(spec.name)")
-                }
-                try ExecutionPolicy.validateArchive(archive.path)
-                try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
-                try command("/usr/bin/tar", ["-xf", archive.path, "-C", destination.path])
-                _ = try FileFingerprint.tree(destination, requireContainedLinks: true)
-                let children = try FileManager.default.contentsOfDirectory(
-                    at: destination, includingPropertiesForKeys: [.isDirectoryKey]
-                ).filter { $0.lastPathComponent != "__MACOSX" }
-                if source["flatten"] as? Bool != false, children.count == 1,
-                    (try children[0].resourceValues(forKeys: [.isDirectoryKey])).isDirectory == true
-                {
-                    for child in try FileManager.default.contentsOfDirectory(
-                        at: children[0], includingPropertiesForKeys: nil)
-                    {
-                        try FileManager.default.moveItem(
-                            at: child, to: destination.appendingPathComponent(child.lastPathComponent))
-                    }
-                    try FileManager.default.removeItem(at: children[0])
-                }
-            } else if source["svn"] != nil || source["hg"] != nil {
-                let directory = try sourceSnapshot(source, pod: spec.name)
-                try FileManager.default.copyItem(at: directory, to: destination)
-                spec.checkout = try sourceCheckoutIdentity(spec.name, source: source, directory: directory)
-            } else {
-                throw Diagnostic(
-                    "SP-SOURCE-UNSUPPORTED", stage: "download",
-                    "\(spec.name) requires a supported :git, :http, :svn or :hg source")
-            }
-        }
-        spec.directory = destination
-        try prepareCached(spec)
-        return spec
-    }
-    func prepare(_ spec: NativeSpec) throws {
-        if let script = spec.data["prepare_command"] as? String, !script.isEmpty {
-            guard !hardened else {
-                throw Diagnostic("SP-HARDENED-SCRIPT", stage: "policy", "prepare_command is forbidden", file: spec.name)
-            }
-            try command("/bin/sh", ["-c", script], directory: spec.directory)
-        }
-    }
 }
-
 func command(_ executable: String, _ arguments: [String], directory: URL? = nil) throws {
     let result = try ToolProcess.run(executable, arguments, directory: directory)
     let redactor = Redactor(environment: ProcessInfo.processInfo.environment)

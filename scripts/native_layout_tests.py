@@ -12,9 +12,16 @@ from layout_fixture import contract, enable
 from native_supplementary_tests import build, install
 from reporting import execute
 from supplementary_fixture import create
-from ui_test_fixture import build as build_ui
-from ui_test_fixture import create as create_ui
-from ui_test_fixture import declarative, simulator
+from ui_test_fixture import (
+    build as build_ui,
+)
+from ui_test_fixture import (
+    create as create_ui,
+)
+from ui_test_fixture import (
+    declarative,
+    simulator,
+)
 
 
 def snapshot(work):

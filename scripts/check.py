@@ -3,15 +3,83 @@
 
 import argparse
 import json
+import os
 import re
-import subprocess
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from acceptance import collect
-from reporting import ROOT, execute
+from processes import run_logged
+from reporting import ROOT, execute, write_report
+from ruby_runtime import clean_environment, select_ruby
+
+
+class VerificationStages:
+    """Own stage logs, report aggregation, and cancellation across worker threads."""
+
+    def __init__(self):
+        self.stages = []
+        self.reports = []
+        self.lock = threading.Lock()
+        self.cancelled = threading.Event()
+
+    def run(self, command, report=None, env=None):
+        print("Running:", " ".join(map(str, command)), flush=True)
+        with self.lock:
+            log = (
+                ROOT
+                / "test-results"
+                / ("native-check-" + str(len(self.stages)) + ".log")
+            )
+            stage = {
+                "command": list(map(str, command)),
+                "exit_status": None,
+                "log": str(log),
+            }
+            self.stages.append(stage)
+        # Nested fixture runners need time to cancel their own process groups.
+        try:
+            status = run_logged(
+                command,
+                ROOT,
+                log,
+                env=env,
+                cancelled=self.cancelled,
+                cancellation_grace=4,
+            )
+        except BaseException as error:
+            with self.lock:
+                stage["error"] = str(error) or type(error).__name__
+                write_report(
+                    ROOT / "test-results/check.json",
+                    {
+                        "status": "failed",
+                        "stages": self.stages,
+                        "failed_report": report,
+                    },
+                )
+            raise
+        warning = re.search(
+            r"(?m)^\s*(?:[^\n]*:[0-9]+:[0-9]+:\s*|(?:clang|swift):\s*)?warning:",
+            log.read_text(errors="replace"),
+        )
+        with self.lock:
+            stage["exit_status"] = status
+            if status or warning:
+                write_report(
+                    ROOT / "test-results/check.json",
+                    {
+                        "status": "failed",
+                        "stages": self.stages,
+                        "failed_report": report,
+                        "compiler_warning": bool(warning),
+                    },
+                )
+                raise RuntimeError("Verification failed; see " + str(log))
+            if report:
+                self.reports.append(report)
 
 
 def main():
@@ -63,50 +131,16 @@ def main():
             "Signing requires --full --package; notarization also requires --signing-identity"
         )
     registry = json.loads((ROOT / "Profiles/contract.json").read_text())
-    stages, reports, stage_lock = [], [], threading.Lock()
-
-    def run(command, report=None):
-        print("Running:", " ".join(map(str, command)), flush=True)
-        with stage_lock:
-            log = ROOT / "test-results" / ("native-check-" + str(len(stages)) + ".log")
-            stage = {
-                "command": list(map(str, command)),
-                "exit_status": None,
-                "log": str(log),
-            }
-            stages.append(stage)
-        with log.open("wb") as output:
-            result = subprocess.run(
-                list(map(str, command)),
-                cwd=ROOT,
-                stdout=output,
-                stderr=subprocess.STDOUT,
-            )
-        stage["exit_status"] = result.returncode
-        warning = re.search(
-            r"(?m)^\s*(?:[^\n]*:[0-9]+:[0-9]+:\s*|(?:clang|swift):\s*)?warning:",
-            log.read_text(errors="replace"),
-        )
-        if result.returncode or warning:
-            with stage_lock:
-                (ROOT / "test-results/check.json").write_text(
-                    json.dumps(
-                        {
-                            "status": "failed",
-                            "stages": stages,
-                            "failed_report": report,
-                            "compiler_warning": bool(warning),
-                        },
-                        indent=2,
-                    )
-                    + "\n"
-                )
-            raise RuntimeError("Verification failed; see " + str(log))
-        if report:
-            reports.append(report)
+    verification = VerificationStages()
+    stages, reports, run = verification.stages, verification.reports, verification.run
 
     run([sys.executable, "scripts/bootstrap.py"])
     run([sys.executable, "scripts/unit_tests.py"], "native-units.json")
+    ruby, _ = select_ruby(json.loads((ROOT / "Profiles/baseline.json").read_text()))
+    run(
+        [ruby, "scripts/ruby_adapter_tests.rb"],
+        env=clean_environment(os.environ),
+    )
     if args.full:
         run(
             [
@@ -118,27 +152,33 @@ def main():
         )
     # No Swift rebuilds occur while CLI fixtures are active.
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        pending = []
-        for suite in registry["suites"]:
-            if (
-                suite["reference"]
-                and not args.full
-                or suite["apple"]
-                and args.skip_apple
-            ):
-                continue
-            command = [sys.executable, suite["script"]]
-            if suite["reference"]:
-                command += ["--gem-home", args.reference_gem_home]
-            pending.append(pool.submit(run, command, suite["report"]))
-        failures = []
-        for result in as_completed(pending):
-            try:
-                result.result()
-            except Exception as error:
-                failures.append(str(error))
-        if failures:
-            raise RuntimeError("\n".join(failures))
+        try:
+            pending = []
+            for suite in registry["suites"]:
+                if (
+                    suite["reference"]
+                    and not args.full
+                    or suite["apple"]
+                    and args.skip_apple
+                ):
+                    continue
+                command = [sys.executable, suite["script"]]
+                if suite["reference"]:
+                    command += ["--gem-home", args.reference_gem_home]
+                pending.append(pool.submit(run, command, suite["report"]))
+            failures = []
+            for result in as_completed(pending):
+                try:
+                    result.result()
+                except Exception as error:
+                    failures.append(str(error))
+            if failures:
+                raise RuntimeError("\n".join(failures))
+        except BaseException:
+            verification.cancelled.set()
+            for future in pending:
+                future.cancel()
+            raise
     if args.package:
         run([sys.executable, "scripts/package.py", "--destination", args.package])
         if args.signing_identity:
@@ -190,7 +230,10 @@ def main():
 
 if __name__ == "__main__":
     execute(main, "check.json")
-    if "--full" in sys.argv and "--package" in sys.argv:
+    if "--full" in sys.argv and any(
+        argument == "--package" or argument.startswith("--package=")
+        for argument in sys.argv[1:]
+    ):
         from evidence import export
 
         try:

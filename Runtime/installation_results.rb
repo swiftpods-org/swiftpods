@@ -1,4 +1,5 @@
 # frozen_string_literal: true
+
 # References to the projects generated and owned by the Swift engine.
 class Pod::Installer
   TargetInstallationResults = Struct.new(:pod_target_installation_results, :aggregate_target_installation_results)
@@ -25,10 +26,22 @@ class Pod::Installer
           app_native_targets[spec]
         end
 
-        def test_specs_by_native_target = target.test_specs.filter_map { |spec| value = native_target_for_spec(spec); [value, spec] if value }.to_h
+        def test_specs_by_native_target
+          target.test_specs.filter_map do |spec|
+            value = native_target_for_spec(spec)
+            [value, spec] if value
+          end.to_h
+        end
+
         def app_specs_by_native_target = app_native_targets.to_h { |spec, value| [value, spec] }
-        def non_library_specs_by_native_target = test_specs_by_native_target.merge(app_specs_by_native_target)
-        def app_host_target_labelled(label) = (app_native_targets.values + test_app_host_targets).find { |value| value.name == label }
+
+        def non_library_specs_by_native_target
+          test_specs_by_native_target.merge(app_specs_by_native_target)
+        end
+
+        def app_host_target_labelled(label)
+          (app_native_targets.values + test_app_host_targets).find { |value| value.name == label }
+        end
       end
     end
   end

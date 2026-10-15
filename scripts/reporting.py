@@ -6,6 +6,7 @@ import json
 import platform
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -124,6 +125,35 @@ def verify_snapshot(metadata, allow_build=False):
         raise RuntimeError("Executable changed during verification")
 
 
+def snapshot_metadata():
+    """Capture the inputs whose identity must remain fixed during a check."""
+    return {
+        "source_digest": source_digest(),
+        "contract_digest": contract_digest(),
+        "source_revision": source_revision(),
+        "host": {"os": platform.mac_ver()[0], "architecture": platform.machine()},
+        "toolchain": toolchain_identity(),
+        "executable": binary_identity(),
+    }
+
+
+def write_report(path, value):
+    """Publish complete JSON atomically, without sharing a temporary filename."""
+    with tempfile.NamedTemporaryFile(
+        mode="w", prefix="." + path.name + "-", dir=path.parent, delete=False
+    ) as temporary:
+        pending = Path(temporary.name)
+        try:
+            temporary.write(json.dumps(value, indent=2) + "\n")
+        except BaseException:
+            pending.unlink(missing_ok=True)
+            raise
+    try:
+        pending.replace(path)
+    finally:
+        pending.unlink(missing_ok=True)
+
+
 def execute(main, name):
     path = ROOT / "test-results" / name
     path.parent.mkdir(exist_ok=True)
@@ -132,22 +162,15 @@ def execute(main, name):
         "schema_version": 1,
         "status": "running",
         "command": sys.argv,
-        "source_digest": source_digest(),
-        "contract_digest": contract_digest(),
-        "source_revision": source_revision(),
         "started_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "host": {"os": platform.mac_ver()[0], "architecture": platform.machine()},
-        "toolchain": toolchain_identity(),
-        "executable": binary_identity(),
     }
 
-    def write(value):
-        temporary = path.with_suffix(".pending")
-        temporary.write_text(json.dumps(value, indent=2) + "\n")
-        temporary.replace(path)
-
-    write(metadata)
+    # Invalidate old evidence before probing Ruby, Xcode, the binary, or sources.
+    # A failure in any of those probes must not leave a previous pass behind.
+    write_report(path, metadata)
     try:
+        metadata.update(snapshot_metadata())
+        write_report(path, metadata)
         main()
         verify_snapshot(
             metadata, allow_build=name in ("native-units.json", "check.json")
@@ -160,22 +183,27 @@ def execute(main, name):
         )
         result["duration_seconds"] = time.monotonic() - started
         result["executable"] = binary_identity()
-        write(result)
+        write_report(path, result)
     except SystemExit as error:
         metadata.update(
             status="skipped" if error.code in (None, 0) else "failed",
             error="Exited before test evidence was completed: " + str(error.code),
             duration_seconds=time.monotonic() - started,
         )
-        write(metadata)
+        write_report(path, metadata)
         raise
     except BaseException as error:
-        current = json.loads(path.read_text())
+        try:
+            current = json.loads(path.read_text())
+            if not isinstance(current, dict):
+                current = {}
+        except (OSError, ValueError):
+            current = {}
         current.update(metadata)
         current.update(
             status="failed",
-            error=str(error),
+            error=str(error) or type(error).__name__,
             duration_seconds=time.monotonic() - started,
         )
-        write(current)
+        write_report(path, current)
         raise

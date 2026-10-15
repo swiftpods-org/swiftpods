@@ -77,7 +77,7 @@ def main():
     work.joinpath("Podfile").write_text(
         f"platform :osx, '13.0'\ntarget 'App' do\n  pod 'Pinned', :git => '{origin}', :branch => 'main'\nend\n"
     )
-    initial = cli("install", "--no-integrate")
+    cli("install", "--no-integrate")
     assert first in work.joinpath("Podfile.lock").read_text()
     origin.joinpath("Pinned.c").write_text("int pinned_value(void) { return 2; }\n")
     second = commit(origin, "second")

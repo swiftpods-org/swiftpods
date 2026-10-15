@@ -50,10 +50,10 @@ def main():
     env = environment()
     env["SWIFTPODS_CACHE_ROOT"] = str(parent / "cache")
 
-    def cli(*args):
+    def cli(*args, project=work):
         result = subprocess.run(
             [str(ROOT / ".build/debug/swiftpods"), *args, "--json"],
-            cwd=work,
+            cwd=project,
             env=env,
             capture_output=True,
             text=True,
@@ -66,6 +66,24 @@ def main():
     assert first in (work / "Podfile.lock").read_text()
     second = commit("1.1", 2)
     env["SWIFTPODS_CACHE_ROOT"] = str(parent / "fresh-cache")
+    for selector in ["0", "'0'"]:
+        project = parent / (
+            "numeric-revision" if selector == "0" else "string-revision"
+        )
+        project.mkdir()
+        (project / "Podfile").write_text(
+            "platform :osx, '13.0'\ntarget 'App' do\n pod 'HGKit', :hg => "
+            + repr(str(repo))
+            + ", :revision => "
+            + selector
+            + "\nend\n"
+        )
+        cli("install", "--no-integrate", project=project)
+        assert "return 1" in (project / "Pods/HGKit/HGKit.c").read_text()
+        assert first in (project / "Podfile.lock").read_text()
+        pinned = (project / "Podfile.lock").read_bytes()
+        cli("install", "--no-integrate", "--offline", "--deployment", project=project)
+        assert (project / "Podfile.lock").read_bytes() == pinned
     cli("install", "--no-integrate")
     assert "return 1" in (work / "Pods/HGKit/HGKit.c").read_text()
     assert first in (work / "Podfile.lock").read_text()
@@ -85,6 +103,7 @@ def main():
         ],
         "verified": [
             "actual Mercurial repository and full revision pin",
+            "integer and string Mercurial revision zero select the first commit",
             "advanced upstream head remains pinned across a fresh cache",
             "selected update installs the new revision and version",
             "offline deployment preserves lock bytes",
