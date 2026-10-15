@@ -29,6 +29,12 @@ results = cases.map do |item|
   rescue Pod::Informative => error
     raise unless error.message.match?(/could not find compatible|circular dependency|Unable to satisfy/i)
     {'status' => 'conflict'}
+  rescue ArgumentError => error
+    # The reference graph's cycle diagnostic itself fails for the multi-root
+    # cycle. Preserve the actual exception in the log; compare rejection only.
+    raise unless error.message.match?(/\AThere is no path from \S+ to \S+\z/) && error.backtrace.first.include?('/molinillo/dependency_graph.rb:')
+    warn('Reference cycle rejection: ' + error.class.to_s + ': ' + error.message)
+    {'status' => 'conflict'}
   end
 end
 puts JSON.generate(results)
@@ -50,6 +56,19 @@ def main():
                 data = {'name': name, 'version': version, 'platforms': {'osx': '13.0'}, 'dependencies': dependencies}
                 path = catalog / name / version / (name + '.podspec.json'); path.parent.mkdir(parents=True); path.write_text(json.dumps(data))
         roots = [[name, generator.choice(['>= 0', '< 2', '>= 2'])] for name in generator.sample(names, generator.choice([1, 2, 3]))]
+        cases.append({'catalog': str(catalog), 'sandbox': str(parent / str(index) / 'Pods'), 'roots': roots})
+    cycle_cases = [
+        ([{'name': 'A', 'version': '1.0', 'dependencies': {'B': ['>= 0']}}, {'name': 'B', 'version': '1.0', 'dependencies': {'A': ['>= 0']}}], [['A', '>= 0']]),
+        ([{'name': 'A', 'version': '1.0', 'dependencies': {'B': ['>= 0']}}, {'name': 'B', 'version': '1.0', 'dependencies': {'C': ['>= 0']}}, {'name': 'C', 'version': '1.0', 'dependencies': {'A': ['>= 0']}}], [['A', '>= 0'], ['C', '>= 0']]),
+        ([{'name': 'A', 'version': '2.0', 'dependencies': {'B': ['>= 0']}}, {'name': 'A', 'version': '1.0'}, {'name': 'B', 'version': '1.0', 'dependencies': {'A': ['>= 0']}}], [['A', '>= 0']]),
+        ([{'name': 'Kit', 'version': '1.0', 'default_subspecs': ['Core'], 'subspecs': [{'name': 'Core', 'dependencies': {'Helper': ['>= 0']}}]}, {'name': 'Helper', 'version': '1.0', 'dependencies': {'Kit/Core': ['>= 0']}}], [['Kit', '>= 0']]),
+    ]
+    for specifications, roots in cycle_cases:
+        index = len(cases); catalog = parent / str(index) / 'catalog'; catalog.mkdir(parents=True)
+        for data in specifications:
+            data['platforms'] = {'osx': '13.0'}
+            path = catalog / data['name'] / data['version'] / (data['name'] + '.podspec.json')
+            path.parent.mkdir(parents=True); path.write_text(json.dumps(data))
         cases.append({'catalog': str(catalog), 'sandbox': str(parent / str(index) / 'Pods'), 'roots': roots})
     payload = parent / 'cases.json'; payload.write_text(json.dumps(cases))
     ruby, reference_env = reference_environment(args.gem_home, parent)
@@ -74,7 +93,7 @@ def main():
     differences = [{'case': index, 'expected': wanted, 'actual': own} for index, (wanted, own) in enumerate(zip(expected, actual)) if wanted != own]
     (parent / 'observations.json').write_text(json.dumps({'reference': expected, 'native': actual, 'differences': differences}, indent=2))
     assert not differences, differences
-    report = {'status': 'passed', 'engine': 'swift', 'reference': '1.17.0', 'seed': 1431, 'case_count': len(cases), 'fixture': str(parent), 'verified': ['32 deterministic generated graphs resolved independently in both engines', 'same chosen root versions and dependency closure', 'same conflict outcomes', 'root requirement ordering and transitive version constraints'], 'unverified': ['exhaustive graph space', 'remote repository transport']}
+    report = {'status': 'passed', 'engine': 'swift', 'reference': '1.17.0', 'seed': 1431, 'case_count': len(cases), 'fixture': str(parent), 'verified': ['32 deterministic generated graphs and four cycle/backtracking graphs resolved independently in both engines', 'same chosen root versions and dependency closure', 'same conflict outcomes', 'root requirement ordering and transitive version constraints', 'cycles across roots and default subspecs rejected; acyclic version fallback retained'], 'unverified': ['exhaustive graph space', 'remote repository transport', 'exact cycle diagnostic text: reference internal ArgumentError on the merged cycle is retained in reference.log']}
     (ROOT / 'test-results/native-resolver-reference.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps(report, indent=2))
 

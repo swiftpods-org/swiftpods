@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 from bootstrap import ROOT, environment
+from batch_fixture import user_project
 from reference_compare import reference_environment
 from reporting import execute
 
@@ -54,6 +55,37 @@ pre_install do |installer|
   values = {'target' => target.name, 'platform' => target.platform_name.to_s, 'minimum' => target.deployment_target, 'configurations' => target.build_configurations.map(&:name).sort, 'group' => group.path, 'file' => group['marker.c'].path, 'unknown_setter_rejected' => unknown_rejected}
   created.save
   File.write('project-api.json', JSON.pretty_generate(values))
+end
+'''
+
+TARGET_TREE_API = r'''
+%w[pre_install pre_integrate post_install post_integrate].each do |phase|
+  send(phase) do |installer|
+    podfile = installer.podfile
+    definitions = podfile.target_definition_list
+    $tree_definitions ||= definitions
+    raise 'Target definition identity changed' unless definitions.zip($tree_definitions).all? { |left, right| left.equal?(right) }
+    raise 'Root target identity changed' unless podfile.root_target_definitions == [definitions.first]
+    raise 'Podfile identity changed' unless definitions.all? { |definition| definition.podfile.equal?(podfile) }
+    raise 'Public target definition type missing' unless definitions.all? { |definition| definition.is_a?(Pod::Podfile::TargetDefinition) && definition.to_s == definition.label }
+    observations = definitions.map do |definition|
+      {'name' => definition.name, 'label' => definition.label, 'abstract' => definition.abstract?, 'root' => definition.root.label,
+       'root?' => definition.root?, 'parent' => definition.root? ? 'Podfile' : definition.parent.label,
+       'children' => definition.children.map(&:label), 'recursive_children' => definition.recursive_children.map(&:label)}
+    end
+    value = {'phase' => phase, 'definitions' => observations, 'lookup' => podfile.target_definitions.transform_values(&:label),
+             'installation_results_nil' => installer.target_installation_results.nil?}
+    File.open('tree-api.jsonl', 'a') { |file| file.puts(JSON.generate(value)) }
+    if phase == 'post_install'
+      installer.aggregate_targets.each do |aggregate|
+        definition = definitions.find { |candidate| candidate.label == aggregate.label }
+        raise 'Aggregate lost its declaration identity' unless definition.equal?(aggregate.target_definition)
+        aggregate.user_targets.each do |target|
+          target.build_configurations.each { |configuration| configuration.build_settings['TREE_HOOK'] = definition.label }
+        end
+      end
+    end
+  end
 end
 '''
 
@@ -201,6 +233,31 @@ def main():
         assert 'Resources/excluded.txt' not in observations[engine]['resource_bundle_files']
     if args.gem_home:
         assert observations['native'] == observations['reference'], observations
+    trees = {}
+    for engine in engines:
+        work = parent / ('tree-' + engine); work.mkdir()
+        for folder in ['Left', 'Right']:
+            directory = work / folder; directory.mkdir(); user_project(directory, 'App')
+        declaration = "platform :osx, '13.0'\nworkspace 'Tree'\n"
+        for folder in ['Left', 'Right']:
+            declaration += "abstract_target '" + folder + "' do\n project '" + folder + "/App.xcodeproj'\n target('App') {}\nend\n"
+        (work / 'Podfile').write_text(declaration + TARGET_TREE_API)
+        (native if engine == 'native' else reference)(work, 'install')
+        trees[engine] = [json.loads(line) for line in (work / 'tree-api.jsonl').read_text().splitlines()]
+        assert [value['phase'] for value in trees[engine]] == ['pre_install', 'pre_integrate', 'post_install', 'post_integrate']
+        assert [value['installation_results_nil'] for value in trees[engine]] == [True, True, False, False]
+        assert trees[engine][0]['lookup'] == {'Pods': 'Pods', 'Left': 'Pods-Left', 'Right': 'Pods-Right', 'App': 'Pods-Right-App'}
+        for folder in ['Left', 'Right']:
+            graph = json.loads(subprocess.check_output(['plutil', '-convert', 'json', '-o', '-', str(work / folder / 'App.xcodeproj/project.pbxproj')]))
+            configurations = [value['buildSettings'] for value in graph['objects'].values() if value['isa'] == 'XCBuildConfiguration' and value['buildSettings'].get('PRODUCT_NAME') == 'App']
+            assert configurations and all(value['TREE_HOOK'] == 'Pods-' + folder + '-App' for value in configurations)
+        skipped = parent / ('tree-skipped-' + engine); skipped.mkdir()
+        (skipped / 'Podfile').write_text("platform :osx, '13.0'\ninstall! 'cocoapods', :integrate_targets => false, :skip_pods_project_generation => true\ntarget('App') {}\n" + TARGET_TREE_API)
+        (native if engine == 'native' else reference)(skipped, 'install')
+        values = [json.loads(line) for line in (skipped / 'tree-api.jsonl').read_text().splitlines()]
+        assert [value['phase'] for value in values] == ['pre_install', 'post_install'] and all(value['installation_results_nil'] for value in values)
+    if args.gem_home:
+        assert trees['native'] == trees['reference'], trees
     # A lockfile edit during a hook must survive install failure and recovery.
     work = parent / 'lock-conflict'; work.mkdir()
     (work / 'Podfile').write_text("platform :osx, '13.0'\ninstall! 'cocoapods', :integrate_targets => false\nsource " + repr(second.as_uri()) + "\ntarget 'App' do\n pod 'FileKit', :path => '../FileKit'\nend\npost_install { File.write('Podfile.lock', 'external-edit') }\n")
@@ -235,6 +292,10 @@ def main():
     cases += ['Project.' + name for name in ['new', 'new_target', 'new_group', 'new_file', 'save', 'unknown_setter_rejected']]
     cases += duplicate_cases
     cases += ['HookValues.unknown_getter_rejected']
+    cases += ['Podfile.' + name for name in ['target_definitions', 'target_definition_list', 'root_target_definitions']]
+    cases += ['TargetDefinition.' + name for name in ['parent', 'children', 'recursive_children', 'root', 'root?', 'podfile']]
+    cases += ['Installer.target_installation_results_lifecycle']
+    verified += ['full root/abstract/concrete target tree with stable object identities across all four hooks', 'same-named targets in separate projects preserve their distinct hook mutations', 'installation results remain nil before generation and when generation is skipped']
     report = {'status': 'passed', 'engine': 'swift', 'fixture': str(parent), 'verified': verified, 'verified_cases': cases, 'unverified': ['arbitrary private plugin APIs', 'remote authenticated sources']}
     name = 'native-compatibility-reference.json' if args.gem_home else 'native-compatibility.json'
     if args.gem_home: report['reference'] = '1.17.0'

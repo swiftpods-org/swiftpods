@@ -7,9 +7,37 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
-import zipfile
+import tempfile
+from install import extract_archive
+from evidence import validate as validate_evidence
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def inspect_archive(archive):
+    with tempfile.TemporaryDirectory(prefix='swiftpods-release-inventory-') as temporary:
+        root = extract_archive(Path(archive).read_bytes(), Path(temporary))
+        manifest = (root / 'compatibility.json').read_bytes()
+        metadata = json.loads(manifest)
+        if not (root / 'bin/swiftpods').stat().st_mode & 0o111:
+            raise RuntimeError('Release executable has no executable permissions')
+        if metadata.get('engine') != 'swift' or metadata.get('gems') or metadata.get('native_ruby_libraries'):
+            raise RuntimeError('Only a native distribution without installation gems may be released')
+        files = {}
+        for path in sorted(root.rglob('*')):
+            relative = path.relative_to(root).as_posix()
+            if path.parent == root and path.name in ('compatibility.json', 'compatibility.cms'):
+                continue
+            if path.is_symlink():
+                if not path.resolve().is_relative_to(root.resolve()): raise RuntimeError('Bundle symlink escapes distribution')
+                files[relative] = {'symlink': path.readlink().as_posix()}
+            elif path.is_file():
+                files[relative] = {'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}
+        if files != metadata['files'] or hashlib.sha256(json.dumps(files, sort_keys=True).encode()).hexdigest() != metadata['bundle_digest']:
+            raise RuntimeError('Release archive inventory/checksum mismatch')
+        if any(name.startswith(('runtime/', 'gems/', 'vendor/')) or name == 'host/host.rb' for name in files):
+            raise RuntimeError('Embedded interpreters and installation engines must not be released')
+        return metadata, hashlib.sha256(manifest).hexdigest()
 
 
 def homebrew_formula(version, assets):
@@ -47,32 +75,16 @@ def homebrew_formula(version, assets):
     return '\n'.join(lines)
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--version', required=True)
-    parser.add_argument('--bundle', type=Path, action='append', default=[])
-    parser.add_argument('--archive', type=Path, action='append', default=[])
-    parser.add_argument('--destination', type=Path, required=True)
-    parser.add_argument('--development', action='store_true', help='Prepare explicitly unpublished development fixtures from a dirty checkout')
-    args = parser.parse_args()
-    if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?', args.version):
-        parser.error('Explicit release version required, without a leading v')
-    if not args.bundle and not args.archive:
-        parser.error('At least one --bundle or --archive is required')
-    destination = args.destination.absolute()
-    destination.mkdir(parents=True, exist_ok=False)
+def prepare(args, destination):
     archives = list(args.archive)
     for index, bundle in enumerate(args.bundle):
         temporary = destination / ('input-' + str(index) + '.zip')
-        subprocess.run(['/usr/bin/ditto', '-c', '-k', '--keepParent', str(bundle.resolve()), str(temporary)], check=True)
+        subprocess.run(['/usr/bin/ditto', '-c', '-k', '--norsrc', '--noextattr', '--noqtn', '--keepParent', str(bundle.resolve()), str(temporary)], check=True)
         archives.append(temporary)
-    assets, seen, source = [], set(), None
+    evidence = [(path, validate_evidence(path)) for path in args.evidence]
+    assets, acceptances, seen, used_evidence, source = [], [], set(), set(), None
     for archive in archives:
-        with zipfile.ZipFile(archive) as reader:
-            paths = [name for name in reader.namelist() if len(Path(name).parts) == 2 and name.endswith('/compatibility.json')]
-            if len(paths) != 1:
-                raise RuntimeError('Archive must have exactly one compatibility manifest')
-            metadata = json.loads(reader.read(paths[0]))
+        metadata, manifest_sha256 = inspect_archive(archive)
         if metadata['swiftpods_version'] != args.version or metadata['runtime']['mode'] != 'external':
             raise RuntimeError('Release version/runtime mode differs from package')
         revision = metadata['swiftpods_source']
@@ -97,6 +109,17 @@ def main():
         if key in seen:
             raise RuntimeError('Duplicate release architecture/OS floor')
         seen.add(key)
+        matching = [(path, index) for path, index in evidence if any(bundle['bundle_digest'] == metadata['bundle_digest'] for bundle in index['bundles'])]
+        if len(matching) > 1 or (not args.development and not matching):
+            raise RuntimeError('Each release bundle requires exactly one matching full acceptance archive')
+        if matching:
+            path, index = matching[0]
+            validate_evidence(path, metadata, manifest_sha256)
+            used_evidence.add(path)
+            evidence_name = 'evidence-macos-' + minimum + '-' + architecture + '.zip'
+            shutil.copy2(path, destination / evidence_name)
+            acceptances.append({'architecture': architecture, 'minimum_macos': minimum, 'filename': evidence_name,
+                                'sha256': hashlib.sha256(path.read_bytes()).hexdigest(), 'stable_acceptance': index['stable_acceptance']})
         filename = 'swiftpods-' + args.version + '-macos-' + minimum + '-' + architecture + '.zip'
         target = destination / filename
         if archive.parent == destination:
@@ -107,8 +130,10 @@ def main():
         assets.append({'os': 'macos', 'architecture': architecture, 'minimum_macos': minimum, 'filename': filename,
                        'sha256': sha256, 'url': 'https://github.com/swiftpods-org/swiftpods-release/releases/download/v' + args.version + '/' + filename})
     assets.sort(key=lambda asset: (asset['architecture'], asset['minimum_macos']))
+    if used_evidence != {path for path, _ in evidence}:
+        raise RuntimeError('An evidence archive does not belong to a supplied release bundle')
     shutil.copy2(ROOT / 'scripts/install.py', destination / 'install.py')
-    release = {'schema_version': 1, 'development': args.development, 'publishable': False, 'source_revision': {'commit': source[0], 'digest': source[1]}, 'version': args.version, 'runtime_mode': 'external', 'assets': assets,
+    release = {'schema_version': 1, 'development': args.development, 'publishable': not args.development and bool(acceptances) and all(item['stable_acceptance'] == 'established' for item in acceptances), 'source_revision': {'commit': source[0], 'digest': source[1]}, 'version': args.version, 'runtime_mode': 'external', 'assets': assets, 'acceptance': acceptances,
                'installer_sha256': hashlib.sha256((destination / 'install.py').read_bytes()).hexdigest()}
     (destination / 'release.json').write_text(json.dumps(release, indent=2) + '\n')
     checksums = []
@@ -144,9 +169,34 @@ brew upgrade swiftpods
 [Website](https://swiftpods.org) ·
 [Project](https://github.com/swiftpods-org/swiftpods-code)
 ''')
-    print('Prepared', destination)
     print('Manifest SHA-256:', hashlib.sha256((destination / 'release.json').read_bytes()).hexdigest())
     print('Installer SHA-256:', release['installer_sha256'])
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--version', required=True)
+    parser.add_argument('--bundle', type=Path, action='append', default=[])
+    parser.add_argument('--archive', type=Path, action='append', default=[])
+    parser.add_argument('--evidence', type=Path, action='append', default=[], help='Full acceptance evidence.zip for each supplied bundle')
+    parser.add_argument('--destination', type=Path, required=True)
+    parser.add_argument('--development', action='store_true', help='Prepare explicitly unpublished development fixtures from a dirty checkout')
+    args = parser.parse_args()
+    if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?', args.version):
+        parser.error('Explicit release version required, without a leading v')
+    if not args.bundle and not args.archive:
+        parser.error('At least one --bundle or --archive is required')
+    if not args.development and not args.evidence:
+        parser.error('Release preparation requires --evidence from the full packaged check')
+    destination = args.destination.absolute()
+    if destination.exists() or destination.is_symlink(): raise RuntimeError('Release destination already exists')
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='.swiftpods-release-', dir=destination.parent) as temporary:
+        staging = Path(temporary) / 'release'
+        staging.mkdir()
+        prepare(args, staging)
+        staging.rename(destination)
+    print('Prepared', destination)
 
 
 if __name__ == '__main__':

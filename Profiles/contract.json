@@ -1505,6 +1505,36 @@
       },
       "HookValues.unknown_getter_rejected": {
         "report": "native-compatibility-reference.json"
+      },
+      "Podfile.target_definitions": {
+        "report": "native-compatibility-reference.json"
+      },
+      "Podfile.target_definition_list": {
+        "report": "native-compatibility-reference.json"
+      },
+      "Podfile.root_target_definitions": {
+        "report": "native-compatibility-reference.json"
+      },
+      "TargetDefinition.parent": {
+        "report": "native-compatibility-reference.json"
+      },
+      "TargetDefinition.children": {
+        "report": "native-compatibility-reference.json"
+      },
+      "TargetDefinition.recursive_children": {
+        "report": "native-compatibility-reference.json"
+      },
+      "TargetDefinition.root": {
+        "report": "native-compatibility-reference.json"
+      },
+      "TargetDefinition.root?": {
+        "report": "native-compatibility-reference.json"
+      },
+      "TargetDefinition.podfile": {
+        "report": "native-compatibility-reference.json"
+      },
+      "Installer.target_installation_results_lifecycle": {
+        "report": "native-compatibility-reference.json"
       }
     }
   },

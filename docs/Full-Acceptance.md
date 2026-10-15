@@ -65,6 +65,31 @@ serialized modules/private interfaces, builds consumers through public interface
 checks binary UUID/exported symbols and executes Debug/Release applications.
 Its normal local run explicitly leaves cross-compiler stability unverified.
 
+## Portable evidence and Homebrew
+
+A full packaged run automatically exports `test-results/evidence.zip`. Its
+index hashes every report and retained log, records the exact source/toolchain,
+and identifies the tested distribution manifest and executable. Failed, missing,
+changed or incomplete reports cannot be exported. Fixtures also record the
+external Ruby executable/library hashes and reject replacement of a toolchain or
+executable while running.
+
+Run the generated Homebrew formula through a temporary local tap with:
+
+```sh
+python3 scripts/native_homebrew_tests.py --bundle dist/SwiftPods-candidate
+python3 scripts/evidence.py
+```
+
+This performs `brew install`, `brew test`, runtime verification and a real Ruby
+hook, then removes its formula and tap. It requires no existing SwiftPods formula
+and preserves any existing installation. The package is served on localhost;
+this verifies formula installation without claiming that public release URLs
+work. Existing Ruby dependencies are retained. The second command includes the
+current Homebrew report and log in the evidence archive. CI performs these steps
+on each configured runner. A successful check on a developer machine does not
+certify a pristine machine or any other macOS/architecture.
+
 ## Repository handoff
 
 `swiftpods-code` owns implementation, contracts and evidence generation.
@@ -72,6 +97,10 @@ Its normal local run explicitly leaves cross-compiler stability unverified.
 `Formula/swiftpods.rb`; archives are release assets rather than source files.
 `swiftpods-site` describes capabilities confirmed by the selected release's
 evidence at swiftpods.org. Updating these repositories does not imply publication.
+Release assembly requires one matching full evidence archive per distribution.
+It verifies archive inventory, source/toolchain and tested manifest/executable
+identities before producing a destination. Failed assembly leaves no partial
+release directory.
 
 Stable 1.0 requires the complete current corpus and every mandatory gate. An
 unavailable gate remains unverified and must not be replaced with an inferred pass.

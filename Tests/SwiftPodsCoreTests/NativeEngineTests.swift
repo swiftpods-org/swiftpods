@@ -34,9 +34,9 @@ final class NativeEngineTests: XCTestCase {
         XCTAssertEqual(result.specs["B"]?.version.description, "1.0")
         XCTAssertThrowsError(try resolver.resolve([NativeDependency(["name": "A", "requirements": [">= 2"]]), NativeDependency(["name": "C"])]))
     }
-    func testResolverCyclesSubspecsPlatformAndLockedPreference() throws {
+    func testResolverSubspecsPlatformAndLockedPreference() throws {
         let spec = try NativeSpec(data: ["name": "Kit", "version": "1.2.3.4", "default_subspecs": ["Core"], "subspecs": [["name": "Core", "dependencies": ["Helper": [">= 1"]]]]])
-        let helper = try NativeSpec(data: ["name": "Helper", "version": "1.0", "dependencies": ["Kit/Core": ["= 1.2.3.4"]]])
+        let helper = try NativeSpec(data: ["name": "Helper", "version": "1.0"])
         let result = try NativeResolver(candidates: { $0.root == "Kit" ? [spec] : [helper] }).resolve([NativeDependency(["name": "Kit"])])
         XCTAssertEqual(Set(result.requests.map(\.name)), ["Kit", "Kit/Core", "Helper"])
         let incompatible = try NativeSpec(data: ["name": "New", "version": "1.0", "platforms": ["ios": "18.0"]])
@@ -44,6 +44,27 @@ final class NativeEngineTests: XCTestCase {
         let old = try NativeSpec(data: ["name": "Old", "version": "1.0"]), newer = try NativeSpec(data: ["name": "Old", "version": "2.0"])
         let locked = try NativeResolver(candidates: { _ in [newer, old] }, locked: ["Old": "1.0"]).resolve([NativeDependency(["name": "Old"])])
         XCTAssertEqual(locked.specs["Old"]?.version.description, "1.0")
+    }
+    func testResolverRejectsMergedCyclesAndBacktracksToAcyclicVersions() throws {
+        let a = try NativeSpec(data: ["name": "A", "version": "2.0", "dependencies": ["B": [">= 0"]]])
+        let older = try NativeSpec(data: ["name": "A", "version": "1.0"])
+        let b = try NativeSpec(data: ["name": "B", "version": "1.0", "dependencies": ["C": [">= 0"]]])
+        let c = try NativeSpec(data: ["name": "C", "version": "1.0", "dependencies": ["A": [">= 0"]]])
+        let candidates = ["A": [a, older], "B": [b], "C": [c]]
+        let roots = try ["A", "C"].map { try NativeDependency(["name": $0]) }
+        let resolver = NativeResolver(candidates: { candidates[$0.root] ?? [] })
+        XCTAssertEqual(try resolver.resolve(roots).specs["A"]?.version.description, "1.0")
+        let pinned = NativeResolver(candidates: resolver.candidates, locked: ["A": "2.0"])
+        XCTAssertThrowsError(try pinned.resolve(roots)) { error in
+            let diagnostic = error as? Diagnostic
+            XCTAssertEqual(diagnostic?.code, "SP-RESOLVE-CONFLICT")
+            XCTAssertEqual(diagnostic?.dependencyChain, ["A", "B", "C", "A"])
+        }
+    }
+    func testResolverRejectsCycleThroughDefaultSubspec() throws {
+        let kit = try NativeSpec(data: ["name": "Kit", "version": "1.0", "default_subspecs": ["Core"], "subspecs": [["name": "Core", "dependencies": ["Helper": [">= 0"]]]]])
+        let helper = try NativeSpec(data: ["name": "Helper", "version": "1.0", "dependencies": ["Kit/Core": [">= 0"]]])
+        XCTAssertThrowsError(try NativeResolver(candidates: { $0.root == "Kit" ? [kit] : [helper] }).resolve([NativeDependency(["name": "Kit"])]))
     }
     func testNativeProjectRoundTripPreservesUnknownObjects() throws {
         let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("project.pbxproj")

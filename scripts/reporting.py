@@ -41,6 +41,28 @@ def binary_identity():
     return {'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()} if path.is_file() else None
 
 
+def toolchain_identity():
+    from ruby_runtime import select_ruby
+    _, ruby = select_ruby(json.loads((ROOT / 'Profiles/baseline.json').read_text()))
+    ruby['sha256'] = hashlib.sha256(Path(ruby['path']).read_bytes()).hexdigest()
+    if ruby['library']:
+        ruby['library_sha256'] = hashlib.sha256(Path(ruby['library']).read_bytes()).hexdigest()
+    result = {name: subprocess.check_output(command, cwd=ROOT, text=True, stderr=subprocess.STDOUT).strip()
+              for name, command in [('xcode', ['xcodebuild', '-version']), ('swift', ['swift', '--version'])]}
+    result['external_ruby'] = ruby
+    result['python'] = {'version': platform.python_version(), 'path': str(Path(sys.executable).resolve())}
+    return result
+
+
+def verify_snapshot(metadata, allow_build=False):
+    if source_digest() != metadata['source_digest'] or source_revision() != metadata['source_revision']:
+        raise RuntimeError('Sources or revision changed during verification; rerun against a fixed source snapshot')
+    if toolchain_identity() != metadata['toolchain']:
+        raise RuntimeError('Toolchain changed during verification')
+    if not allow_build and binary_identity() != metadata['executable']:
+        raise RuntimeError('Executable changed during verification')
+
+
 def execute(main, name):
     path = ROOT / 'test-results' / name
     path.parent.mkdir(exist_ok=True)
@@ -50,8 +72,7 @@ def execute(main, name):
                 'source_revision': source_revision(),
                 'started_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 'host': {'os': platform.mac_ver()[0], 'architecture': platform.machine()},
-                'toolchain': {name: subprocess.check_output(command, cwd=ROOT, text=True, stderr=subprocess.STDOUT).strip()
-                              for name, command in [('xcode', ['xcodebuild', '-version']), ('swift', ['swift', '--version'])]}}
+                'toolchain': toolchain_identity(), 'executable': binary_identity()}
     def write(value):
         temporary = path.with_suffix('.pending')
         temporary.write_text(json.dumps(value, indent=2) + '\n')
@@ -59,8 +80,7 @@ def execute(main, name):
     write(metadata)
     try:
         main()
-        if source_digest() != metadata['source_digest']:
-            raise RuntimeError('Sources changed during verification; rerun against a fixed source snapshot')
+        verify_snapshot(metadata, allow_build=name in ('native-units.json', 'check.json'))
         result = json.loads(path.read_text())
         if result.get('status') in (None, 'running'):
             result['status'] = 'passed'

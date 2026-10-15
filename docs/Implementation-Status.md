@@ -39,6 +39,8 @@ Implemented functionality includes:
   standalone/hosted XCTest, app-spec hosts and UI runners; generated schemes.
 - Four ordered Ruby hook phases with stable public installer/spec/target objects,
   typed build types, live project objects and preserved project mutations.
+  Root/abstract/concrete target definitions retain their tree and identity;
+  generation results are exposed at the appropriate hook phases.
   Skipped project generation retains consumer objects and the correct hook order;
   BridgeSupport uses the Apple metadata tool for aggregate declarations.
   Declared plugins use explicit isolated gem environments.

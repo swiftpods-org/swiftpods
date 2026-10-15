@@ -91,3 +91,13 @@ def main():
 
 if __name__ == '__main__':
     execute(main, 'check.json')
+    if '--full' in sys.argv and '--package' in sys.argv:
+        from evidence import export
+        try:
+            export(ROOT / 'test-results/evidence.zip')
+        except BaseException as error:
+            path = ROOT / 'test-results/check.json'
+            report = json.loads(path.read_text())
+            report.update(status='failed', error='Evidence export failed: ' + str(error))
+            path.write_text(json.dumps(report, indent=2) + '\n')
+            raise

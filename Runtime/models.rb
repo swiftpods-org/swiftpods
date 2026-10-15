@@ -223,10 +223,15 @@ end
 
 module SwiftPods
   class TargetDefinition
-    attr_reader :data
-    def initialize(data); @data = data; end
+    attr_reader :data, :parent, :children, :podfile
+    def initialize(data, podfile); @data = data; @podfile = podfile; @children = []; end
+    def update_tree!(parent, children); @parent = parent; @children.replace(children); self; end
+    def root? = parent.equal?(podfile)
+    def root = root? ? self : parent.root
+    def recursive_children = (children + children.map(&:recursive_children)).flatten
     def name = data.fetch('name')
     def label = data['label'] || 'Pods-' + name
+    def to_s = label
     def platform = data['platform'] && Pod::Platform.new(data['platform']['name'], data['platform']['deployment_target'])
     def abstract? = data['abstract'] == true
     def uses_frameworks? = !!data['frameworks']
@@ -247,6 +252,7 @@ module SwiftPods
     def dependencies = data.fetch('dependencies', []).map { |entry| Pod::Dependency.new(entry['name'], *entry['requirements'], entry['options'].select { |key, _| %w[path git branch tag commit podspec].include?(key) }.transform_keys(&:to_sym)) }
   end
   class Podfile
+    TargetDefinition = SwiftPods::TargetDefinition
     def sources = data['sources']
     def plugins = data['plugins']
     def workspace_path = data['workspace'] && (data['workspace'].end_with?('.xcworkspace') ? data['workspace'] : data['workspace'] + '.xcworkspace')
@@ -254,15 +260,31 @@ module SwiftPods
     def set_arc_compatibility_flag? = data['set_arc_compatibility_flag']
     %w[pre_install pre_integrate post_install post_integrate].each { |name| define_method(name + '!') { |installer| hooks[name]&.call(installer); !!hooks[name] } }
     def analyzed_target_definitions
-      @definitions_by_identity ||= {}
-      (@analyzed_targets || to_hash.fetch('targets')).map do |entry|
-        key = entry.fetch('_id', [entry['project'], entry['label']])
-        definition = @definitions_by_identity[key] ||= TargetDefinition.new(entry)
-        definition.data.replace(entry)
-        definition
-      end
+      target_definition_list
+      (@analyzed_targets || to_hash.fetch('targets')).map { |entry| @definitions_by_identity.fetch(entry.fetch('_id')) }
     end
-    def target_definitions = analyzed_target_definitions.to_h { |definition| [definition.name, definition] }
+    def target_definition_list
+      @definitions_by_identity ||= {}
+      analyzed = (@analyzed_targets || []).to_h { |entry| [entry.fetch('_id'), entry] }
+      raw = [data, *targets]
+      definitions = raw.to_h do |entry|
+        key = entry.equal?(data) ? :root : entry.fetch('_id')
+        values = analyzed[key] || resolved(entry)
+        values = values.merge('name' => 'Pods', 'abstract' => data.fetch('abstract', true), '_id' => 'root') if key == :root
+        definition = @definitions_by_identity[key] ||= TargetDefinition.new({}, self)
+        definition.data.replace(values)
+        [entry.object_id, definition]
+      end
+      raw.each do |entry|
+        parent = entry.equal?(data) ? self : definitions.fetch(@parents.fetch(entry.object_id).object_id)
+        children = targets.select { |child| @parents[child.object_id].equal?(entry) }.map { |child| definitions.fetch(child.object_id) }
+        definitions.fetch(entry.object_id).update_tree!(parent, children)
+      end
+      root = definitions.fetch(data.object_id)
+      [root, *root.recursive_children]
+    end
+    def root_target_definitions = [target_definition_list.first]
+    def target_definitions = target_definition_list.to_h { |definition| [definition.name, definition] }
     def installation_options = Pod::Installer::InstallationOptions.from_podfile(self)
   end
 end
@@ -271,6 +293,7 @@ class Pod::Installer
   def installation_options = @installation_options ||= podfile.installation_options
   def analysis_result = @analysis_result ||= SwiftPods::Record.new(pod_targets: pod_targets, targets: aggregate_targets, specifications: sandbox.specifications.values)
   def target_installation_results
+    return nil unless %w[post_install post_integrate].include?(@hook_phase) && pods_project
     @target_installation_results ||= TargetInstallationResults.new({}, {})
     @target_installation_results.pod_target_installation_results.replace(pod_targets.to_h { |target| [target.name, target.installation_result] })
     @target_installation_results.aggregate_target_installation_results.replace(aggregate_targets.to_h do |target|

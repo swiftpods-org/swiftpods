@@ -59,7 +59,7 @@ def main():
     # This command validates the CMS identity and complete inventory before
     # external Ruby starts. A mismatched signer is a packaging failure.
     run('/usr/bin/env', 'SWIFTPODS_BUNDLE=' + str(bundle), bundle / 'bin/swiftpods', 'runtime', 'verify', '--json')
-    run('/usr/bin/ditto', '-c', '-k', '--keepParent', bundle, archive)
+    run('/usr/bin/ditto', '-c', '-k', '--norsrc', '--noextattr', '--noqtn', '--keepParent', bundle, archive)
     if args.notarize:
         command = ['/usr/bin/xcrun', 'notarytool', 'submit', archive, '--keychain-profile', args.keychain_profile, '--wait', '--output-format', 'json']
         if args.keychain: command += ['--keychain', args.keychain]

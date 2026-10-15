@@ -50,7 +50,11 @@ def main():
     (relocated / 'host/dsl.rb').write_text('# tampered\n')
     result = subprocess.run([str(relocated / 'bin/swiftpods'), 'runtime', 'verify', '--json'], env=env, capture_output=True)
     assert result.returncode != 0
-    (ROOT / 'test-results/native-distribution.json').write_text(json.dumps({'status': 'passed', 'engine': 'swift', 'verified': ['runtime inventory excludes reference engine/gems', 'relocation', 'release URLs', 'checksummed installer', 'idempotent install', 'bad checksum rejected', 'tampered adapter rejected'] + (['current 60-build/18-archive matrix includes platform architecture configuration and signing status'] if matrix_checked else []), 'unverified': ['remote publication', 'Homebrew installation', 'signing', 'Intel']}, indent=2) + '\n')
+    rejected = parent / 'rejected-release'
+    result = subprocess.run([sys.executable, 'scripts/release.py', '--development', '--version', manifest['swiftpods_version'], '--bundle', str(relocated), '--destination', str(rejected)], cwd=ROOT, env=env, capture_output=True, text=True)
+    assert result.returncode != 0 and 'inventory/checksum mismatch' in result.stderr, result.stderr
+    assert not rejected.exists(), 'Failed preparation exposed a partial release'
+    (ROOT / 'test-results/native-distribution.json').write_text(json.dumps({'status': 'passed', 'engine': 'swift', 'fixture': str(parent), 'verified': ['runtime inventory excludes reference engine/gems', 'relocation', 'release URLs', 'checksummed installer', 'idempotent install', 'bad checksum rejected', 'tampered adapter rejected', 'release preparation rejects a changed inventory and leaves no partial destination'] + (['current 60-build/18-archive matrix includes platform architecture configuration and signing status'] if matrix_checked else []), 'unverified': ['remote publication', 'Homebrew installation', 'signing', 'Intel']}, indent=2) + '\n')
 
 
 if __name__ == '__main__':

@@ -457,6 +457,7 @@ while (line = STDIN.gets)
       previous_projects = installer.generated_projects.to_h { |entry| [entry.path.to_s, entry] }
       child_projects = request.fetch('projects', []).map { |entry| previous_projects[entry.fetch('path')]&.update!(entry) || Xcodeproj::Project.new(entry) }
       installer.generated_projects = child_projects.empty? ? [project].compact : child_projects
+      installer.instance_variable_set(:@hook_phase, request.fetch('name'))
       installer.instance_variable_set(:@integrate_user_projects, request['integrate_user_projects'])
       installer.update_targets!(request.fetch('pod_targets', []))
       name = request.fetch('name')

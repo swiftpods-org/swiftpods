@@ -5,8 +5,11 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+import zipfile
 from unittest.mock import patch
 import acceptance
+import reporting
+import evidence as evidence_tools
 from reporting import ROOT, execute
 
 
@@ -55,6 +58,21 @@ class EvidenceTests(unittest.TestCase):
         self.binary.write_bytes(b'replaced executable')
         with self.assertRaises(RuntimeError): acceptance.collect(self.names)
 
+    def testRunningFixtureRejectsReplacedBinaryAndRuby(self):
+        metadata = {'source_digest': 'source', 'source_revision': self.revision,
+                    'toolchain': {'external_ruby': {'sha256': 'original-ruby'}},
+                    'executable': self.report['executable']}
+        with patch.object(reporting, 'source_digest', return_value='source'), \
+             patch.object(reporting, 'source_revision', return_value=self.revision), \
+             patch.object(reporting, 'toolchain_identity', return_value=metadata['toolchain']) as toolchain, \
+             patch.object(reporting, 'binary_identity', return_value=metadata['executable']) as binary:
+            reporting.verify_snapshot(metadata)
+            binary.return_value = dict(metadata['executable'], sha256='relinked')
+            with self.assertRaisesRegex(RuntimeError, 'Executable changed'): reporting.verify_snapshot(metadata)
+            reporting.verify_snapshot(metadata, allow_build=True)
+            toolchain.return_value = {'external_ruby': {'sha256': 'replaced-ruby'}}
+            with self.assertRaisesRegex(RuntimeError, 'Toolchain changed'): reporting.verify_snapshot(metadata, allow_build=True)
+
     def testSuppliedExternalEvidenceMustMatchItsHash(self):
         evidence = self.root / 'device.log'; evidence.write_text('fixture')
         supplied = self.root / 'external.json'
@@ -74,6 +92,46 @@ class EvidenceTests(unittest.TestCase):
         supplied = self.root / 'external.json'
         supplied.write_text(json.dumps({'source_digest': 'source', 'contract_digest': 'contract', 'gates': {'physical_devices': {'status': 'passed', 'evidence': [{'path': str(evidence), 'sha256': hashlib.sha256(evidence.read_bytes()).hexdigest()}]}}}))
         self.assertEqual(acceptance.collect(self.names, supplied)['stable_acceptance'], 'not_established')
+
+    def evidence_archive(self, *, changed_log=False, extra_file=False, missing_report=False):
+        metadata = {'swiftpods_source': {'base_commit': 'fixed', 'worktree_has_changes': False, 'files_digest': 'source'},
+                    'contract_digest': 'contract', 'build_host': self.report['host'], 'toolchain': self.report['toolchain'],
+                    'bundle_digest': 'bundle', 'files': {'bin/swiftpods': {'sha256': self.report['executable']['sha256']}}}
+        acceptance = dict(self.report, full=True, apple_integration_omitted=False, stable_acceptance='not_established')
+        files = {'logs/test.log': b'passed'}
+        reports = []
+        for name in self.names[:1] if missing_report else self.names:
+            data = json.dumps(self.report).encode()
+            files['reports/' + name] = data
+            reports.append({'report': name, 'sha256': evidence_tools.digest(data)})
+        acceptance['reports'] = reports
+        files['acceptance.json'] = json.dumps(acceptance).encode()
+        index = {key: acceptance[key] for key in ['source_digest', 'source_revision', 'contract_digest', 'host', 'toolchain', 'stable_acceptance']}
+        index.update(schema_version=1, bundles=[{'bundle_digest': 'bundle', 'manifest_sha256': 'manifest', 'executable_sha256': self.report['executable']['sha256']}], files={name: evidence_tools.digest(data) for name, data in files.items()})
+        path = self.root / 'evidence.zip'
+        with zipfile.ZipFile(path, 'w') as archive:
+            archive.writestr('index.json', json.dumps(index))
+            for name, data in files.items(): archive.writestr(name, b'changed' if changed_log and name == 'logs/test.log' else data)
+            if extra_file: archive.writestr('unexpected', 'extra')
+        return path, metadata
+
+    def testPortableEvidenceChecksEveryFileAndRequiredReport(self):
+        with patch.object(evidence_tools, 'required_reports', return_value=set(self.names)):
+            path, metadata = self.evidence_archive()
+            self.assertEqual(evidence_tools.validate(path, metadata, 'manifest')['stable_acceptance'], 'not_established')
+            for options in [{'changed_log': True}, {'extra_file': True}, {'missing_report': True}]:
+                path, _ = self.evidence_archive(**options)
+                with self.assertRaises(RuntimeError): evidence_tools.validate(path)
+
+    def testPortableEvidenceRejectsAnotherBundleManifestAndRevision(self):
+        with patch.object(evidence_tools, 'required_reports', return_value=set(self.names)):
+            path, metadata = self.evidence_archive()
+            with self.assertRaises(RuntimeError): evidence_tools.validate(path, metadata, 'changed-manifest')
+            metadata['bundle_digest'] = 'untested-bundle'
+            with self.assertRaises(RuntimeError): evidence_tools.validate(path, metadata)
+            path, metadata = self.evidence_archive()
+            metadata['swiftpods_source']['base_commit'] = 'another-revision'
+            with self.assertRaises(RuntimeError): evidence_tools.validate(path, metadata)
 
 
 def main():

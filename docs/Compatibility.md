@@ -229,6 +229,8 @@ installer supplies its generated header. This output difference is recorded and
 blocks baseline parity. A failed
 tool invocation is tested separately in both engines; it warns and retains the
 missing resource reference. No direct-tool fallback is counted as installer parity.
+The [BridgeSupport diagnosis](BridgeSupport.md) includes the reproducer, arguments,
+source-level cause and observable consequences.
 
 The authoritative aggregate is `test-results/check.json`, produced by
 `check.py --full --package PATH`. It records source/contract digests, revision,
@@ -239,8 +241,9 @@ never imply stable acceptance while an external gate is unverified.
 Additional regressions are `native-compatibility-reference.json` (locked sources,
 hard version constraints, compatible requirement edits, prerelease removal,
 shared update pins and lock-graph string deduplication, empty public-header patterns and
-FileAccessor/project operations), `native-resolver-reference.json` (32 seeded
-dependency graphs), `native-xcconfig-reference.json` (external projects and user
+FileAccessor/project operations and target-tree/hook lifecycle),
+`native-resolver-reference.json` (32 seeded dependency graphs plus four cycle and
+version-backtracking cases), `native-xcconfig-reference.json` (external projects and user
 include-chains), `native-swift-binary.json` (public swiftinterface consumption,
 Debug/Release builds and executed applications), `native-benchmarks.json` (three
 local cold/warm/no-op/update samples and unchanged build-input timestamps), and

@@ -44,6 +44,10 @@ jobs:
         run: python3 scripts/ci_signing.py setup
       - name: Verify, sign, notarize and test the final package
         run: python3 scripts/check.py --full --package dist/SwiftPods --signing-identity "$SWIFTPODS_SIGNING_IDENTITY" --notary-profile "$SWIFTPODS_NOTARY_PROFILE" --notary-keychain "$SWIFTPODS_NOTARY_KEYCHAIN"
+      - name: Install and test the signed Homebrew distribution
+        run: |
+          python3 scripts/native_homebrew_tests.py --bundle dist/SwiftPods
+          python3 scripts/evidence.py
       - name: Package tested distribution
         run: /usr/bin/shasum -a 256 dist/SwiftPods.zip
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
@@ -55,7 +59,10 @@ jobs:
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: evidence-${{ matrix.runner }}
-          path: test-results/
+          include-hidden-files: true
+          path: |
+            test-results/
+            .build/native-homebrew-*/homebrew.log
       - name: Remove temporary signing credentials
         if: always()
         run: python3 scripts/ci_signing.py cleanup
@@ -74,6 +81,10 @@ jobs:
         with:
           pattern: release-*
           path: inputs
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: evidence-*
+          path: evidence
       - name: Assemble checksums, installer and Homebrew tap
         env:
           RELEASE_VERSION: ${{ inputs.version }}
@@ -81,6 +92,8 @@ jobs:
           python3 scripts/release.py --version "$RELEASE_VERSION" \
             --archive inputs/release-macos-15/SwiftPods.zip \
             --archive inputs/release-macos-15-intel/SwiftPods.zip \
+            --evidence evidence/evidence-macos-15/test-results/evidence.zip \
+            --evidence evidence/evidence-macos-15-intel/test-results/evidence.zip \
             --destination dist/release
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:

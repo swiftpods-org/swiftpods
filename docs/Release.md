@@ -45,10 +45,11 @@ brew install ruby@3.4 cmake subversion mercurial
 python3 scripts/bootstrap.py
 python3 scripts/check.py --full --package dist/SwiftPods-native
 python3 scripts/release.py --version 0.1.0-dev \
-  --bundle dist/SwiftPods-native --destination dist/release-native
+  --bundle dist/SwiftPods-native --evidence test-results/evidence.zip \
+  --destination dist/release-native
 ```
 
-Publish archives, `release.json`, `install.py` and `SHA256SUMS` as GitHub Release
+Publish distribution/evidence archives, `release.json`, `install.py` and `SHA256SUMS` as GitHub Release
 assets in `swiftpods-release`. Copy the generated Homebrew Formula and README to
 that repository. The formula downloads those assets; archive files are not Git
 source files. The site is maintained separately at swiftpods.org.
@@ -64,6 +65,10 @@ uses an explicitly supplied keychain profile.
 Release preparation requires a clean committed source revision matching both the
 package revision and source digest. `release.py --development` is reserved for
 unpublished local fixtures; its manifest explicitly has `publishable: false`.
+Each architecture requires its own matching `--evidence` archive from the full
+packaged run. Assembly verifies every payload hash and evidence identity and
+creates its output atomically. `publishable` remains false until stable acceptance
+is established for all supplied architectures.
 No command in this workflow publishes a release or pushes a repository.
 
 The release workflow runs the full corpus, then signs/notarizes and tests the final

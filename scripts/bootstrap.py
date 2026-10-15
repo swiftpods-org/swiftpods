@@ -58,9 +58,8 @@ def manifest(destination):
             for value in re.findall(r'\bminos\s+([0-9.]+)', output):
                 minimum = max(minimum, tuple(map(int, value.split('.'))))
     result['minimum_macos'] = '.'.join(map(str, minimum))
-    result['toolchain'] = {name: subprocess.check_output(command, text=True, stderr=subprocess.STDOUT).strip() for name, command in [('swift', ['swift', '--version']), ('xcode', ['xcodebuild', '-version'])]}
-    result['toolchain']['external_ruby'] = select_ruby(PROFILE)[1]
-    from reporting import source_digest, contract_digest
+    from reporting import source_digest, contract_digest, source_revision, toolchain_identity
+    result['toolchain'] = toolchain_identity()
     tested_source, contract = source_digest(), contract_digest()
     result['swiftpods_source'] = {'base_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(), 'worktree_has_changes': bool(subprocess.check_output(['git', 'status', '--porcelain'], cwd=ROOT)), 'files_digest': tested_source}
     registry = json.loads((ROOT / 'Profiles/contract.json').read_text())
@@ -71,7 +70,7 @@ def manifest(destination):
         if not path.exists():
             continue
         report = json.loads(path.read_text())
-        if report.get('status') == 'passed' and report.get('source_digest') == tested_source and report.get('contract_digest') == contract and report.get('host') == result['build_host'] and all(report.get('toolchain', {}).get(key) == result['toolchain'][key] for key in ('swift', 'xcode')):
+        if report.get('status') == 'passed' and report.get('source_digest') == tested_source and report.get('contract_digest') == contract and report.get('source_revision') == source_revision() and report.get('host') == result['build_host'] and report.get('toolchain') == result['toolchain']:
             current[name] = report
             evidence.append({'report': name, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest(), 'verified': report.get('verified', []), 'unverified': report.get('unverified', [])})
     result['verification_evidence'] = {'reports': evidence, 'source_digest': tested_source, 'contract_digest': contract, 'scope': registry['coverage_policy'], 'stable_acceptance': 'not_established'}

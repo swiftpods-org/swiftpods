@@ -209,9 +209,34 @@ struct NativeResolver {
     func resolve(_ dependencies: [NativeDependency]) throws -> NativeResolution {
         var failure: Error?
         var conflicts = Set<String>()
+        func cycle(in requests: [NativeDependency]) -> [String]? {
+            var edges: [String: Set<String>] = [:]
+            for request in requests {
+                if let parent = request.chain.last { edges[parent, default: []].insert(request.name) }
+            }
+            var visited = Set<String>(), active = Set<String>(), path: [String] = []
+            func visit(_ name: String) -> [String]? {
+                if active.contains(name), let start = path.firstIndex(of: name) { return Array(path[start...]) + [name] }
+                guard visited.insert(name).inserted else { return nil }
+                active.insert(name); path.append(name)
+                defer { active.remove(name); path.removeLast() }
+                for child in edges[name, default: []].sorted() {
+                    if let result = visit(child) { return result }
+                }
+                return nil
+            }
+            for name in edges.keys.sorted() {
+                if let result = visit(name) { return result }
+            }
+            return nil
+        }
         func search(_ queue: [NativeDependency], selected: [String: NativeSpec], expanded: Set<String>, requests: [NativeDependency]) throws -> NativeResolution? {
             try NativeCancellation.check()
             guard !queue.isEmpty else {
+                if let cycle = cycle(in: requests) {
+                    failure = Diagnostic("SP-RESOLVE-CONFLICT", stage: "resolve", "Circular dependency: " + cycle.joined(separator: " -> "), dependencyChain: cycle)
+                    return nil
+                }
                 for (root, spec) in selected where spec.version.isPrerelease {
                     let allowed = requests.contains { request in request.root == root && (request.external || (try? PodRequirement(request.requirements).allowsPrerelease) == true) }
                     if !allowed { return nil }

@@ -31,18 +31,24 @@ jobs:
         run: python3 scripts/bootstrap.py
       - name: Run compatibility and relocation corpus
         run: python3 scripts/check.py --full --package dist/SwiftPods-${{ matrix.runner }}
+      - name: Install and test the generated Homebrew formula
+        run: |
+          python3 scripts/native_homebrew_tests.py --bundle dist/SwiftPods-${{ matrix.runner }}
+          python3 scripts/evidence.py
       - name: Preserve evidence
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: evidence-${{ matrix.runner }}
+          include-hidden-files: true
           path: |
             test-results/
             .runtime/compatibility.json
+            .build/native-homebrew-*/homebrew.log
           if-no-files-found: error
       - name: Archive native distribution with executable permissions
         run: |
-          /usr/bin/ditto -c -k --keepParent dist/SwiftPods-${{ matrix.runner }} dist/SwiftPods-${{ matrix.runner }}.zip
+          /usr/bin/ditto -c -k --norsrc --noextattr --noqtn --keepParent dist/SwiftPods-${{ matrix.runner }} dist/SwiftPods-${{ matrix.runner }}.zip
           /usr/bin/shasum -a 256 dist/SwiftPods-${{ matrix.runner }}.zip > dist/SwiftPods-${{ matrix.runner }}.zip.sha256
       - name: Preserve native distribution
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
