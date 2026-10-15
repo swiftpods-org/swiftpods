@@ -18,6 +18,17 @@ def main():
     assert manifest['gems'] == [] and manifest['native_ruby_libraries'] == []
     assert not any(name.startswith(('vendor/', 'gems/', 'runtime/')) for name in manifest['files'])
     assert 'host/dsl.rb' in manifest['files'] and 'host/host.rb' not in manifest['files']
+    matrix_checked = False
+    if any(item['report'] == 'native-platforms.json' for item in manifest['verification_evidence']['reports']):
+        matrix_checked = True
+        matrix = manifest['matrix']
+        builds = [row for row in matrix if row['status'] == 'build_passed']
+        archives = [row for row in matrix if row['status'] == 'unsigned_archive_passed']
+        assert len(builds) == 60 and len(archives) == 18
+        assert {row['configuration'] for row in builds} == {'Debug', 'Release'}
+        assert len({(row['linkage'], row['sdk'], row['configuration']) for row in builds}) == 60
+        assert all(row['configuration'] == 'Release' and row['signed'] is False for row in archives)
+        assert all(row.get('platform') and row.get('architecture') for row in matrix)
     parent = Path(tempfile.mkdtemp(prefix='native-distribution-', dir=ROOT / '.build'))
     relocated = parent / 'relocated' / 'SwiftPods'
     relocated.parent.mkdir()
@@ -39,7 +50,7 @@ def main():
     (relocated / 'host/dsl.rb').write_text('# tampered\n')
     result = subprocess.run([str(relocated / 'bin/swiftpods'), 'runtime', 'verify', '--json'], env=env, capture_output=True)
     assert result.returncode != 0
-    (ROOT / 'test-results/native-distribution.json').write_text(json.dumps({'status': 'passed', 'engine': 'swift', 'verified': ['runtime inventory excludes reference engine/gems', 'relocation', 'release URLs', 'checksummed installer', 'idempotent install', 'bad checksum rejected', 'tampered adapter rejected'], 'unverified': ['remote publication', 'Homebrew installation', 'signing', 'Intel']}, indent=2) + '\n')
+    (ROOT / 'test-results/native-distribution.json').write_text(json.dumps({'status': 'passed', 'engine': 'swift', 'verified': ['runtime inventory excludes reference engine/gems', 'relocation', 'release URLs', 'checksummed installer', 'idempotent install', 'bad checksum rejected', 'tampered adapter rejected'] + (['current 60-build/18-archive matrix includes platform architecture configuration and signing status'] if matrix_checked else []), 'unverified': ['remote publication', 'Homebrew installation', 'signing', 'Intel']}, indent=2) + '\n')
 
 
 if __name__ == '__main__':

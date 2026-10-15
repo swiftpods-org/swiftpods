@@ -24,6 +24,15 @@ final class NativeCompatibilityTests: XCTestCase {
         let result = try NativeResolver(candidates: { $0.root == "Kit" ? [kit] : [feature] }).resolve([NativeDependency(["name": "Kit"]), NativeDependency(["name": "Feature"])])
         XCTAssertEqual(result.specs["Kit"]?.version.description, "2.0.pre")
     }
+    func testLockPinDoesNotAuthorizeAPrereleaseWithoutAnExplicitRequirement() throws {
+        let stable = try NativeSpec(data: ["name": "Kit", "version": "1.0"])
+        let preview = try NativeSpec(data: ["name": "Kit", "version": "2.0.pre"])
+        let candidates: (NativeDependency) throws -> [NativeSpec] = { _ in [preview, stable] }
+        let generic = try NativeDependency(["name": "Kit"])
+        XCTAssertThrowsError(try NativeResolver(candidates: candidates, locked: ["Kit": "2.0.pre"]).resolve([generic]))
+        let update = try NativeResolver(candidates: candidates, locked: ["Kit": "2.0.pre"], update: ["Kit"]).resolve([generic])
+        XCTAssertEqual(update.specs["Kit"]?.version.description, "1.0")
+    }
     func testLockedVersionsAreConstraintsUntilExplicitlyUnlocked() throws {
         let first = try NativeSpec(data: ["name": "Kit", "version": "1.0"]), second = try NativeSpec(data: ["name": "Kit", "version": "2.0"])
         let feature = try NativeSpec(data: ["name": "Feature", "version": "1.0", "dependencies": ["Kit": [">= 2"]]])
@@ -84,7 +93,26 @@ final class NativeCompatibilityTests: XCTestCase {
         try Data("PODS:\n  - Kit (1.0)\nDEPENDENCIES:\n  - Kit (~> 1.0)\n".utf8).write(to: path)
         let lock = try NativeLock(path), dependency = try NativeDependency(["name": "Kit", "requirements": ["~>1.0"]])
         XCTAssertEqual(try lock.changedRoots([dependency, dependency]), [])
+        XCTAssertEqual(try lock.changedRoots([NativeDependency(["name": "Kit"])]), [])
         XCTAssertEqual(try lock.changedRoots([NativeDependency(["name": "Kit", "requirements": [">= 2"]])]), ["Kit"])
+    }
+    func testTargetedUpdateRetainsSharedDependencyPins() throws {
+        let path = try directory().appendingPathComponent("Podfile.lock")
+        try Data("PODS:\n  - A (1.0):\n    - Shared (>= 1)\n  - B (1.0):\n    - Shared (>= 0.5)\n  - Shared (1.0)\nDEPENDENCIES:\n  - A\n  - B\n".utf8).write(to: path)
+        let lock = try NativeLock(path)
+        XCTAssertEqual(lock.unlocked(["A"]), ["A"])
+        XCTAssertEqual(lock.unlocked(["A", "B"]), ["A", "B", "Shared"])
+        XCTAssertEqual(lock.unlocked(["A", "Shared"]), ["A", "Shared"])
+        let direct = try [NativeDependency(["name": "A"]), NativeDependency(["name": "B"]), NativeDependency(["name": "Shared", "requirements": [">= 2"]])]
+        XCTAssertEqual(try lock.changedRoots(direct), [])
+    }
+    func testReferenceLockGraphDeduplicatesIdenticalDependencyStrings() throws {
+        let path = try directory().appendingPathComponent("Podfile.lock")
+        try Data("PODS:\n  - A (1.0):\n    - Shared\n  - B (1.0):\n    - Shared\n  - Shared (1.0)\nDEPENDENCIES:\n  - A\n  - B\n".utf8).write(to: path)
+        let lock = try NativeLock(path)
+        XCTAssertEqual(lock.dependencies["B"], ["Shared"])
+        XCTAssertEqual(lock.unlocked(["A"]), ["A", "Shared"])
+        XCTAssertEqual(lock.unlocked(["B"]), ["B"])
     }
     func testLockedRepositoryDoesNotSwitchWhenEarlierSourceGainsTheVersion() throws {
         let root = try directory(), first = root.appendingPathComponent("first"), second = root.appendingPathComponent("second")

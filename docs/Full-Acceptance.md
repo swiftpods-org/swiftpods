@@ -34,7 +34,8 @@ alone reports `stable_acceptance: not_established`.
 
 Signing/notarization, physical devices, native Intel execution, the minimum macOS,
 clean Homebrew installation, remote CI and cross-compiler Swift module stability
-require their own infrastructure. Ordinary simulator runs, cross-compilation and
+require their own infrastructure. Signed Apple product archives and the remaining
+reference-supported supplementary host matrix also have explicit gates. Ordinary simulator runs, cross-compilation and
 same-toolchain swiftinterface consumption do not close those gates.
 
 For signing, use a clean committed checkout and an explicit identity/profile:

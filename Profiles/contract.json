@@ -598,7 +598,8 @@
         "effects": [
           "native-contract.json",
           "native-integration.json",
-          "native-reference.json"
+          "native-reference.json",
+          "native-compatibility-reference.json"
         ],
         "case": "dsl:pod"
       },
@@ -1512,7 +1513,9 @@
     "minimum_macos_execution",
     "clean_homebrew_installation",
     "remote_ci",
-    "swift_binary_module_stability"
+    "swift_binary_module_stability",
+    "signed_apple_archives",
+    "supplementary_host_matrix"
   ],
   "coverage_policy": "A mapped report is evidence for its recorded cases, not proof of every combination. Stable acceptance also requires all external gates and a clean source revision."
 }

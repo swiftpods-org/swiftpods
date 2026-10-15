@@ -237,7 +237,8 @@ Missing, stale, skipped or replaced evidence is rejected. Local passing reports
 never imply stable acceptance while an external gate is unverified.
 
 Additional regressions are `native-compatibility-reference.json` (locked sources,
-hard version constraints, prerelease options, empty public-header patterns and
+hard version constraints, compatible requirement edits, prerelease removal,
+shared update pins and lock-graph string deduplication, empty public-header patterns and
 FileAccessor/project operations), `native-resolver-reference.json` (32 seeded
 dependency graphs), `native-xcconfig-reference.json` (external projects and user
 include-chains), `native-swift-binary.json` (public swiftinterface consumption,

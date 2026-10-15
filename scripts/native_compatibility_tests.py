@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -110,6 +111,64 @@ def main():
     if args.gem_home:
         code = "require 'bundler/setup';require 'cocoapods';p=Pod::Podfile.new { target('App') { pod 'PreviewKit', :inhibit_warnings=>true } };s=Pod::Spec.new { |v| v.name='PreviewKit';v.version='2.0.pre' };abort('Unexpected prerelease acceptance') if Pod::Resolver.allocate.send(:valid_possibility_version_for_root_name?,p.dependencies.first,Molinillo::DependencyGraph.new,s)"
         subprocess.run([ruby, '-e', code], cwd=parent, env=reference_env, check=True, timeout=30)
+    def pin(work, name):
+        match = re.search(r"^\s+- ['\"]?" + re.escape(name) + r" \(([0-9][0-9A-Za-z.-]*)\)", (work / 'Podfile.lock').read_text(), re.MULTILINE)
+        assert match, (work, name)
+        return match[1]
+    # Relaxing a requirement keeps a compatible installed version locked.
+    for engine in engines:
+        work = parent / ('relaxed-' + engine); work.mkdir()
+        text = "platform :osx, '13.0'\ninstall! 'cocoapods', :integrate_targets => false\nsource " + repr(second.as_uri()) + "\ntarget 'App' do\n pod 'Kit', '= 1.0'\nend\n"
+        (work / 'Podfile').write_text(text); (native if engine == 'native' else reference)(work, 'install', '--repo-update')
+        (work / 'Podfile').write_text(text.replace(", '= 1.0'", ''))
+        (native if engine == 'native' else reference)(work, 'install'); assert pin(work, 'Kit') == '1.0'
+        work = parent / ('removed-prerelease-' + engine); work.mkdir()
+        text = text.replace("'Kit', '= 1.0'", "'PreviewKit', '= 2.0.pre'")
+        (work / 'Podfile').write_text(text); (native if engine == 'native' else reference)(work, 'install', '--repo-update')
+        locked = (work / 'Podfile.lock').read_bytes(); (work / 'Podfile').write_text(text.replace(", '= 2.0.pre'", ''))
+        (native if engine == 'native' else reference)(work, 'install', success=False)
+        assert (work / 'Podfile.lock').read_bytes() == locked
+        arguments = ['update', 'PreviewKit'] + (['--repo-update'] if engine == 'native' else [])
+        (native if engine == 'native' else reference)(work, *arguments); assert pin(work, 'PreviewKit') == '1.0'
+    # A shared dependency remains pinned until explicitly selected for update.
+    spec(second, 'SharedKit', '1.0', 'shared')
+    spec(second, 'RootA', '1.0', 'first', {'SharedKit': ['>= 1']})
+    spec(second, 'RootB', '1.0', 'second', {'SharedKit': ['>= 0.5']})
+    shared = {}
+    for engine in engines:
+        work = parent / ('shared-' + engine); work.mkdir(); shared[engine] = work
+        text = "platform :osx, '13.0'\ninstall! 'cocoapods', :integrate_targets => false\nsource " + repr(second.as_uri()) + "\ntarget 'App' do\n pod 'RootA'\n pod 'RootB'\nend\n"
+        (work / 'Podfile').write_text(text); (native if engine == 'native' else reference)(work, 'install', '--repo-update')
+    spec(second, 'SharedKit', '2.0', 'new-shared')
+    for engine, work in shared.items():
+        text = (work / 'Podfile').read_text(); locked = (work / 'Podfile.lock').read_bytes()
+        (work / 'Podfile').write_text(text.replace('end\n', " pod 'SharedKit', '>= 2'\nend\n"))
+        (native if engine == 'native' else reference)(work, 'install', '--repo-update', success=False)
+        assert (work / 'Podfile.lock').read_bytes() == locked
+        (work / 'Podfile').write_text(text)
+    spec(second, 'RootA', '2.0', 'needs-new-shared', {'SharedKit': ['>= 2']})
+    for engine, work in shared.items():
+        arguments = ['update', 'RootA'] + (['--repo-update'] if engine == 'native' else [])
+        (native if engine == 'native' else reference)(work, *arguments)
+        assert pin(work, 'RootA') == '1.0' and pin(work, 'SharedKit') == '1.0' and pin(work, 'RootB') == '1.0'
+        arguments = ['update', 'RootA', 'SharedKit'] + (['--repo-update'] if engine == 'native' else [])
+        (native if engine == 'native' else reference)(work, *arguments)
+        assert pin(work, 'RootA') == '2.0' and pin(work, 'SharedKit') == '2.0' and pin(work, 'RootB') == '1.0'
+    # Identical lock dependency strings are deduplicated by the baseline graph.
+    spec(second, 'SameShared', '1.0', 'same-shared')
+    spec(second, 'SameA', '1.0', 'same-a', {'SameShared': ['>= 1']})
+    spec(second, 'SameB', '1.0', 'same-b', {'SameShared': ['>= 1']})
+    repeated = {}
+    for engine in engines:
+        work = parent / ('same-edge-' + engine); work.mkdir(); repeated[engine] = work
+        (work / 'Podfile').write_text("platform :osx, '13.0'\ninstall! 'cocoapods', :integrate_targets => false\nsource " + repr(second.as_uri()) + "\ntarget 'App' do\n pod 'SameA'\n pod 'SameB'\nend\n")
+        (native if engine == 'native' else reference)(work, 'install', '--repo-update')
+    spec(second, 'SameShared', '2.0', 'new-same-shared')
+    spec(second, 'SameA', '2.0', 'new-same-a', {'SameShared': ['>= 2']})
+    for engine, work in repeated.items():
+        arguments = ['update', 'SameA'] + (['--repo-update'] if engine == 'native' else [])
+        (native if engine == 'native' else reference)(work, *arguments)
+        assert pin(work, 'SameA') == '2.0' and pin(work, 'SameShared') == '2.0' and pin(work, 'SameB') == '1.0'
     filekit = parent / 'FileKit'; (filekit / 'Sources/Nested').mkdir(parents=True); (filekit / 'Resources').mkdir()
     for name in ['Public.h', 'Private.hpp', 'Project.hxx', 'Implementation.m', 'Excluded.h', 'Nested/Inline.ipp']:
         (filekit / 'Sources' / name).write_text('// fixture\n')
@@ -156,6 +215,7 @@ def main():
         assert (work / 'last-hook.txt').read_text() == 'second'
     duplicate_cases.append('Podfile.replace_duplicate_pre_install')
     verified = ['locked spec repository preserved when an earlier source gains the same version', 'unchanged version pin remains a constraint when a new dependency conflicts', 'warning/modular/configuration options do not enable prereleases', 'public hook FileAccessor delegates to native file selection', 'empty public patterns retain visible headers', 'private/project/excluded/nested headers', 'ARC selection', 'resource bundles and ODR exclusions', 'external lockfile edit survives failed install and recovery']
+    verified += ['compatible requirement edits retain installed version pins', 'removing a prerelease requirement conflicts with its locked prerelease; explicit update selects a stable version', 'new direct declaration does not unlock an existing transitive dependency', 'targeted update keeps distinct shared edges pinned; explicitly selecting the shared dependency unlocks it', 'identical dependency strings follow baseline lock-graph deduplication during targeted update']
     cases = ['FileAccessor.' + name for name in ['source_files', 'headers', 'public_headers', 'private_headers', 'project_headers', 'arc_source_files', 'non_arc_source_files', 'resources', 'resource_bundles', 'resource_bundle_files', 'on_demand_resources', 'on_demand_resources_files', 'root', 'spec', 'platform_name']]
     cases += ['Project.' + name for name in ['new', 'new_target', 'new_group', 'new_file', 'save', 'unknown_setter_rejected']]
     cases += duplicate_cases

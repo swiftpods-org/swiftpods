@@ -59,11 +59,12 @@ def main():
                 # Xcode's archive staging needs its own BuildProductsPath. A build-only
                 # SYMROOT override otherwise leaves that required directory absent.
                 archive_command = [value for value in common if not str(value).startswith('SYMROOT=')]
+                archive_command[archive_command.index('-configuration') + 1] = 'Release'
                 run(archive_command + ['archive', '-archivePath', archive, 'SKIP_INSTALL=NO'], work, parent / ('archive-' + linkage + '-' + sdk_name + '.log'), env)
                 assert archive.joinpath('Info.plist').exists()
                 payloads = list(archive.glob('Products/**/' + ('libMatrixWrapper.a' if linkage == 'library' else 'MatrixWrapper.framework')))
                 assert payloads, (linkage, sdk_name, archive)
-                archives.append({'linkage': linkage, 'sdk': sdk_name, 'archive': str(archive)})
+                archives.append({'linkage': linkage, 'platform': platform, 'sdk': sdk_name, 'architecture': architecture, 'configuration': 'Release', 'destination': destination, 'signed': False, 'archive': str(archive)})
     report = {'status': 'passed', 'engine': 'swift', 'fixture': str(parent), 'builds': builds, 'archives': archives, 'verified': ['real dynamic XCFramework with ten platform/variant slices', 'three pod linkage modes built for macOS iOS tvOS watchOS visionOS and Mac Catalyst', 'watchOS arm64_32 binary inspected and linked', 'device/macOS/Mac Catalyst archives checked separately from simulator builds', 'required build macro consumed by compiled C source'], 'unverified': ['physical device execution', 'signed archives', 'Swift binary module stability', 'test/app host matrices outside existing macOS/iOS fixtures']}
     ROOT.joinpath('test-results/native-platforms.json').write_text(json.dumps(report, indent=2) + '\n'); print(json.dumps(report, indent=2))
 

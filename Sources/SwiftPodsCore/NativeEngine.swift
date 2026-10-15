@@ -20,6 +20,7 @@ struct NativeLock {
     let repositories: [String: String]
     let declarations: [String: [String]]
     let dependencies: [String: Set<String>]
+    let lockingDependencies: [String: Set<String>]
     init(_ path: URL) throws {
         self.path = path
         originalFingerprint = try FileFingerprint.tree(path)
@@ -40,7 +41,8 @@ struct NativeLock {
             let requirement = String(value[open.upperBound..<value.index(before: value.endIndex)])
             return (String(value[..<open.lowerBound]), requirement.hasPrefix("from ") ? [">= 0"] : requirement.components(separatedBy: ", "))
         }
-        var pins: [String: String] = [:], edges: [String: Set<String>] = [:]
+        var pins: [String: String] = [:], edges: [String: Set<String>] = [:], lockingEdges: [String: Set<String>] = [:]
+        var lockingStrings = Set<String>()
         func pod(_ value: Any) throws {
             let name: String, children: [Any]
             if let value = value as? String { name = value; children = [] }
@@ -50,9 +52,14 @@ struct NativeLock {
             guard requirements.count == 1, let version = requirements.first, (try? PodVersion(version)) != nil else { throw Diagnostic("SP-LOCK-SCHEMA", stage: "resolve", "Invalid locked version", file: path.path) }
             if let previous = pins[root], try PodVersion(previous) != PodVersion(version) { throw Diagnostic("SP-LOCK-SCHEMA", stage: "resolve", "Multiple locked versions of " + root, file: path.path) }
             pins[root] = version
+            lockingStrings.insert(name)
             for child in children {
                 guard let text = child as? String else { throw Diagnostic("SP-LOCK-SCHEMA", stage: "resolve", "Invalid locked dependency", file: path.path) }
-                edges[root, default: []].insert(String(declaration(text).0.split(separator: "/").first ?? ""))
+                let childRoot = String(declaration(text).0.split(separator: "/").first ?? "")
+                edges[root, default: []].insert(childRoot)
+                // The selected baseline deduplicates dependency strings before
+                // attaching lock-graph edges. Keep the full graph separately.
+                if lockingStrings.insert(text).inserted { lockingEdges[root, default: []].insert(childRoot) }
             }
         }
         if let pods = data["PODS"], !(pods is NSNull) {
@@ -68,7 +75,7 @@ struct NativeLock {
         }
         var direct: [String: [String]] = [:]
         for value in nativeStrings(data["DEPENDENCIES"]) { let (name, requirements) = declaration(value); direct[name, default: []] += requirements }
-        versions = pins; dependencies = edges; repositories = sources; declarations = direct
+        versions = pins; dependencies = edges; lockingDependencies = lockingEdges; repositories = sources; declarations = direct
         checksum = data["PODFILE CHECKSUM"] as? String; manifestChecksum = data["SWIFTPODS MANIFEST CHECKSUM"] as? String
         specChecksums = strings(data["SPEC CHECKSUMS"]); checkoutOptions = sourceMap(data["CHECKOUT OPTIONS"]); externalSources = (data["EXTERNAL SOURCES"] as? [String: [String: Any]] ?? [:]).mapValues { Dictionary(uniqueKeysWithValues: $0.map { (String($0.key.drop(while: { $0 == ":" })), $0.value) }) }
     }
@@ -77,18 +84,16 @@ struct NativeLock {
     }
     func changedRoots(_ direct: [NativeDependency]) throws -> Set<String> {
         guard !declarations.isEmpty else { return [] }
-        func normalized(_ values: [String]) -> [String] {
-            Set(values.flatMap { $0.components(separatedBy: ",") }.map { value in
-                let clean = value.filter { !$0.isWhitespace }
-                return clean.first?.isNumber == true ? "=" + clean : clean
-            }).sorted()
-        }
-        let current = Dictionary(grouping: direct, by: \.name).mapValues { normalized($0.flatMap(\.requirements)) }
+        let current = Dictionary(grouping: direct, by: \.name)
         var changed = Set<String>()
-        for name in Set(current.keys).union(declarations.keys) where current[name] != declarations[name].map(normalized) {
-            changed.insert(String(name.split(separator: "/").first ?? ""))
+        // The baseline compares existing declarations against their installed
+        // versions. Compatible edits and newly added declarations keep pins.
+        for name in declarations.keys {
+            let root = String(name.split(separator: "/").first ?? "")
+            guard let request = current[name]?.first, let version = versions[root] else { changed.insert(root); continue }
+            if !(try PodRequirement(request.requirements).accepts(PodVersion(version))) { changed.insert(root) }
         }
-        for request in direct {
+        for request in direct where declarations[request.name] != nil {
             let source = request.options.filter { ["path", "git", "podspec", "http", "svn", "hg", "branch", "tag", "commit", "revision", "folder", "submodules", "flatten", "type", "sha256", "sha1", "headers"].contains($0.key) }
             func normalize(_ value: Any) -> Any {
                 if let dictionary = value as? [String: Any] { return dictionary.mapValues(normalize) }
@@ -96,14 +101,20 @@ struct NativeLock {
                 return String(describing: value)
             }
             if try jsonData(normalize(source)) != jsonData(normalize(externalSources[request.root] ?? [:])) { changed.insert(request.root) }
-            if let explicit = request.options["source"] as? String, let previous = repositories[request.root], explicit != previous { changed.insert(request.root) }
         }
         return changed.intersection(Set(versions.keys))
     }
     func unlocked(_ roots: Set<String>) -> Set<String> {
         var result = roots, queue = Array(roots)
+        let explicit = Set(declarations.keys.map { String($0.split(separator: "/").first ?? "") })
+        var parents: [String: Set<String>] = [:]
+        for (parent, children) in lockingDependencies {
+            for child in children where child != parent { parents[child, default: []].insert(parent) }
+        }
         while let root = queue.popLast() {
-            for child in dependencies[root] ?? [] where result.insert(child).inserted { queue.append(child) }
+            for child in lockingDependencies[root] ?? [] where !result.contains(child) && !explicit.contains(child) {
+                if (parents[child] ?? []).isSubset(of: result), result.insert(child).inserted { queue.append(child) }
+            }
         }
         return result
     }

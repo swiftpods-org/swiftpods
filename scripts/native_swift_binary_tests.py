@@ -77,8 +77,8 @@ def main():
             assert identity(embedded) == identity(framework / name)
             output = subprocess.check_output([str(app / 'Contents/MacOS/Demo')], text=True).strip()
             assert output == '29', output
-            builds.append({'linkage': linkage, 'configuration': configuration, 'architecture': architecture})
-            executions.append({'linkage': linkage, 'configuration': configuration, 'output': output})
+            builds.append({'linkage': linkage, 'platform': 'osx', 'sdk': 'macosx', 'configuration': configuration, 'architecture': architecture})
+            executions.append({'linkage': linkage, 'platform': 'osx', 'sdk': 'macosx', 'configuration': configuration, 'architecture': architecture, 'output': output})
     cross = producer_toolchain != consumer_toolchain
     report = {'status': 'passed', 'engine': 'swift', 'fixture': str(parent), 'producer_toolchain': producer_toolchain, 'consumer_toolchain': consumer_toolchain, 'cross_toolchain': cross, 'builds': builds, 'executions': executions, 'verified': ['real dynamic Swift framework with library evolution enabled', 'serialized swiftmodule and private interfaces removed before consumption', 'public swiftinterface consumed by an actual Swift application', 'binary SDK linked and embedded across three pod linkage modes', 'Debug/Release applications execute and return the SDK value'], 'unverified': [] if cross else ['cross-compiler module stability; producer and consumer use the same toolchain']}
     (ROOT / 'test-results/native-swift-binary.json').write_text(json.dumps(report, indent=2) + '\n')

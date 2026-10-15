@@ -214,7 +214,7 @@ struct NativeResolver {
             guard !queue.isEmpty else {
                 for (root, spec) in selected where spec.version.isPrerelease {
                     let allowed = requests.contains { request in request.root == root && (request.external || (try? PodRequirement(request.requirements).allowsPrerelease) == true) }
-                    if !allowed && locked[root] != spec.version.description { return nil }
+                    if !allowed { return nil }
                 }
                 return NativeResolution(specs: selected, requests: requests)
             }
