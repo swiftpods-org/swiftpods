@@ -247,6 +247,13 @@
       "report": "native-xcconfig-reference.json",
       "apple": true,
       "reference": true
+    },
+    {
+      "id": "native:host-platforms",
+      "script": "scripts/native_host_platform_tests.py",
+      "report": "native-host-platforms.json",
+      "apple": true,
+      "reference": false
     }
   ],
   "requirements": [
@@ -360,7 +367,8 @@
         "native-supplementary-reference.json",
         "native-ui-reference.json",
         "native-script-reference.json",
-        "native-swift-binary.json"
+        "native-swift-binary.json",
+        "native-host-platforms.json"
       ]
     },
     {
@@ -374,7 +382,8 @@
         "native-supplementary-reference.json",
         "native-ui-reference.json",
         "native-script-reference.json",
-        "native-swift-binary.json"
+        "native-swift-binary.json",
+        "native-host-platforms.json"
       ]
     },
     {
@@ -387,7 +396,8 @@
         "native-layout-reference.json",
         "native-supplementary-reference.json",
         "native-ui-reference.json",
-        "native-script-reference.json"
+        "native-script-reference.json",
+        "native-host-platforms.json"
       ]
     },
     {
@@ -400,7 +410,8 @@
         "native-layout-reference.json",
         "native-supplementary-reference.json",
         "native-ui-reference.json",
-        "native-script-reference.json"
+        "native-script-reference.json",
+        "native-host-platforms.json"
       ]
     },
     {

@@ -75,6 +75,20 @@ be produced independently with library evolution enabled. The fixture removes
 serialized modules/private interfaces, builds consumers through public interfaces,
 checks binary UUID/exported symbols and executes Debug/Release applications.
 Its normal local run explicitly leaves cross-compiler stability unverified.
+The `Swift binary module compatibility` workflow produces the framework with
+Xcode 16.4 and consumes it with Xcode 26.6. The producer manifest pins the actual
+compiler, source revision, contract and every framework file. Consumer validation
+rejects stale, modified or mismatched artifacts and compares the compiler identity
+inside public text interfaces; a caller-supplied label cannot establish a pass.
+
+```sh
+# Run on the producer machine; preserve the entire directory, including symlinks.
+python3 scripts/swift_binary_producer.py --destination .build/swift-producer
+# Run on the consumer machine with the same clean source revision.
+python3 scripts/native_swift_binary_tests.py \
+  --producer-framework imported/swift-producer/SwiftBinaryKit.framework \
+  --producer-manifest imported/swift-producer/producer.json
+```
 
 ## Portable evidence and Homebrew
 

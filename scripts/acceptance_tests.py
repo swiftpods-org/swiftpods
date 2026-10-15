@@ -10,6 +10,7 @@ from unittest.mock import patch
 import acceptance
 import reporting
 import evidence as evidence_tools
+import swift_binary_producer as swift_producer
 from reporting import ROOT, execute
 
 
@@ -61,6 +62,43 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(result['status'], 'passed')
         self.assertEqual(result['stable_acceptance'], 'not_established')
         self.assertEqual(result['external_gates']['physical_devices']['status'], 'unverified')
+
+    def testSwiftLanguageModeDoesNotPretendToBeAnotherCompiler(self):
+        compiler = 'Apple Swift version 6.4 (swiftlang-6.4.0.34.1 clang-2100.3.34.1)'
+        interface = compiler.replace('6.4 (', '6.4 effective-5.10 (')
+        self.assertEqual(swift_producer.compiler_identity(compiler), swift_producer.compiler_identity(interface))
+        self.assertNotEqual(swift_producer.compiler_identity(compiler), swift_producer.compiler_identity(compiler.replace('6.4', '6.1')))
+
+    def testSwiftProducerRejectsChangedPayloadAndStaleSnapshot(self):
+        framework = self.root / 'SwiftBinaryKit.framework'; framework.mkdir()
+        (framework / 'SwiftBinaryKit').write_bytes(b'fixture framework')
+        metadata = {'schema_version': 1, 'architecture': swift_producer.platform.machine(), 'source_digest': 'source',
+                    'contract_digest': 'contract', 'source_revision': self.revision, 'files': swift_producer.inventory(framework)}
+        manifest = self.root / 'producer.json'
+        with patch.object(swift_producer, 'source_digest', return_value='source'), \
+             patch.object(swift_producer, 'contract_digest', return_value='contract'), \
+             patch.object(swift_producer, 'source_revision', return_value=self.revision):
+            for key, value in [('source_digest', 'stale'), ('contract_digest', 'stale'), ('source_revision', {'commit': 'other', 'dirty': False})]:
+                manifest.write_text(json.dumps(dict(metadata, **{key: value})))
+                with self.assertRaisesRegex(RuntimeError, 'another source or contract'):
+                    swift_producer.validate(framework, manifest)
+            manifest.write_text(json.dumps(metadata))
+            (framework / 'SwiftBinaryKit').write_bytes(b'changed framework')
+            with self.assertRaisesRegex(RuntimeError, 'inventory/checksum'):
+                swift_producer.validate(framework, manifest)
+
+    def testSwiftProducerRejectsCompilerLabelThatDisagreesWithInterface(self):
+        framework = self.root / 'SwiftBinaryKit.framework'; framework.mkdir()
+        (framework / 'arm64.swiftinterface').write_text('// swift-compiler-version: Apple Swift version 6.4\n')
+        metadata = {'schema_version': 1, 'architecture': swift_producer.platform.machine(), 'source_digest': 'source',
+                    'contract_digest': 'contract', 'source_revision': self.revision, 'files': swift_producer.inventory(framework),
+                    'compiler_version': 'Apple Swift version 6.4', 'toolchain': 'Apple Swift version 6.1'}
+        manifest = self.root / 'producer.json'; manifest.write_text(json.dumps(metadata))
+        with patch.object(swift_producer, 'source_digest', return_value='source'), \
+             patch.object(swift_producer, 'contract_digest', return_value='contract'), \
+             patch.object(swift_producer, 'source_revision', return_value=self.revision):
+            with self.assertRaisesRegex(RuntimeError, 'compiler identity'):
+                swift_producer.validate(framework, manifest)
 
     def testTestedInputCompatibleImprovementDoesNotRequireReferenceBugParity(self):
         self.improvement()

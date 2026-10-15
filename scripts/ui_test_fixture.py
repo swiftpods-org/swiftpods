@@ -188,15 +188,16 @@ def simulator(parent):
         subprocess.run(['xcrun', 'simctl', 'delete', device], check=True, capture_output=True)
 
 
-def build(work, parent, scheme, device=None, action='build-for-testing'):
+def build(work, parent, scheme, device=None, action='build-for-testing', configuration='Debug'):
     destination = 'platform=iOS Simulator,id=' + device if device else 'generic/platform=iOS Simulator'
     # SwiftBuild can otherwise expand the reference's Swift library path using
     # the installed Metal toolchain, which has no Swift runtime libraries.
     swift = Path(subprocess.check_output(['xcrun', '--find', 'swiftc'], text=True).strip())
     arguments = ['xcodebuild', '-project', 'Pods/Pods.xcodeproj', '-scheme', scheme,
-                 '-configuration', 'Debug', '-destination', destination, '-derivedDataPath', parent / 'DerivedData',
+                 '-configuration', configuration, '-destination', destination, '-derivedDataPath', parent / 'DerivedData',
                  '-parallel-testing-enabled', 'NO', 'CODE_SIGNING_ALLOWED=YES', 'CODE_SIGN_IDENTITY=-',
                  'TOOLCHAIN_DIR=' + str(swift.parents[2]), action]
-    text = run(arguments, work, parent / (scheme + '-' + action + '.log'))
+    prefix = scheme + '-' + configuration + '-' + action
+    text = run(arguments, work, parent / (prefix + '-' + str(len(list(parent.glob(prefix + '-*.log')))) + '.log'))
     if action == 'test': assert '** TEST SUCCEEDED **' in text
     return text

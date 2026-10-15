@@ -3,6 +3,7 @@ import Foundation
 extension NativeXcode {
     static let iOSAppHostSource = """
     #import <UIKit/UIKit.h>
+    #import <TargetConditionals.h>
 
     @interface SwiftPodsSceneDelegate : NSObject <UIWindowSceneDelegate>
     @property(nonatomic, strong) UIWindow *window;
@@ -14,7 +15,11 @@ extension NativeXcode {
         if (![scene isKindOfClass:[UIWindowScene class]]) return;
         self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
         UIViewController *controller = [[UIViewController alloc] init];
+    #if TARGET_OS_TV
+        controller.view.backgroundColor = [UIColor blackColor];
+    #else
         controller.view.backgroundColor = [UIColor systemBackgroundColor];
+    #endif
         UILabel *label = [[UILabel alloc] initWithFrame:controller.view.bounds];
         label.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         label.text = @"SwiftPods";

@@ -66,11 +66,12 @@ def main():
             install(work, env, '--deployment', '--offline', binary=binary)
             assert work.joinpath('Podfile.lock').read_bytes() == lock
             graph_contract(work)
-            text = build(work, group, 'UIWidget-UI-Interface', device, 'test')
-            assert 'testButtonChangesLibraryValue' in text
+            executions = []
+            for configuration in ['Debug', 'Release']:
+                for scheme, test in [('UIWidget-UI-Interface', 'testButtonChangesLibraryValue'), ('UIWidget-UI-Generated', 'testGeneratedHostLaunches'), ('UIWidget-Unit-Units', 'testLibraryAndOwnResources'), ('UIWidget-Unit-Hosted', 'testLibraryAndOwnResources')]:
+                    assert test in build(work, group, scheme, device, 'test', configuration)
+                    executions.append({'configuration': configuration, 'scheme': scheme, 'test': test})
             if linkage == 'static':
-                for scheme, test in [('UIWidget-UI-Generated', 'testGeneratedHostLaunches'), ('UIWidget-Unit-Units', 'testLibraryAndOwnResources'), ('UIWidget-Unit-Hosted', 'testLibraryAndOwnResources')]:
-                    assert test in build(work, group, scheme, device, 'test')
                 podfile(work, linkage, selections=False)
                 install(work, env, binary=binary)
                 schemes = work / 'Pods/Pods.xcodeproj/xcshareddata/xcschemes'
@@ -82,9 +83,9 @@ def main():
                 install(work, hardened_env, '--hardened', '--offline', binary=binary)
                 graph_contract(work)
                 assert 'testButtonChangesLibraryValue' in build(work, group, 'UIWidget-UI-Interface', device, 'test')
-            scenarios.append({'linkage': linkage or 'static-library', 'status': 'passed', 'fixture': str(group)})
+            scenarios.append({'linkage': linkage or 'static-library', 'status': 'passed', 'fixture': str(group), 'host_executions': executions})
     report = {'status': 'passed', 'engine': 'swift', 'fixture': str(parent), 'scenarios': scenarios,
-              'verified': ['iOS simulator UI runner launches a named app spec and taps its button', 'generated iOS UI host launches', 'Swift standalone and hosted unit test execution', 'Swift app spec execution', 'own UI/unit resources and Info.plist', 'test scheme environment', 'runner and bundle-loader host associations', 'consumer isolation', 'offline deployment reinstall', 'managed scheme removal', 'hardened UI selection without Ruby', 'ad-hoc simulator signing'],
+              'verified': ['iOS simulator UI runner launches a named app spec and taps its button', 'named/generated UI hosts and standalone/hosted unit tests execute in Debug/Release in every selected linkage mode', 'Swift standalone and hosted unit test execution', 'Swift app spec execution', 'own UI/unit resources and Info.plist', 'test scheme environment', 'runner and bundle-loader host associations', 'consumer isolation', 'offline deployment reinstall', 'managed scheme removal', 'hardened UI selection without Ruby', 'ad-hoc simulator signing'],
               'unverified': ['macOS/tvOS UI execution', 'physical devices', 'distribution signing', 'complete DSL/API parity']}
     if bundle:
         manifest = json.loads(bundle.joinpath('compatibility.json').read_text())

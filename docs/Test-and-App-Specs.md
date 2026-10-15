@@ -116,6 +116,23 @@ must exist in the generated project.
 macOS/tvOS UI execution, other Apple destinations and distribution signing
 require further validation.
 
+Supplementary builds also cover tvOS Simulator, visionOS Simulator and Mac
+Catalyst across the three library linkage modes and Debug/Release. These build
+checks do not certify execution on those destinations. For Catalyst app/test
+schemes, enable Catalyst support in the generated targets, for example with the
+project's existing `post_install` hook:
+
+```ruby
+post_install do |installer|
+  installer.pods_project.targets.each do |target|
+    target.build_configurations.each do |configuration|
+      configuration.build_settings['SUPPORTS_MACCATALYST'] = 'YES'
+      configuration.build_settings['SUPPORTED_PLATFORMS'] = 'iphoneos iphonesimulator macosx'
+    end
+  end
+end
+```
+
 Selected test/app products also work with separate pod projects. Shared schemes
 in `Pods/Pods.xcodeproj` point to the child project that owns each target and host.
 The main project can be used with `xcodebuild -project Pods/Pods.xcodeproj -scheme

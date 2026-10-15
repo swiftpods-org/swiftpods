@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 """Compile and run a Swift binary SDK after removing serialized Swift modules."""
 import argparse
-import hashlib
 import json
 from pathlib import Path
 import platform
-import plistlib
 import shutil
 import subprocess
 import tempfile
@@ -13,36 +11,35 @@ from bootstrap import ROOT, environment
 from native_integration import project, serialize
 from reporting import execute
 from vendor_fixture import run
+from swift_binary_producer import compiler_identity, produce, validate
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--producer-framework', type=Path)
     parser.add_argument('--producer-toolchain')
+    parser.add_argument('--producer-manifest', type=Path)
     args = parser.parse_args()
+    if not args.producer_framework and (args.producer_manifest or args.producer_toolchain):
+        parser.error('Producer metadata requires --producer-framework')
     parent = Path(tempfile.mkdtemp(prefix='native-swift-binary-', dir=ROOT / '.build'))
     print('Swift binary fixtures:', parent, flush=True)
     architecture = platform.machine()
-    consumer_toolchain = subprocess.check_output(['swift', '--version'], text=True).strip()
+    consumer_toolchain = subprocess.check_output(['xcrun', 'swiftc', '--version'], text=True).strip()
     name = 'SwiftBinaryKit'
     framework = parent / (name + '.framework')
     if args.producer_framework:
-        if not args.producer_toolchain: parser.error('--producer-framework requires --producer-toolchain')
+        if not args.producer_manifest: parser.error('--producer-framework requires --producer-manifest')
+        producer = validate(args.producer_framework.resolve(), args.producer_manifest.resolve())
+        if args.producer_toolchain and args.producer_toolchain != producer['toolchain']:
+            parser.error('--producer-toolchain differs from actual producer evidence')
         shutil.copytree(args.producer_framework, framework, symlinks=True)
-        producer_toolchain = args.producer_toolchain
+        producer_toolchain = producer['toolchain']
     else:
-        version = framework / 'Versions/A'
-        modules = version / 'Modules' / (name + '.swiftmodule'); modules.mkdir(parents=True)
-        (version / 'Resources').mkdir()
-        (framework / 'Versions/Current').symlink_to('A')
-        for entry in ['Modules', 'Resources', name]: (framework / entry).symlink_to('Versions/Current/' + entry)
-        source = parent / 'SDK.swift'; source.write_text('public func swiftBinaryValue() -> Int32 { return 29 }\n')
-        sdk = subprocess.check_output(['xcrun', '--sdk', 'macosx', '--show-sdk-path'], text=True).strip()
-        interface = modules / (architecture + '-apple-macos.swiftinterface')
-        command = ['xcrun', 'swiftc', '-emit-library', '-emit-module', '-enable-library-evolution', '-warnings-as-errors', '-swift-version', '5', '-module-name', name, '-target', architecture + '-apple-macosx13.0', '-sdk', sdk, '-emit-module-path', modules / (architecture + '-apple-macos.swiftmodule'), '-emit-module-interface-path', interface, '-Xlinker', '-install_name', '-Xlinker', '@rpath/' + name + '.framework/Versions/A/' + name, source, '-o', version / name]
-        run(command, parent, parent / 'producer.log')
-        (version / 'Resources/Info.plist').write_bytes(plistlib.dumps({'CFBundleExecutable': name, 'CFBundleIdentifier': 'org.swiftpods.binary-fixture', 'CFBundleName': name, 'CFBundlePackageType': 'FMWK', 'CFBundleVersion': '1', 'CFBundleShortVersionString': '1.0', 'CFBundleSupportedPlatforms': ['MacOSX'], 'LSMinimumSystemVersion': '13.0'}))
-        producer_toolchain = consumer_toolchain
+        generated, producer = produce(parent / 'producer')
+        validate(generated, generated.parent / 'producer.json')
+        shutil.copytree(generated, framework, symlinks=True)
+        producer_toolchain = producer['toolchain']
     for file in list(framework.rglob('*')):
         if file.is_file() and (file.suffix == '.swiftmodule' or file.name.endswith('.private.swiftinterface')): file.unlink()
     interfaces = list(framework.rglob('*.swiftinterface'))
@@ -79,8 +76,9 @@ def main():
             assert output == '29', output
             builds.append({'linkage': linkage, 'platform': 'osx', 'sdk': 'macosx', 'configuration': configuration, 'architecture': architecture})
             executions.append({'linkage': linkage, 'platform': 'osx', 'sdk': 'macosx', 'configuration': configuration, 'architecture': architecture, 'output': output})
-    cross = producer_toolchain != consumer_toolchain
+    cross = compiler_identity(producer['compiler_version']) != compiler_identity(consumer_toolchain)
     report = {'status': 'passed', 'engine': 'swift', 'fixture': str(parent), 'producer_toolchain': producer_toolchain, 'consumer_toolchain': consumer_toolchain, 'cross_toolchain': cross, 'builds': builds, 'executions': executions, 'verified': ['real dynamic Swift framework with library evolution enabled', 'serialized swiftmodule and private interfaces removed before consumption', 'public swiftinterface consumed by an actual Swift application', 'binary SDK linked and embedded across three pod linkage modes', 'Debug/Release applications execute and return the SDK value'], 'unverified': [] if cross else ['cross-compiler module stability; producer and consumer use the same toolchain']}
+    report['producer'] = producer
     (ROOT / 'test-results/native-swift-binary.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps(report, indent=2))
 

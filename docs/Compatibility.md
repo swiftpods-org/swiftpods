@@ -1,7 +1,9 @@
 # Compatibility verification
 
-The compatibility target is the observable behaviour of the 1.17.0 reference.
-The reference implementation is used only in isolated tests. Production
+The compatibility target preserves the meaning of existing input manifests,
+helpers, supported public hooks and lockfiles. The 1.17.0 reference is used only
+in isolated tests; its bugs are not inherited. Tested native improvements remain
+visible in the acceptance reports. Production
 resolution, installation, lockfile and Xcode integration execute our Swift code.
 
 `swift test` covers native versions, requirements, resolution/backtracking,
@@ -48,7 +50,9 @@ consumer isolation, scheme environment, higher test deployment minimums,
 generated/named app hosts, offline deployment reinstall and managed scheme
 removal. Hardened JSON selects tests/apps and executes XCTest without Ruby.
 Selecting an unknown test type fails before managed changes.
-`native-supplementary.json` records these checks and remaining platform limits.
+Standalone, generated-host and named-host tests execute in Debug and Release
+for every library linkage mode. `native-supplementary.json` records these checks
+and remaining platform limits.
 
 `scripts/native_ui_tests.py` runs actual UI interaction on a disposable iOS
 simulator, using Swift tests and a Swift app spec. The test launches its named
@@ -59,7 +63,9 @@ runner host associations separately from unit-test bundle loading, three library
 linkage modes, consumer isolation, removal, offline reinstall and hardened JSON
 selection without Ruby. Simulator products use ad-hoc signing; this does not
 certify distribution signing or physical-device execution. The suite owns and
-removes its simulator. Evidence is `native-ui.json`; `--bundle PATH` runs the
+removes its simulator. Named/generated UI and standalone/hosted unit scenarios
+run in Debug and Release for every selected linkage mode. Evidence is
+`native-ui.json`; `--bundle PATH` runs the
 packaged binary and records `native-packaged-ui.json`.
 
 The legacy corpus under `Tests/Reference/LegacyHarness` needs adaptation to
@@ -85,6 +91,14 @@ the same XCTest assertions and app-spec program, checking dependency/resource
 isolation, Info.plist entries and the test scheme environment. Its evidence is
 `native-supplementary-reference.json`; hosted tests and exact project/lock bytes
 are outside this reference comparison.
+
+`scripts/native_host_platform_tests.py` builds app specs, standalone and
+generated/named unit tests, and generated/named UI runners for tvOS Simulator,
+visionOS Simulator and Mac Catalyst in all three library linkage modes and both
+Debug/Release configurations. It compiles the actual generated host source, so
+unavailable platform APIs fail acceptance. These are build checks; execution,
+device SDK hosts, watchOS supplementary products and macOS UI interaction remain
+separate acceptance work. The report is `native-host-platforms.json`.
 
 `scripts/ui_reference.py --gem-home PATH` independently installs native and
 1.17.0 iOS UI projects, compares test product types and named/generated host

@@ -78,6 +78,10 @@ def manifest(destination):
     result['matrix'] = [dict(row, status='build_passed', evidence='native-platforms.json') for row in current.get('native-platforms.json', {}).get('builds', [])]
     result['matrix'] += [dict(row, status='unsigned_archive_passed', evidence='native-platforms.json') for row in current.get('native-platforms.json', {}).get('archives', [])]
     result['matrix'] += [dict(row, status='application_executed', evidence='native-swift-binary.json') for row in current.get('native-swift-binary.json', {}).get('executions', [])]
+    result['matrix'] += [dict(row, status='supplementary_build_passed', evidence='native-host-platforms.json') for row in current.get('native-host-platforms.json', {}).get('builds', [])]
+    for report, platform_name, sdk in [('native-supplementary.json', 'osx', 'macosx'), ('native-ui.json', 'ios', 'iphonesimulator')]:
+        for scenario in current.get(report, {}).get('scenarios', []):
+            result['matrix'] += [dict(row, platform=platform_name, sdk=sdk, architecture=result['build_host']['architecture'], linkage=scenario['linkage'], status='test_executed', evidence=report) for row in scenario.get('host_executions', [])]
     result['gems'] = []
     (destination / 'compatibility.json').write_text(json.dumps(result, indent=2) + '\n')
 

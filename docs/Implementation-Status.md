@@ -76,7 +76,7 @@ Reference code and gems live only under test storage and are excluded from
 runtime preparation and distribution packaging.
 
 Remaining acceptance boundaries are remote authenticated operations, actual
-Homebrew installation, distribution signing/notarization, physical devices,
+clean Homebrew installation from published assets, distribution signing/notarization, physical devices,
 Intel execution, Swift binary module stability and supplementary hosts across
 every Apple platform. The Mercurial adapter requires external `hg` and has local locked-revision,
 selected-update, cache-integrity and offline fixtures. Arbitrary private plugin APIs and unknown SDK identities hidden
