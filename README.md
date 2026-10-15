@@ -1,7 +1,7 @@
 # SwiftPods
 
-SwiftPods is a dependency manager for Apple platform projects. Describe your
-dependencies in a Podfile, install them, and build your app in Xcode.
+SwiftPods brings pods and Swift Package Manager dependencies into one Podfile.
+Declare both for your Apple project, install dependencies, and build with Xcode.
 
 [Website](https://swiftpods.org) ·
 [Installation and CI](docs/Release.md) ·
@@ -31,6 +31,11 @@ platform :ios, '15.0'
 target 'MyApp' do
   use_frameworks!
   pod 'Alamofire', '~> 5.0'
+
+  spm 'swift-collections',
+      :git => 'https://github.com/apple/swift-collections.git',
+      :from => '1.0.0',
+      :products => ['Collections']
 end
 ```
 
@@ -40,8 +45,8 @@ Install your dependencies:
 swiftpods install
 ```
 
-Open the generated `.xcworkspace` in Xcode. Commit `Podfile` and `Podfile.lock`
-so your team uses the same dependency versions.
+Open the generated `.xcworkspace` in Xcode. Commit `Podfile`, `Podfile.lock` and
+the project's `Package.resolved` to track pod and Swift package versions.
 
 Existing Podfiles, podspecs, Ruby helpers and install hooks can be used directly.
 Dependencies can come from spec repositories, Git repositories or local paths.
@@ -106,7 +111,8 @@ end
 ```
 
 SwiftPods adds package and product references to your Xcode project. Xcode
-resolves Swift package versions.
+resolves Swift package versions. See the [Swift package guide](https://swiftpods.org/docs/swift-packages/)
+for version requirements, product selection and CI.
 
 ## Build scripts
 

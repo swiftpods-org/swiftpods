@@ -146,8 +146,8 @@ def prepare(args, destination):
     formula.write_text(homebrew_formula(args.version, assets))
     (formula.parents[1] / 'README.md').write_text('''# SwiftPods
 
-Install [SwiftPods](https://swiftpods.org), a dependency manager for Apple
-platform projects, with Homebrew.
+Install [SwiftPods](https://swiftpods.org) with Homebrew. Declare pods and Swift
+Package Manager dependencies in one Podfile and build with Xcode.
 
 ## Installation
 

@@ -80,6 +80,8 @@ Library, test and app specs have their own dependencies and products. Selected
 tests can use generated hosts or declared app specs. Multiple generated projects
 preserve cross-project dependencies and project ownership.
 
+Declare Swift packages with `spm` alongside pods in the same target. SwiftPods
+adds native package and product references; Xcode resolves package versions.
 Existing Swift package references and `Package.resolved` are preserved. CMake
 projects can be regenerated and then reintegrated with `swiftpods install`.
 Repeated installation avoids duplicate references and phases. Deintegration
