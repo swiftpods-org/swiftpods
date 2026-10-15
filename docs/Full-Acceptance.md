@@ -18,6 +18,13 @@ Production execution and packaging never activate or ship those gems.
 Compilation finishes before fixture execution; the debug executable must not be
 relinked while fixtures run. A source edit invalidates the aggregate.
 
+XCTest build products use an owned system temporary directory, with a fixture
+`DerivedData` symlink for inspection during the run. This avoids test runners
+blocking while opening libraries under a privacy-protected Desktop when the Mac
+is locked. Project sources stay in the fixture; command and XCTest diagnostic
+logs are retained there before temporary products are cleaned up. Timed-out or
+interrupted fixture commands stop their owned process groups and remain failures.
+
 `test-results/check.json` contains the source revision and digest, contract digest,
 toolchain, executable identities, checksummed reports, requirement/API coverage
 and external gates. Each fixture also retains its logs and temporary project path.
@@ -70,7 +77,7 @@ inside those evidence files. The reviewer remains responsible for their scope;
 the validator verifies identity and integrity, not the truth of arbitrary logs.
 
 For cross-compiler binary validation, `native_swift_binary_tests.py` accepts
-`--producer-framework PATH --producer-toolchain ID`. The supplied framework must
+`--producer-framework PATH --producer-manifest FILE`. The supplied framework must
 be produced independently with library evolution enabled. The fixture removes
 serialized modules/private interfaces, builds consumers through public interfaces,
 checks binary UUID/exported symbols and executes Debug/Release applications.

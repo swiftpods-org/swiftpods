@@ -1,15 +1,65 @@
 """Build actual binary SDKs with distinct platform payloads; no Ruby project tools."""
 from pathlib import Path
+import atexit
+import os
 import plistlib
+import shutil
+import signal
 import subprocess
+import tempfile
+
+_derived_data = {}
 
 
-def run(arguments, cwd, log, env=None):
+def fixture_derived_data(parent):
+    """Keep test executables outside privacy-protected project directories."""
+    parent = Path(parent).resolve()
+    if parent not in _derived_data:
+        alias = parent / 'DerivedData'
+        if alias.exists() or alias.is_symlink():
+            raise RuntimeError('Existing fixture build directory was preserved: ' + str(alias))
+        temporary = tempfile.TemporaryDirectory(prefix='swiftpods-xcode-')
+        alias.symlink_to(temporary.name, target_is_directory=True)
+        _derived_data[parent] = temporary
+    return Path(_derived_data[parent].name)
+
+
+def _cleanup_derived_data():
+    for parent, temporary in _derived_data.items():
+        diagnostics = Path(temporary.name) / 'Logs/Test'
+        for log in diagnostics.rglob('*.log'):
+            if log.is_file() and not log.is_symlink():
+                destination = parent / 'xctest-diagnostics' / log.relative_to(diagnostics)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(log, destination)
+        temporary.cleanup()
+
+
+atexit.register(_cleanup_derived_data)
+
+
+def _cancel_command(process):
+    try: os.killpg(process.pid, signal.SIGINT)
+    except ProcessLookupError: pass
+    try: process.wait(timeout=2)
+    except subprocess.TimeoutExpired: pass
+    # A parent can exit after SIGINT while its descendants remain alive.
+    try: os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError: pass
+    process.wait()
+
+
+def run(arguments, cwd, log, env=None, timeout=300):
     with log.open('wb') as output:
-        result = subprocess.run([str(arg) for arg in arguments], cwd=cwd, env=env,
-                                stdout=output, stderr=subprocess.STDOUT, timeout=300)
+        process = subprocess.Popen([str(arg) for arg in arguments], cwd=cwd, env=env,
+                                   stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
+        try:
+            process.wait(timeout=timeout)
+        except BaseException:
+            _cancel_command(process)
+            raise
     text = log.read_text(errors='replace')
-    if result.returncode or ' warning:' in text or '\nwarning:' in text:
+    if process.returncode or ' warning:' in text or '\nwarning:' in text:
         raise RuntimeError('SDK fixture command failed or warned: ' + str(log))
     return text
 

@@ -8,7 +8,7 @@ import tempfile
 from bootstrap import ROOT, environment
 from reporting import execute
 from supplementary_fixture import create, declarative, podfile
-from vendor_fixture import run
+from vendor_fixture import fixture_derived_data, run
 
 
 def install(work, env, *args, binary=None):
@@ -20,7 +20,7 @@ def install(work, env, *args, binary=None):
 def build(work, parent, scheme, action='build', configuration='Debug'):
     prefix = scheme + '-' + configuration + '-' + action
     log = parent / (prefix + '-' + str(len(list(parent.glob(prefix + '-*.log')))) + '.log')
-    return run(['xcodebuild', '-project', 'Pods/Pods.xcodeproj', '-scheme', scheme, '-configuration', configuration, '-destination', 'platform=macOS,arch=' + platform.machine(), '-derivedDataPath', parent / 'DerivedData', 'CODE_SIGNING_ALLOWED=NO', action], work, log)
+    return run(['xcodebuild', '-project', 'Pods/Pods.xcodeproj', '-scheme', scheme, '-configuration', configuration, '-destination', 'platform=macOS,arch=' + platform.machine(), '-derivedDataPath', fixture_derived_data(parent), 'CODE_SIGNING_ALLOWED=NO', action], work, log)
 
 
 def exercise(parent, linkage):

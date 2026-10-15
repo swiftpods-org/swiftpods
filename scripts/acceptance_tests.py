@@ -2,8 +2,12 @@
 """Exercise missing, stale, changed and incomplete acceptance evidence."""
 import hashlib
 import json
+import os
 from pathlib import Path
 import tempfile
+import subprocess
+import sys
+import time
 import unittest
 import zipfile
 from unittest.mock import patch
@@ -11,6 +15,7 @@ import acceptance
 import reporting
 import evidence as evidence_tools
 import swift_binary_producer as swift_producer
+from vendor_fixture import run as fixture_command
 from reporting import ROOT, execute
 
 
@@ -62,6 +67,24 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(result['status'], 'passed')
         self.assertEqual(result['stable_acceptance'], 'not_established')
         self.assertEqual(result['external_gates']['physical_devices']['status'], 'unverified')
+
+    def testFixtureTimeoutStopsDescendantsAfterTheParentExits(self):
+        state = self.root / 'child.json'
+        child = "import json,os,signal,sys,time;signal.signal(signal.SIGINT,signal.SIG_IGN);signal.signal(signal.SIGTERM,signal.SIG_IGN);json.dump({'pid':os.getpid(),'group':os.getpgrp()},open(sys.argv[1],'w'));time.sleep(60)"
+        parent = "import subprocess,sys,time;subprocess.Popen([sys.executable,'-c',sys.argv[1],sys.argv[2]]);time.sleep(60)"
+        with self.assertRaises(subprocess.TimeoutExpired):
+            fixture_command([sys.executable, '-c', parent, child, str(state)], self.root, self.root / 'timeout.log', timeout=1)
+        value = json.loads(state.read_text())
+        def cleanup():
+            try: os.killpg(value['group'], 9)
+            except ProcessLookupError: pass
+        self.addCleanup(cleanup)
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            status = subprocess.run(['ps', '-p', str(value['pid']), '-o', 'stat='], capture_output=True, text=True).stdout.strip()
+            if not status or status.startswith('Z'): break
+            time.sleep(0.02)
+        self.assertTrue(not status or status.startswith('Z'), 'Timed-out fixture left its descendant running')
 
     def testSwiftLanguageModeDoesNotPretendToBeAnotherCompiler(self):
         compiler = 'Apple Swift version 6.4 (swiftlang-6.4.0.34.1 clang-2100.3.34.1)'
