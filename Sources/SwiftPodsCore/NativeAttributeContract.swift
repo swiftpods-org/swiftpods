@@ -1,0 +1,63 @@
+import Foundation
+
+/// Attribute behaviour shared by native analysis and build planning.
+enum NativeAttributeContract {
+    static let known: Set<String> = ["app_host_name", "authors", "changelog", "cocoapods_version", "compiler_flags", "default_subspecs", "dependencies", "deprecated", "deprecated_in_favor_of", "description", "documentation_url", "exclude_files", "frameworks", "header_dir", "header_mappings_dir", "homepage", "info_plist", "libraries", "license", "module_map", "module_name", "name", "on_demand_resources", "platforms", "pod_target_xcconfig", "prefix_header_contents", "prefix_header_file", "prepare_command", "preserve_paths", "private_header_files", "project_header_files", "public_header_files", "readme", "requires_app_host", "requires_arc", "resource_bundles", "resources", "scheme", "screenshots", "script_phases", "social_media_url", "source", "source_files", "static_framework", "summary", "swift_versions", "test_type", "user_target_xcconfig", "vendored_frameworks", "vendored_libraries", "version", "weak_frameworks", "xcconfig"]
+    static let inherited: Set<String> = ["authors", "changelog", "cocoapods_version", "compiler_flags", "default_subspecs", "dependencies", "deprecated", "deprecated_in_favor_of", "description", "documentation_url", "frameworks", "header_dir", "header_mappings_dir", "homepage", "libraries", "license", "module_map", "module_name", "platforms", "pod_target_xcconfig", "prefix_header_contents", "prefix_header_file", "prepare_command", "readme", "requires_arc", "screenshots", "social_media_url", "source", "static_framework", "summary", "swift_versions", "user_target_xcconfig", "version", "weak_frameworks", "xcconfig"]
+    static let arrays: Set<String> = ["compiler_flags", "default_subspecs", "exclude_files", "frameworks", "libraries", "preserve_paths", "private_header_files", "project_header_files", "public_header_files", "resources", "screenshots", "script_phases", "source_files", "swift_versions", "vendored_frameworks", "vendored_libraries", "weak_frameworks"]
+    static let types: [String: Set<String>] = [
+        "app_host_name": ["String"],
+        "authors": ["Array", "Hash", "String"],
+        "changelog": ["String"],
+        "cocoapods_version": ["String"],
+        "compiler_flags": ["Array", "String"],
+        "default_subspecs": ["Array", "String", "Symbol"],
+        "dependencies": ["Hash", "String"],
+        "deprecated": ["FalseClass", "TrueClass"],
+        "deprecated_in_favor_of": ["String"],
+        "description": ["String"],
+        "documentation_url": ["String"],
+        "exclude_files": ["Array", "String"],
+        "frameworks": ["Array", "String"],
+        "header_dir": ["String"],
+        "header_mappings_dir": ["String"],
+        "homepage": ["String"],
+        "info_plist": ["Hash", "String"],
+        "libraries": ["Array", "String"],
+        "license": ["Hash", "String"],
+        "module_map": ["FalseClass", "String", "TrueClass"],
+        "module_name": ["String"],
+        "name": ["String"],
+        "on_demand_resources": ["Array", "Hash", "String"],
+        "platforms": ["Hash", "String"],
+        "pod_target_xcconfig": ["Hash", "String"],
+        "prefix_header_contents": ["Array", "String"],
+        "prefix_header_file": ["FalseClass", "String", "TrueClass"],
+        "prepare_command": ["String"],
+        "preserve_paths": ["Array", "String"],
+        "private_header_files": ["Array", "String"],
+        "project_header_files": ["Array", "String"],
+        "public_header_files": ["Array", "String"],
+        "readme": ["String"],
+        "requires_app_host": ["FalseClass", "TrueClass"],
+        "requires_arc": ["Array", "FalseClass", "String", "TrueClass"],
+        "resource_bundles": ["Array", "Hash", "String"],
+        "resources": ["Array", "String"],
+        "scheme": ["Hash"],
+        "screenshots": ["Array", "String"],
+        "script_phases": ["Array", "Hash"],
+        "social_media_url": ["String"],
+        "source": ["Hash", "String"],
+        "source_files": ["Array", "String"],
+        "static_framework": ["FalseClass", "TrueClass"],
+        "summary": ["String"],
+        "swift_versions": ["Array", "String"],
+        "test_type": ["String", "Symbol"],
+        "user_target_xcconfig": ["Hash", "String"],
+        "vendored_frameworks": ["Array", "String"],
+        "vendored_libraries": ["Array", "String"],
+        "version": ["String"],
+        "weak_frameworks": ["Array", "String"],
+        "xcconfig": ["Hash", "String"]
+    ]
+}

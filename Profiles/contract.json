@@ -1,0 +1,1518 @@
+{
+  "schema_version": 1,
+  "profile": "swift-native-external-ruby-3.4",
+  "reference_version": "1.17.0",
+  "suites": [
+    {
+      "id": "native:sources",
+      "script": "scripts/native_sources_tests.py",
+      "report": "native-sources.json",
+      "apple": false,
+      "reference": false
+    },
+    {
+      "id": "native:management",
+      "script": "scripts/native_management_tests.py",
+      "report": "native-management.json",
+      "apple": false,
+      "reference": false
+    },
+    {
+      "id": "native:runtime",
+      "script": "scripts/native_runtime_tests.py",
+      "report": "native-runtime.json",
+      "apple": false,
+      "reference": false
+    },
+    {
+      "id": "native:source-contract",
+      "script": "scripts/native_source_contract_tests.py",
+      "report": "native-source-contract.json",
+      "apple": false,
+      "reference": false
+    },
+    {
+      "id": "native:compatibility",
+      "script": "scripts/native_compatibility_tests.py",
+      "report": "native-compatibility.json",
+      "apple": false,
+      "reference": false
+    },
+    {
+      "id": "native:contract",
+      "script": "scripts/native_contract_tests.py",
+      "report": "native-contract.json",
+      "apple": true,
+      "reference": false
+    },
+    {
+      "id": "native:ecosystem",
+      "script": "scripts/native_ecosystem_tests.py",
+      "report": "native-ecosystem.json",
+      "apple": true,
+      "reference": false
+    },
+    {
+      "id": "native:platforms",
+      "script": "scripts/native_platform_tests.py",
+      "report": "native-platforms.json",
+      "apple": true,
+      "reference": false
+    },
+    {
+      "id": "native:variants",
+      "script": "scripts/native_variant_tests.py",
+      "report": "native-variants.json",
+      "apple": true,
+      "reference": false
+    },
+    {
+      "id": "native:configuration",
+      "script": "scripts/native_configuration_tests.py",
+      "report": "native-configuration.json",
+      "apple": true,
+      "reference": false
+    },
+    {
+      "id": "native:layout",
+      "script": "scripts/native_layout_tests.py",
+      "report": "native-layout.json",
+      "apple": true,
+      "reference": false
+    },
+    {
+      "id": "native:batch",
+      "script": "scripts/native_batch_tests.py",
+      "report": "native-batch.json",
+      "apple": true,
+      "reference": false
+    },
+    {
+      "id": "native:integration",
+      "script": "scripts/native_integration.py",
+      "report": "native-integration.json",
+      "apple": true,
+      "reference": false
+    },
+    {
+      "id": "native:vendor",
+      "script": "scripts/native_vendor_tests.py",
+      "report": "native-vendor.json",
+      "apple": true,
+      "reference": false
+    },
+    {
+      "id": "native:scripts",
+      "script": "scripts/native_script_phase_tests.py",
+      "report": "native-script-phases.json",
+      "apple": true,
+      "reference": false
+    },
+    {
+      "id": "native:supplementary",
+      "script": "scripts/native_supplementary_tests.py",
+      "report": "native-supplementary.json",
+      "apple": true,
+      "reference": false
+    },
+    {
+      "id": "native:ui",
+      "script": "scripts/native_ui_tests.py",
+      "report": "native-ui.json",
+      "apple": true,
+      "reference": false
+    },
+    {
+      "id": "reference:contract",
+      "script": "scripts/contract_reference.py",
+      "report": "native-contract-reference.json",
+      "apple": false,
+      "reference": true
+    },
+    {
+      "id": "reference:compatibility",
+      "script": "scripts/native_compatibility_tests.py",
+      "report": "native-compatibility-reference.json",
+      "apple": false,
+      "reference": true
+    },
+    {
+      "id": "reference:mixed",
+      "script": "scripts/reference_compare.py",
+      "report": "native-reference.json",
+      "apple": true,
+      "reference": true
+    },
+    {
+      "id": "reference:variants",
+      "script": "scripts/variant_reference.py",
+      "report": "native-variant-reference.json",
+      "apple": true,
+      "reference": true
+    },
+    {
+      "id": "reference:ecosystem",
+      "script": "scripts/native_ecosystem_tests.py",
+      "report": "native-ecosystem-reference.json",
+      "apple": true,
+      "reference": true
+    },
+    {
+      "id": "reference:scripts",
+      "script": "scripts/script_phase_reference.py",
+      "report": "native-script-reference.json",
+      "apple": true,
+      "reference": true
+    },
+    {
+      "id": "reference:supplementary",
+      "script": "scripts/supplementary_reference.py",
+      "report": "native-supplementary-reference.json",
+      "apple": true,
+      "reference": true
+    },
+    {
+      "id": "reference:batch",
+      "script": "scripts/batch_reference.py",
+      "report": "native-batch-reference.json",
+      "apple": true,
+      "reference": true
+    },
+    {
+      "id": "reference:configuration",
+      "script": "scripts/configuration_reference.py",
+      "report": "native-configuration-reference.json",
+      "apple": true,
+      "reference": true
+    },
+    {
+      "id": "reference:layout",
+      "script": "scripts/layout_reference.py",
+      "report": "native-layout-reference.json",
+      "apple": true,
+      "reference": true
+    },
+    {
+      "id": "reference:ui",
+      "script": "scripts/ui_reference.py",
+      "report": "native-ui-reference.json",
+      "apple": true,
+      "reference": true
+    },
+    {
+      "id": "native:mercurial",
+      "script": "scripts/native_mercurial_tests.py",
+      "report": "native-mercurial.json",
+      "apple": false,
+      "reference": false
+    },
+    {
+      "id": "native:benchmarks",
+      "script": "scripts/native_benchmarks.py",
+      "report": "native-benchmarks.json",
+      "apple": false,
+      "reference": false
+    },
+    {
+      "id": "reference:resolver",
+      "script": "scripts/resolver_reference.py",
+      "report": "native-resolver-reference.json",
+      "apple": false,
+      "reference": true
+    },
+    {
+      "id": "native:swift-binary",
+      "script": "scripts/native_swift_binary_tests.py",
+      "report": "native-swift-binary.json",
+      "apple": true,
+      "reference": false
+    },
+    {
+      "id": "native:acceptance-harness",
+      "script": "scripts/acceptance_tests.py",
+      "report": "native-acceptance-harness.json",
+      "apple": false,
+      "reference": false
+    },
+    {
+      "id": "native:xcconfig",
+      "script": "scripts/native_xcconfig_tests.py",
+      "report": "native-xcconfig.json",
+      "apple": true,
+      "reference": false
+    },
+    {
+      "id": "reference:xcconfig",
+      "script": "scripts/native_xcconfig_tests.py",
+      "report": "native-xcconfig-reference.json",
+      "apple": true,
+      "reference": true
+    }
+  ],
+  "requirements": [
+    {
+      "id": "T-001",
+      "reports": [
+        "native-compatibility-reference.json",
+        "native-compatibility.json",
+        "native-contract-reference.json",
+        "native-integration.json",
+        "native-resolver-reference.json"
+      ]
+    },
+    {
+      "id": "T-002",
+      "reports": [
+        "native-contract-reference.json",
+        "native-compatibility.json",
+        "native-compatibility-reference.json",
+        "native-integration.json"
+      ]
+    },
+    {
+      "id": "T-003",
+      "reports": [
+        "native-compatibility-reference.json",
+        "native-compatibility.json",
+        "native-contract-reference.json",
+        "native-integration.json",
+        "native-resolver-reference.json"
+      ]
+    },
+    {
+      "id": "T-004",
+      "reports": [
+        "native-contract-reference.json",
+        "native-compatibility.json",
+        "native-compatibility-reference.json",
+        "native-integration.json"
+      ]
+    },
+    {
+      "id": "T-005",
+      "reports": [
+        "native-units.json",
+        "native-sources.json",
+        "native-management.json",
+        "native-source-contract.json",
+        "native-compatibility-reference.json",
+        "native-resolver-reference.json"
+      ]
+    },
+    {
+      "id": "T-006",
+      "reports": [
+        "native-units.json",
+        "native-sources.json",
+        "native-management.json",
+        "native-source-contract.json",
+        "native-compatibility-reference.json",
+        "native-mercurial.json"
+      ]
+    },
+    {
+      "id": "T-007",
+      "reports": [
+        "native-units.json",
+        "native-sources.json",
+        "native-management.json",
+        "native-source-contract.json",
+        "native-compatibility-reference.json",
+        "native-mercurial.json"
+      ]
+    },
+    {
+      "id": "T-008",
+      "reports": [
+        "native-units.json",
+        "native-sources.json",
+        "native-management.json",
+        "native-source-contract.json",
+        "native-compatibility-reference.json"
+      ]
+    },
+    {
+      "id": "T-009",
+      "reports": [
+        "native-contract.json",
+        "native-batch-reference.json",
+        "native-variant-reference.json",
+        "native-compatibility-reference.json"
+      ]
+    },
+    {
+      "id": "T-010",
+      "reports": [
+        "native-contract.json",
+        "native-batch-reference.json",
+        "native-variant-reference.json",
+        "native-compatibility-reference.json"
+      ]
+    },
+    {
+      "id": "T-011",
+      "reports": [
+        "native-platforms.json",
+        "native-vendor.json",
+        "native-reference.json",
+        "native-configuration-reference.json",
+        "native-layout-reference.json",
+        "native-supplementary-reference.json",
+        "native-ui-reference.json",
+        "native-script-reference.json",
+        "native-swift-binary.json"
+      ]
+    },
+    {
+      "id": "T-012",
+      "reports": [
+        "native-platforms.json",
+        "native-vendor.json",
+        "native-reference.json",
+        "native-configuration-reference.json",
+        "native-layout-reference.json",
+        "native-supplementary-reference.json",
+        "native-ui-reference.json",
+        "native-script-reference.json",
+        "native-swift-binary.json"
+      ]
+    },
+    {
+      "id": "T-013",
+      "reports": [
+        "native-platforms.json",
+        "native-vendor.json",
+        "native-reference.json",
+        "native-configuration-reference.json",
+        "native-layout-reference.json",
+        "native-supplementary-reference.json",
+        "native-ui-reference.json",
+        "native-script-reference.json"
+      ]
+    },
+    {
+      "id": "T-014",
+      "reports": [
+        "native-platforms.json",
+        "native-vendor.json",
+        "native-reference.json",
+        "native-configuration-reference.json",
+        "native-layout-reference.json",
+        "native-supplementary-reference.json",
+        "native-ui-reference.json",
+        "native-script-reference.json"
+      ]
+    },
+    {
+      "id": "T-015",
+      "reports": [
+        "native-ecosystem-reference.json",
+        "native-configuration-reference.json",
+        "native-layout-reference.json"
+      ]
+    },
+    {
+      "id": "T-016",
+      "reports": [
+        "native-ecosystem-reference.json",
+        "native-configuration-reference.json",
+        "native-layout-reference.json"
+      ]
+    },
+    {
+      "id": "T-017",
+      "reports": [
+        "native-ecosystem-reference.json",
+        "native-configuration-reference.json",
+        "native-layout-reference.json"
+      ]
+    },
+    {
+      "id": "T-018",
+      "reports": [
+        "native-ecosystem-reference.json",
+        "native-configuration-reference.json",
+        "native-layout-reference.json"
+      ]
+    },
+    {
+      "id": "T-019",
+      "reports": [
+        "native-source-contract.json",
+        "native-distribution.json"
+      ]
+    },
+    {
+      "id": "T-020",
+      "reports": [
+        "native-sources.json",
+        "native-runtime.json",
+        "native-integration.json",
+        "native-compatibility.json",
+        "native-mercurial.json"
+      ]
+    },
+    {
+      "id": "T-021",
+      "reports": [
+        "native-sources.json",
+        "native-runtime.json",
+        "native-integration.json",
+        "native-compatibility.json"
+      ]
+    },
+    {
+      "id": "T-022",
+      "reports": [
+        "native-sources.json",
+        "native-runtime.json",
+        "native-integration.json",
+        "native-compatibility.json"
+      ]
+    },
+    {
+      "id": "T-023",
+      "reports": [
+        "native-sources.json",
+        "native-runtime.json",
+        "native-integration.json",
+        "native-compatibility.json"
+      ]
+    },
+    {
+      "id": "T-024",
+      "reports": [
+        "native-sources.json",
+        "native-runtime.json",
+        "native-integration.json",
+        "native-compatibility.json"
+      ]
+    },
+    {
+      "id": "T-025",
+      "reports": [
+        "native-acceptance-harness.json",
+        "native-configuration-reference.json",
+        "native-ecosystem-reference.json",
+        "native-layout-reference.json",
+        "native-xcconfig-reference.json"
+      ]
+    },
+    {
+      "id": "AC-001",
+      "requirements": [
+        "T-001",
+        "T-002",
+        "T-015"
+      ]
+    },
+    {
+      "id": "AC-002",
+      "requirements": [
+        "T-002",
+        "T-010"
+      ]
+    },
+    {
+      "id": "AC-003",
+      "requirements": [
+        "T-005",
+        "T-006",
+        "T-007",
+        "T-015"
+      ]
+    },
+    {
+      "id": "AC-004",
+      "requirements": [
+        "T-011",
+        "T-012",
+        "T-013",
+        "T-014"
+      ]
+    },
+    {
+      "id": "AC-005",
+      "requirements": [
+        "T-016",
+        "T-017"
+      ]
+    },
+    {
+      "id": "AC-006",
+      "requirements": [
+        "T-019"
+      ]
+    },
+    {
+      "id": "AC-007",
+      "requirements": [
+        "T-018"
+      ]
+    },
+    {
+      "id": "AC-008",
+      "requirements": [
+        "T-003",
+        "T-004",
+        "T-024"
+      ]
+    },
+    {
+      "id": "AC-009",
+      "requirements": [
+        "T-021",
+        "T-022",
+        "T-023"
+      ]
+    },
+    {
+      "id": "AC-010",
+      "requirements": [
+        "T-025"
+      ]
+    }
+  ],
+  "api": {
+    "podfile_methods": {
+      "install!": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "dsl:install!"
+      },
+      "ensure_bundler!": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "dsl:ensure_bundler!"
+      },
+      "pod": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "dsl:pod"
+      },
+      "podspec": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "dsl:podspec"
+      },
+      "target": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "dsl:target"
+      },
+      "script_phase": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "dsl:script_phase"
+      },
+      "abstract_target": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "dsl:abstract_target"
+      },
+      "abstract!": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "dsl:abstract!"
+      },
+      "inherit!": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "dsl:inherit!"
+      },
+      "platform": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "dsl:platform"
+      },
+      "project": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "dsl:project"
+      },
+      "xcodeproj": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "dsl:xcodeproj"
+      },
+      "link_with": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "dsl:link_with"
+      },
+      "inhibit_all_warnings!": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "dsl:inhibit_all_warnings!"
+      },
+      "use_modular_headers!": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "dsl:use_modular_headers!"
+      },
+      "use_frameworks!": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "dsl:use_frameworks!"
+      },
+      "supports_swift_versions": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "dsl:supports_swift_versions"
+      },
+      "workspace": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "dsl:workspace"
+      },
+      "generate_bridge_support!": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "dsl:generate_bridge_support!"
+      },
+      "set_arc_compatibility_flag!": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "dsl:set_arc_compatibility_flag!"
+      },
+      "source": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "dsl:source"
+      },
+      "plugin": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "dsl:plugin"
+      },
+      "pre_install": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "dsl:pre_install"
+      },
+      "pre_integrate": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "dsl:pre_integrate"
+      },
+      "post_install": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "dsl:post_install"
+      },
+      "post_integrate": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "dsl:post_integrate"
+      }
+    },
+    "installation_options": {
+      "clean": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-runtime.json"
+        ],
+        "case": "option:clean"
+      },
+      "deduplicate_targets": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-batch.json"
+        ],
+        "case": "option:deduplicate_targets"
+      },
+      "deterministic_uuids": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-batch.json"
+        ],
+        "case": "option:deterministic_uuids"
+      },
+      "integrate_targets": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-batch.json"
+        ],
+        "case": "option:integrate_targets"
+      },
+      "lock_pod_sources": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-runtime.json"
+        ],
+        "case": "option:lock_pod_sources"
+      },
+      "warn_for_multiple_pod_sources": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-batch.json"
+        ],
+        "case": "option:warn_for_multiple_pod_sources"
+      },
+      "warn_for_unused_master_specs_repo": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-batch.json"
+        ],
+        "case": "option:warn_for_unused_master_specs_repo"
+      },
+      "share_schemes_for_development_pods": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-batch.json"
+        ],
+        "case": "option:share_schemes_for_development_pods"
+      },
+      "disable_input_output_paths": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-batch.json"
+        ],
+        "case": "option:disable_input_output_paths"
+      },
+      "preserve_pod_file_structure": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-runtime.json"
+        ],
+        "case": "option:preserve_pod_file_structure"
+      },
+      "generate_multiple_pod_projects": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-batch.json"
+        ],
+        "case": "option:generate_multiple_pod_projects"
+      },
+      "incremental_installation": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-runtime.json"
+        ],
+        "case": "option:incremental_installation"
+      },
+      "skip_pods_project_generation": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-batch.json"
+        ],
+        "case": "option:skip_pods_project_generation"
+      },
+      "parallel_pod_downloads": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-runtime.json"
+        ],
+        "case": "option:parallel_pod_downloads"
+      },
+      "parallel_pod_download_thread_pool_size": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-runtime.json"
+        ],
+        "case": "option:parallel_pod_download_thread_pool_size"
+      }
+    },
+    "podspec_attributes": {
+      "app_host_name": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-supplementary.json",
+          "native-supplementary-reference.json"
+        ],
+        "case": "attribute:app_host_name"
+      },
+      "authors": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "attribute:authors"
+      },
+      "changelog": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "attribute:changelog"
+      },
+      "cocoapods_version": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "attribute:cocoapods_version"
+      },
+      "compiler_flags": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-batch.json",
+          "native-batch-reference.json"
+        ],
+        "case": "attribute:compiler_flags"
+      },
+      "default_subspecs": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "attribute:default_subspecs"
+      },
+      "dependencies": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "attribute:dependencies"
+      },
+      "deprecated": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "attribute:deprecated"
+      },
+      "deprecated_in_favor_of": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "attribute:deprecated_in_favor_of"
+      },
+      "description": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "attribute:description"
+      },
+      "documentation_url": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "attribute:documentation_url"
+      },
+      "exclude_files": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-layout.json",
+          "native-layout-reference.json"
+        ],
+        "case": "attribute:exclude_files"
+      },
+      "frameworks": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-vendor.json",
+          "native-platforms.json",
+          "native-swift-binary.json"
+        ],
+        "case": "attribute:frameworks"
+      },
+      "header_dir": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-layout.json",
+          "native-layout-reference.json"
+        ],
+        "case": "attribute:header_dir"
+      },
+      "header_mappings_dir": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-layout.json",
+          "native-layout-reference.json"
+        ],
+        "case": "attribute:header_mappings_dir"
+      },
+      "homepage": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "attribute:homepage"
+      },
+      "info_plist": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-supplementary.json",
+          "native-supplementary-reference.json"
+        ],
+        "case": "attribute:info_plist"
+      },
+      "libraries": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-vendor.json",
+          "native-platforms.json",
+          "native-swift-binary.json"
+        ],
+        "case": "attribute:libraries"
+      },
+      "license": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "attribute:license"
+      },
+      "module_map": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-layout.json",
+          "native-layout-reference.json"
+        ],
+        "case": "attribute:module_map"
+      },
+      "module_name": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-layout.json",
+          "native-layout-reference.json"
+        ],
+        "case": "attribute:module_name"
+      },
+      "name": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "attribute:name"
+      },
+      "on_demand_resources": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-ecosystem.json",
+          "native-ecosystem-reference.json",
+          "native-supplementary-reference.json"
+        ],
+        "case": "attribute:on_demand_resources"
+      },
+      "platforms": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-batch.json",
+          "native-batch-reference.json"
+        ],
+        "case": "attribute:platforms"
+      },
+      "pod_target_xcconfig": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-configuration.json",
+          "native-configuration-reference.json",
+          "native-xcconfig-reference.json"
+        ],
+        "case": "attribute:pod_target_xcconfig"
+      },
+      "prefix_header_contents": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-layout.json",
+          "native-layout-reference.json"
+        ],
+        "case": "attribute:prefix_header_contents"
+      },
+      "prefix_header_file": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-layout.json",
+          "native-layout-reference.json"
+        ],
+        "case": "attribute:prefix_header_file"
+      },
+      "prepare_command": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-sources.json",
+          "native-source-contract.json",
+          "native-mercurial.json"
+        ],
+        "case": "attribute:prepare_command"
+      },
+      "preserve_paths": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-sources.json",
+          "native-source-contract.json",
+          "native-mercurial.json"
+        ],
+        "case": "attribute:preserve_paths"
+      },
+      "private_header_files": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-layout.json",
+          "native-layout-reference.json"
+        ],
+        "case": "attribute:private_header_files"
+      },
+      "project_header_files": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-layout.json",
+          "native-layout-reference.json"
+        ],
+        "case": "attribute:project_header_files"
+      },
+      "public_header_files": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-layout.json",
+          "native-layout-reference.json"
+        ],
+        "case": "attribute:public_header_files"
+      },
+      "readme": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "attribute:readme"
+      },
+      "requires_app_host": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-supplementary.json",
+          "native-supplementary-reference.json"
+        ],
+        "case": "attribute:requires_app_host"
+      },
+      "requires_arc": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-batch.json",
+          "native-batch-reference.json"
+        ],
+        "case": "attribute:requires_arc"
+      },
+      "resource_bundles": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-ecosystem.json",
+          "native-ecosystem-reference.json",
+          "native-supplementary-reference.json"
+        ],
+        "case": "attribute:resource_bundles"
+      },
+      "resources": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-ecosystem.json",
+          "native-ecosystem-reference.json",
+          "native-supplementary-reference.json"
+        ],
+        "case": "attribute:resources"
+      },
+      "scheme": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-supplementary.json",
+          "native-supplementary-reference.json"
+        ],
+        "case": "attribute:scheme"
+      },
+      "screenshots": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "attribute:screenshots"
+      },
+      "script_phases": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-script-phases.json",
+          "native-script-reference.json"
+        ],
+        "case": "attribute:script_phases"
+      },
+      "social_media_url": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "attribute:social_media_url"
+      },
+      "source": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-sources.json",
+          "native-source-contract.json",
+          "native-mercurial.json"
+        ],
+        "case": "attribute:source"
+      },
+      "source_files": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-layout.json",
+          "native-layout-reference.json"
+        ],
+        "case": "attribute:source_files"
+      },
+      "static_framework": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-vendor.json",
+          "native-platforms.json",
+          "native-swift-binary.json"
+        ],
+        "case": "attribute:static_framework"
+      },
+      "summary": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "attribute:summary"
+      },
+      "swift_versions": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-batch.json",
+          "native-batch-reference.json"
+        ],
+        "case": "attribute:swift_versions"
+      },
+      "test_type": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-supplementary.json",
+          "native-supplementary-reference.json"
+        ],
+        "case": "attribute:test_type"
+      },
+      "user_target_xcconfig": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-configuration.json",
+          "native-configuration-reference.json",
+          "native-xcconfig-reference.json"
+        ],
+        "case": "attribute:user_target_xcconfig"
+      },
+      "vendored_frameworks": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-vendor.json",
+          "native-platforms.json",
+          "native-swift-binary.json"
+        ],
+        "case": "attribute:vendored_frameworks"
+      },
+      "vendored_libraries": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-vendor.json",
+          "native-platforms.json",
+          "native-swift-binary.json"
+        ],
+        "case": "attribute:vendored_libraries"
+      },
+      "version": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-contract.json",
+          "native-integration.json",
+          "native-reference.json"
+        ],
+        "case": "attribute:version"
+      },
+      "weak_frameworks": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-vendor.json",
+          "native-platforms.json",
+          "native-swift-binary.json"
+        ],
+        "case": "attribute:weak_frameworks"
+      },
+      "xcconfig": {
+        "declarations": "native-contract-reference.json",
+        "effects": [
+          "native-configuration.json",
+          "native-configuration-reference.json",
+          "native-xcconfig-reference.json"
+        ],
+        "case": "attribute:xcconfig"
+      }
+    },
+    "public_hook_operations": {
+      "FileAccessor.source_files": {
+        "report": "native-compatibility-reference.json"
+      },
+      "FileAccessor.headers": {
+        "report": "native-compatibility-reference.json"
+      },
+      "FileAccessor.public_headers": {
+        "report": "native-compatibility-reference.json"
+      },
+      "FileAccessor.private_headers": {
+        "report": "native-compatibility-reference.json"
+      },
+      "FileAccessor.project_headers": {
+        "report": "native-compatibility-reference.json"
+      },
+      "FileAccessor.arc_source_files": {
+        "report": "native-compatibility-reference.json"
+      },
+      "FileAccessor.non_arc_source_files": {
+        "report": "native-compatibility-reference.json"
+      },
+      "FileAccessor.resources": {
+        "report": "native-compatibility-reference.json"
+      },
+      "FileAccessor.resource_bundles": {
+        "report": "native-compatibility-reference.json"
+      },
+      "FileAccessor.resource_bundle_files": {
+        "report": "native-compatibility-reference.json"
+      },
+      "FileAccessor.on_demand_resources": {
+        "report": "native-compatibility-reference.json"
+      },
+      "FileAccessor.on_demand_resources_files": {
+        "report": "native-compatibility-reference.json"
+      },
+      "FileAccessor.root": {
+        "report": "native-compatibility-reference.json"
+      },
+      "FileAccessor.spec": {
+        "report": "native-compatibility-reference.json"
+      },
+      "FileAccessor.platform_name": {
+        "report": "native-compatibility-reference.json"
+      },
+      "Project.new": {
+        "report": "native-compatibility-reference.json",
+        "case": "Project.new"
+      },
+      "Project.new_target": {
+        "report": "native-compatibility-reference.json",
+        "case": "Project.new_target"
+      },
+      "Project.new_group": {
+        "report": "native-compatibility-reference.json",
+        "case": "Project.new_group"
+      },
+      "Project.new_file": {
+        "report": "native-compatibility-reference.json",
+        "case": "Project.new_file"
+      },
+      "Project.save": {
+        "report": "native-compatibility-reference.json",
+        "case": "Project.save"
+      },
+      "Project.unknown_setter_rejected": {
+        "report": "native-compatibility-reference.json",
+        "case": "Project.unknown_setter_rejected"
+      },
+      "Installer.target_installation_results": {
+        "report": "native-supplementary-reference.json"
+      },
+      "PodTarget.specs": {
+        "report": "native-supplementary-reference.json"
+      },
+      "TargetInstallationResult.native_target": {
+        "report": "native-supplementary-reference.json"
+      },
+      "TargetInstallationResult.resource_bundle_targets": {
+        "report": "native-supplementary-reference.json"
+      },
+      "TargetInstallationResult.test_specs_by_native_target": {
+        "report": "native-supplementary-reference.json"
+      },
+      "TargetInstallationResult.app_specs_by_native_target": {
+        "report": "native-supplementary-reference.json"
+      },
+      "TargetInstallationResult.non_library_specs_by_native_target": {
+        "report": "native-supplementary-reference.json"
+      },
+      "TargetInstallationResult.test_resource_bundle_targets": {
+        "report": "native-supplementary-reference.json"
+      },
+      "TargetInstallationResult.app_resource_bundle_targets": {
+        "report": "native-supplementary-reference.json"
+      },
+      "TargetInstallationResult.native_target_for_spec": {
+        "report": "native-supplementary-reference.json"
+      },
+      "Podfile.reject_duplicate_pre_integrate": {
+        "report": "native-compatibility-reference.json"
+      },
+      "Podfile.reject_duplicate_post_install": {
+        "report": "native-compatibility-reference.json"
+      },
+      "Podfile.reject_duplicate_post_integrate": {
+        "report": "native-compatibility-reference.json"
+      },
+      "Podfile.replace_duplicate_pre_install": {
+        "report": "native-compatibility-reference.json"
+      }
+    }
+  },
+  "external_gates": [
+    "signed_distribution",
+    "notarization",
+    "physical_devices",
+    "intel_execution",
+    "minimum_macos_execution",
+    "clean_homebrew_installation",
+    "remote_ci",
+    "swift_binary_module_stability"
+  ],
+  "coverage_policy": "A mapped report is evidence for its recorded cases, not proof of every combination. Stable acceptance also requires all external gates and a clean source revision."
+}

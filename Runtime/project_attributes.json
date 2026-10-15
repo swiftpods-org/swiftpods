@@ -1,0 +1,1159 @@
+{
+  "schema_version": 1,
+  "reference": "xcodeproj-1.28.1",
+  "classes": {
+    "XCConfigurationList": {
+      "default_configuration_is_visible": {
+        "plist_name": "defaultConfigurationIsVisible",
+        "kind": "simple",
+        "default": "0"
+      },
+      "default_configuration_name": {
+        "plist_name": "defaultConfigurationName",
+        "kind": "simple",
+        "default": "Release"
+      },
+      "build_configurations": {
+        "plist_name": "buildConfigurations",
+        "kind": "to_many",
+        "default": null
+      }
+    },
+    "XCBuildConfiguration": {
+      "name": {
+        "plist_name": "name",
+        "kind": "simple",
+        "default": null
+      },
+      "build_settings": {
+        "plist_name": "buildSettings",
+        "kind": "simple",
+        "default": {}
+      },
+      "base_configuration_reference": {
+        "plist_name": "baseConfigurationReference",
+        "kind": "to_one",
+        "default": null
+      },
+      "base_configuration_reference_anchor": {
+        "plist_name": "baseConfigurationReferenceAnchor",
+        "kind": "to_one",
+        "default": null
+      },
+      "base_configuration_reference_relative_path": {
+        "plist_name": "baseConfigurationReferenceRelativePath",
+        "kind": "simple",
+        "default": null
+      }
+    },
+    "PBXFileSystemSynchronizedBuildFileExceptionSet": {
+      "target": {
+        "plist_name": "target",
+        "kind": "to_one",
+        "default": null
+      },
+      "membership_exceptions": {
+        "plist_name": "membershipExceptions",
+        "kind": "simple",
+        "default": null
+      },
+      "public_headers": {
+        "plist_name": "publicHeaders",
+        "kind": "simple",
+        "default": null
+      },
+      "private_headers": {
+        "plist_name": "privateHeaders",
+        "kind": "simple",
+        "default": null
+      },
+      "additional_compiler_flags_by_relative_path": {
+        "plist_name": "additionalCompilerFlagsByRelativePath",
+        "kind": "simple",
+        "default": null
+      },
+      "asset_tags_by_relative_path": {
+        "plist_name": "assetTagsByRelativePath",
+        "kind": "simple",
+        "default": null
+      },
+      "attributes_by_relative_path": {
+        "plist_name": "attributesByRelativePath",
+        "kind": "simple",
+        "default": null
+      },
+      "platform_filters_by_relative_path": {
+        "plist_name": "platformFiltersByRelativePath",
+        "kind": "simple",
+        "default": null
+      }
+    },
+    "PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet": {
+      "build_phase": {
+        "plist_name": "buildPhase",
+        "kind": "to_one",
+        "default": null
+      },
+      "membership_exceptions": {
+        "plist_name": "membershipExceptions",
+        "kind": "simple",
+        "default": null
+      },
+      "platform_filters_by_relative_path": {
+        "plist_name": "platformFiltersByRelativePath",
+        "kind": "simple",
+        "default": null
+      }
+    },
+    "PBXBuildFile": {
+      "settings": {
+        "plist_name": "settings",
+        "kind": "simple",
+        "default": null
+      },
+      "file_ref": {
+        "plist_name": "fileRef",
+        "kind": "to_one",
+        "default": null
+      },
+      "product_ref": {
+        "plist_name": "productRef",
+        "kind": "to_one",
+        "default": null
+      },
+      "platform_filter": {
+        "plist_name": "platformFilter",
+        "kind": "simple",
+        "default": null
+      },
+      "platform_filters": {
+        "plist_name": "platformFilters",
+        "kind": "simple",
+        "default": null
+      }
+    },
+    "AbstractBuildPhase": {
+      "files": {
+        "plist_name": "files",
+        "kind": "to_many",
+        "default": null
+      },
+      "build_action_mask": {
+        "plist_name": "buildActionMask",
+        "kind": "simple",
+        "default": "2147483647"
+      },
+      "run_only_for_deployment_postprocessing": {
+        "plist_name": "runOnlyForDeploymentPostprocessing",
+        "kind": "simple",
+        "default": "0"
+      },
+      "always_out_of_date": {
+        "plist_name": "alwaysOutOfDate",
+        "kind": "simple",
+        "default": null
+      },
+      "comments": {
+        "plist_name": "comments",
+        "kind": "simple",
+        "default": null
+      }
+    },
+    "PBXBuildRule": {
+      "name": {
+        "plist_name": "name",
+        "kind": "simple",
+        "default": null
+      },
+      "compiler_spec": {
+        "plist_name": "compilerSpec",
+        "kind": "simple",
+        "default": null
+      },
+      "dependency_file": {
+        "plist_name": "dependencyFile",
+        "kind": "simple",
+        "default": null
+      },
+      "file_type": {
+        "plist_name": "fileType",
+        "kind": "simple",
+        "default": null
+      },
+      "file_patterns": {
+        "plist_name": "filePatterns",
+        "kind": "simple",
+        "default": null
+      },
+      "is_editable": {
+        "plist_name": "isEditable",
+        "kind": "simple",
+        "default": "1"
+      },
+      "input_files": {
+        "plist_name": "inputFiles",
+        "kind": "simple",
+        "default": null
+      },
+      "output_files": {
+        "plist_name": "outputFiles",
+        "kind": "simple",
+        "default": null
+      },
+      "output_files_compiler_flags": {
+        "plist_name": "outputFilesCompilerFlags",
+        "kind": "simple",
+        "default": null
+      },
+      "run_once_per_architecture": {
+        "plist_name": "runOncePerArchitecture",
+        "kind": "simple",
+        "default": null
+      },
+      "script": {
+        "plist_name": "script",
+        "kind": "simple",
+        "default": null
+      }
+    },
+    "PBXContainerItemProxy": {
+      "container_portal": {
+        "plist_name": "containerPortal",
+        "kind": "simple",
+        "default": null
+      },
+      "proxy_type": {
+        "plist_name": "proxyType",
+        "kind": "simple",
+        "default": null
+      },
+      "remote_global_id_string": {
+        "plist_name": "remoteGlobalIDString",
+        "kind": "simple",
+        "default": null
+      },
+      "remote_info": {
+        "plist_name": "remoteInfo",
+        "kind": "simple",
+        "default": null
+      }
+    },
+    "PBXTargetDependency": {
+      "target": {
+        "plist_name": "target",
+        "kind": "to_one",
+        "default": null
+      },
+      "target_proxy": {
+        "plist_name": "targetProxy",
+        "kind": "to_one",
+        "default": null
+      },
+      "name": {
+        "plist_name": "name",
+        "kind": "simple",
+        "default": null
+      },
+      "platform_filter": {
+        "plist_name": "platformFilter",
+        "kind": "simple",
+        "default": null
+      },
+      "platform_filters": {
+        "plist_name": "platformFilters",
+        "kind": "simple",
+        "default": null
+      },
+      "product_ref": {
+        "plist_name": "productRef",
+        "kind": "to_one",
+        "default": null
+      }
+    },
+    "PBXReferenceProxy": {
+      "name": {
+        "plist_name": "name",
+        "kind": "simple",
+        "default": null
+      },
+      "path": {
+        "plist_name": "path",
+        "kind": "simple",
+        "default": null
+      },
+      "file_type": {
+        "plist_name": "fileType",
+        "kind": "simple",
+        "default": null
+      },
+      "remote_ref": {
+        "plist_name": "remoteRef",
+        "kind": "to_one",
+        "default": null
+      },
+      "source_tree": {
+        "plist_name": "sourceTree",
+        "kind": "simple",
+        "default": null
+      }
+    },
+    "AbstractTarget": {
+      "name": {
+        "plist_name": "name",
+        "kind": "simple",
+        "default": null
+      },
+      "product_name": {
+        "plist_name": "productName",
+        "kind": "simple",
+        "default": null
+      },
+      "comments": {
+        "plist_name": "comments",
+        "kind": "simple",
+        "default": null
+      },
+      "build_configuration_list": {
+        "plist_name": "buildConfigurationList",
+        "kind": "to_one",
+        "default": null
+      },
+      "dependencies": {
+        "plist_name": "dependencies",
+        "kind": "to_many",
+        "default": null
+      }
+    },
+    "PBXCopyFilesBuildPhase": {
+      "name": {
+        "plist_name": "name",
+        "kind": "simple",
+        "default": null
+      },
+      "dst_path": {
+        "plist_name": "dstPath",
+        "kind": "simple",
+        "default": ""
+      },
+      "dst_subfolder_spec": {
+        "plist_name": "dstSubfolderSpec",
+        "kind": "simple",
+        "default": "7"
+      },
+      "files": {
+        "plist_name": "files",
+        "kind": "to_many",
+        "default": null
+      },
+      "build_action_mask": {
+        "plist_name": "buildActionMask",
+        "kind": "simple",
+        "default": "2147483647"
+      },
+      "run_only_for_deployment_postprocessing": {
+        "plist_name": "runOnlyForDeploymentPostprocessing",
+        "kind": "simple",
+        "default": "0"
+      },
+      "always_out_of_date": {
+        "plist_name": "alwaysOutOfDate",
+        "kind": "simple",
+        "default": null
+      },
+      "comments": {
+        "plist_name": "comments",
+        "kind": "simple",
+        "default": null
+      }
+    },
+    "PBXResourcesBuildPhase": {
+      "files": {
+        "plist_name": "files",
+        "kind": "to_many",
+        "default": null
+      },
+      "build_action_mask": {
+        "plist_name": "buildActionMask",
+        "kind": "simple",
+        "default": "2147483647"
+      },
+      "run_only_for_deployment_postprocessing": {
+        "plist_name": "runOnlyForDeploymentPostprocessing",
+        "kind": "simple",
+        "default": "0"
+      },
+      "always_out_of_date": {
+        "plist_name": "alwaysOutOfDate",
+        "kind": "simple",
+        "default": null
+      },
+      "comments": {
+        "plist_name": "comments",
+        "kind": "simple",
+        "default": null
+      }
+    },
+    "PBXSourcesBuildPhase": {
+      "files": {
+        "plist_name": "files",
+        "kind": "to_many",
+        "default": null
+      },
+      "build_action_mask": {
+        "plist_name": "buildActionMask",
+        "kind": "simple",
+        "default": "2147483647"
+      },
+      "run_only_for_deployment_postprocessing": {
+        "plist_name": "runOnlyForDeploymentPostprocessing",
+        "kind": "simple",
+        "default": "0"
+      },
+      "always_out_of_date": {
+        "plist_name": "alwaysOutOfDate",
+        "kind": "simple",
+        "default": null
+      },
+      "comments": {
+        "plist_name": "comments",
+        "kind": "simple",
+        "default": null
+      }
+    },
+    "PBXFrameworksBuildPhase": {
+      "files": {
+        "plist_name": "files",
+        "kind": "to_many",
+        "default": null
+      },
+      "build_action_mask": {
+        "plist_name": "buildActionMask",
+        "kind": "simple",
+        "default": "2147483647"
+      },
+      "run_only_for_deployment_postprocessing": {
+        "plist_name": "runOnlyForDeploymentPostprocessing",
+        "kind": "simple",
+        "default": "0"
+      },
+      "always_out_of_date": {
+        "plist_name": "alwaysOutOfDate",
+        "kind": "simple",
+        "default": null
+      },
+      "comments": {
+        "plist_name": "comments",
+        "kind": "simple",
+        "default": null
+      }
+    },
+    "PBXHeadersBuildPhase": {
+      "files": {
+        "plist_name": "files",
+        "kind": "to_many",
+        "default": null
+      },
+      "build_action_mask": {
+        "plist_name": "buildActionMask",
+        "kind": "simple",
+        "default": "2147483647"
+      },
+      "run_only_for_deployment_postprocessing": {
+        "plist_name": "runOnlyForDeploymentPostprocessing",
+        "kind": "simple",
+        "default": "0"
+      },
+      "always_out_of_date": {
+        "plist_name": "alwaysOutOfDate",
+        "kind": "simple",
+        "default": null
+      },
+      "comments": {
+        "plist_name": "comments",
+        "kind": "simple",
+        "default": null
+      }
+    },
+    "PBXShellScriptBuildPhase": {
+      "name": {
+        "plist_name": "name",
+        "kind": "simple",
+        "default": null
+      },
+      "input_paths": {
+        "plist_name": "inputPaths",
+        "kind": "simple",
+        "default": []
+      },
+      "input_file_list_paths": {
+        "plist_name": "inputFileListPaths",
+        "kind": "simple",
+        "default": []
+      },
+      "output_paths": {
+        "plist_name": "outputPaths",
+        "kind": "simple",
+        "default": []
+      },
+      "output_file_list_paths": {
+        "plist_name": "outputFileListPaths",
+        "kind": "simple",
+        "default": []
+      },
+      "shell_path": {
+        "plist_name": "shellPath",
+        "kind": "simple",
+        "default": "/bin/sh"
+      },
+      "shell_script": {
+        "plist_name": "shellScript",
+        "kind": "simple",
+        "default": "# Type a script or drag a script file from your workspace to insert its path.\n"
+      },
+      "show_env_vars_in_log": {
+        "plist_name": "showEnvVarsInLog",
+        "kind": "simple",
+        "default": null
+      },
+      "dependency_file": {
+        "plist_name": "dependencyFile",
+        "kind": "simple",
+        "default": null
+      },
+      "files": {
+        "plist_name": "files",
+        "kind": "to_many",
+        "default": null
+      },
+      "build_action_mask": {
+        "plist_name": "buildActionMask",
+        "kind": "simple",
+        "default": "2147483647"
+      },
+      "run_only_for_deployment_postprocessing": {
+        "plist_name": "runOnlyForDeploymentPostprocessing",
+        "kind": "simple",
+        "default": "0"
+      },
+      "always_out_of_date": {
+        "plist_name": "alwaysOutOfDate",
+        "kind": "simple",
+        "default": null
+      },
+      "comments": {
+        "plist_name": "comments",
+        "kind": "simple",
+        "default": null
+      }
+    },
+    "PBXAggregateTarget": {
+      "build_phases": {
+        "plist_name": "buildPhases",
+        "kind": "to_many",
+        "default": null
+      },
+      "name": {
+        "plist_name": "name",
+        "kind": "simple",
+        "default": null
+      },
+      "product_name": {
+        "plist_name": "productName",
+        "kind": "simple",
+        "default": null
+      },
+      "comments": {
+        "plist_name": "comments",
+        "kind": "simple",
+        "default": null
+      },
+      "build_configuration_list": {
+        "plist_name": "buildConfigurationList",
+        "kind": "to_one",
+        "default": null
+      },
+      "dependencies": {
+        "plist_name": "dependencies",
+        "kind": "to_many",
+        "default": null
+      }
+    },
+    "PBXLegacyTarget": {
+      "build_working_directory": {
+        "plist_name": "buildWorkingDirectory",
+        "kind": "simple",
+        "default": null
+      },
+      "build_arguments_string": {
+        "plist_name": "buildArgumentsString",
+        "kind": "simple",
+        "default": null
+      },
+      "pass_build_settings_in_environment": {
+        "plist_name": "passBuildSettingsInEnvironment",
+        "kind": "simple",
+        "default": null
+      },
+      "build_tool_path": {
+        "plist_name": "buildToolPath",
+        "kind": "simple",
+        "default": null
+      },
+      "build_phases": {
+        "plist_name": "buildPhases",
+        "kind": "to_many",
+        "default": null
+      },
+      "name": {
+        "plist_name": "name",
+        "kind": "simple",
+        "default": null
+      },
+      "product_name": {
+        "plist_name": "productName",
+        "kind": "simple",
+        "default": null
+      },
+      "comments": {
+        "plist_name": "comments",
+        "kind": "simple",
+        "default": null
+      },
+      "build_configuration_list": {
+        "plist_name": "buildConfigurationList",
+        "kind": "to_one",
+        "default": null
+      },
+      "dependencies": {
+        "plist_name": "dependencies",
+        "kind": "to_many",
+        "default": null
+      }
+    },
+    "XCVersionGroup": {
+      "current_version": {
+        "plist_name": "currentVersion",
+        "kind": "to_one",
+        "default": null
+      },
+      "version_group_type": {
+        "plist_name": "versionGroupType",
+        "kind": "simple",
+        "default": "wrapper.xcdatamodel"
+      },
+      "children": {
+        "plist_name": "children",
+        "kind": "to_many",
+        "default": null
+      },
+      "source_tree": {
+        "plist_name": "sourceTree",
+        "kind": "simple",
+        "default": "<group>"
+      },
+      "path": {
+        "plist_name": "path",
+        "kind": "simple",
+        "default": null
+      },
+      "name": {
+        "plist_name": "name",
+        "kind": "simple",
+        "default": null
+      },
+      "uses_tabs": {
+        "plist_name": "usesTabs",
+        "kind": "simple",
+        "default": null
+      },
+      "indent_width": {
+        "plist_name": "indentWidth",
+        "kind": "simple",
+        "default": null
+      },
+      "tab_width": {
+        "plist_name": "tabWidth",
+        "kind": "simple",
+        "default": null
+      },
+      "wraps_lines": {
+        "plist_name": "wrapsLines",
+        "kind": "simple",
+        "default": null
+      },
+      "comments": {
+        "plist_name": "comments",
+        "kind": "simple",
+        "default": null
+      }
+    },
+    "PBXVariantGroup": {
+      "last_known_file_type": {
+        "plist_name": "lastKnownFileType",
+        "kind": "simple",
+        "default": null
+      },
+      "children": {
+        "plist_name": "children",
+        "kind": "to_many",
+        "default": null
+      },
+      "source_tree": {
+        "plist_name": "sourceTree",
+        "kind": "simple",
+        "default": "<group>"
+      },
+      "path": {
+        "plist_name": "path",
+        "kind": "simple",
+        "default": null
+      },
+      "name": {
+        "plist_name": "name",
+        "kind": "simple",
+        "default": null
+      },
+      "uses_tabs": {
+        "plist_name": "usesTabs",
+        "kind": "simple",
+        "default": null
+      },
+      "indent_width": {
+        "plist_name": "indentWidth",
+        "kind": "simple",
+        "default": null
+      },
+      "tab_width": {
+        "plist_name": "tabWidth",
+        "kind": "simple",
+        "default": null
+      },
+      "wraps_lines": {
+        "plist_name": "wrapsLines",
+        "kind": "simple",
+        "default": null
+      },
+      "comments": {
+        "plist_name": "comments",
+        "kind": "simple",
+        "default": null
+      }
+    },
+    "XCRemoteSwiftPackageReference": {
+      "repositoryURL": {
+        "plist_name": "repositoryURL",
+        "kind": "simple",
+        "default": null
+      },
+      "requirement": {
+        "plist_name": "requirement",
+        "kind": "simple",
+        "default": null
+      }
+    },
+    "XCLocalSwiftPackageReference": {
+      "path": {
+        "plist_name": "path",
+        "kind": "simple",
+        "default": null
+      },
+      "relative_path": {
+        "plist_name": "relativePath",
+        "kind": "simple",
+        "default": null
+      }
+    },
+    "XCSwiftPackageProductDependency": {
+      "package": {
+        "plist_name": "package",
+        "kind": "to_one",
+        "default": null
+      },
+      "product_name": {
+        "plist_name": "productName",
+        "kind": "simple",
+        "default": null
+      }
+    },
+    "PBXRezBuildPhase": {
+      "files": {
+        "plist_name": "files",
+        "kind": "to_many",
+        "default": null
+      },
+      "build_action_mask": {
+        "plist_name": "buildActionMask",
+        "kind": "simple",
+        "default": "2147483647"
+      },
+      "run_only_for_deployment_postprocessing": {
+        "plist_name": "runOnlyForDeploymentPostprocessing",
+        "kind": "simple",
+        "default": "0"
+      },
+      "always_out_of_date": {
+        "plist_name": "alwaysOutOfDate",
+        "kind": "simple",
+        "default": null
+      },
+      "comments": {
+        "plist_name": "comments",
+        "kind": "simple",
+        "default": null
+      }
+    },
+    "PBXFileReference": {
+      "name": {
+        "plist_name": "name",
+        "kind": "simple",
+        "default": null
+      },
+      "path": {
+        "plist_name": "path",
+        "kind": "simple",
+        "default": null
+      },
+      "source_tree": {
+        "plist_name": "sourceTree",
+        "kind": "simple",
+        "default": "SOURCE_ROOT"
+      },
+      "explicit_file_type": {
+        "plist_name": "explicitFileType",
+        "kind": "simple",
+        "default": null
+      },
+      "last_known_file_type": {
+        "plist_name": "lastKnownFileType",
+        "kind": "simple",
+        "default": null
+      },
+      "include_in_index": {
+        "plist_name": "includeInIndex",
+        "kind": "simple",
+        "default": "1"
+      },
+      "fileEncoding": {
+        "plist_name": "fileEncoding",
+        "kind": "simple",
+        "default": null
+      },
+      "xc_language_specification_identifier": {
+        "plist_name": "xcLanguageSpecificationIdentifier",
+        "kind": "simple",
+        "default": null
+      },
+      "plist_structure_definition_identifier": {
+        "plist_name": "plistStructureDefinitionIdentifier",
+        "kind": "simple",
+        "default": null
+      },
+      "uses_tabs": {
+        "plist_name": "usesTabs",
+        "kind": "simple",
+        "default": null
+      },
+      "indent_width": {
+        "plist_name": "indentWidth",
+        "kind": "simple",
+        "default": null
+      },
+      "tab_width": {
+        "plist_name": "tabWidth",
+        "kind": "simple",
+        "default": null
+      },
+      "wraps_lines": {
+        "plist_name": "wrapsLines",
+        "kind": "simple",
+        "default": null
+      },
+      "line_ending": {
+        "plist_name": "lineEnding",
+        "kind": "simple",
+        "default": null
+      },
+      "expected_signature": {
+        "plist_name": "expectedSignature",
+        "kind": "simple",
+        "default": null
+      },
+      "comments": {
+        "plist_name": "comments",
+        "kind": "simple",
+        "default": null
+      }
+    },
+    "PBXFileSystemSynchronizedRootGroup": {
+      "source_tree": {
+        "plist_name": "sourceTree",
+        "kind": "simple",
+        "default": "<group>"
+      },
+      "path": {
+        "plist_name": "path",
+        "kind": "simple",
+        "default": null
+      },
+      "uses_tabs": {
+        "plist_name": "usesTabs",
+        "kind": "simple",
+        "default": null
+      },
+      "indent_width": {
+        "plist_name": "indentWidth",
+        "kind": "simple",
+        "default": null
+      },
+      "tab_width": {
+        "plist_name": "tabWidth",
+        "kind": "simple",
+        "default": null
+      },
+      "wraps_lines": {
+        "plist_name": "wrapsLines",
+        "kind": "simple",
+        "default": null
+      },
+      "exceptions": {
+        "plist_name": "exceptions",
+        "kind": "to_many",
+        "default": null
+      },
+      "explicit_file_types": {
+        "plist_name": "explicitFileTypes",
+        "kind": "simple",
+        "default": null
+      },
+      "explicit_folders": {
+        "plist_name": "explicitFolders",
+        "kind": "simple",
+        "default": null
+      }
+    },
+    "PBXNativeTarget": {
+      "build_rules": {
+        "plist_name": "buildRules",
+        "kind": "to_many",
+        "default": null
+      },
+      "product_type": {
+        "plist_name": "productType",
+        "kind": "simple",
+        "default": null
+      },
+      "product_reference": {
+        "plist_name": "productReference",
+        "kind": "to_one",
+        "default": null
+      },
+      "package_product_dependencies": {
+        "plist_name": "packageProductDependencies",
+        "kind": "to_many",
+        "default": null
+      },
+      "product_install_path": {
+        "plist_name": "productInstallPath",
+        "kind": "simple",
+        "default": null
+      },
+      "build_phases": {
+        "plist_name": "buildPhases",
+        "kind": "to_many",
+        "default": null
+      },
+      "file_system_synchronized_groups": {
+        "plist_name": "fileSystemSynchronizedGroups",
+        "kind": "to_many",
+        "default": null
+      },
+      "name": {
+        "plist_name": "name",
+        "kind": "simple",
+        "default": null
+      },
+      "product_name": {
+        "plist_name": "productName",
+        "kind": "simple",
+        "default": null
+      },
+      "comments": {
+        "plist_name": "comments",
+        "kind": "simple",
+        "default": null
+      },
+      "build_configuration_list": {
+        "plist_name": "buildConfigurationList",
+        "kind": "to_one",
+        "default": null
+      },
+      "dependencies": {
+        "plist_name": "dependencies",
+        "kind": "to_many",
+        "default": null
+      }
+    },
+    "PBXProject": {
+      "targets": {
+        "plist_name": "targets",
+        "kind": "to_many",
+        "default": null
+      },
+      "attributes": {
+        "plist_name": "attributes",
+        "kind": "simple",
+        "default": {
+          "LastSwiftUpdateCheck": "1600",
+          "LastUpgradeCheck": "1600"
+        }
+      },
+      "build_configuration_list": {
+        "plist_name": "buildConfigurationList",
+        "kind": "to_one",
+        "default": null
+      },
+      "compatibility_version": {
+        "plist_name": "compatibilityVersion",
+        "kind": "simple",
+        "default": "Xcode 3.2"
+      },
+      "development_region": {
+        "plist_name": "developmentRegion",
+        "kind": "simple",
+        "default": "en"
+      },
+      "has_scanned_for_encodings": {
+        "plist_name": "hasScannedForEncodings",
+        "kind": "simple",
+        "default": "0"
+      },
+      "known_regions": {
+        "plist_name": "knownRegions",
+        "kind": "simple",
+        "default": [
+          "en",
+          "Base"
+        ]
+      },
+      "main_group": {
+        "plist_name": "mainGroup",
+        "kind": "to_one",
+        "default": null
+      },
+      "minimized_project_reference_proxies": {
+        "plist_name": "minimizedProjectReferenceProxies",
+        "kind": "simple",
+        "default": "0"
+      },
+      "preferred_project_object_version": {
+        "plist_name": "preferredProjectObjectVersion",
+        "kind": "simple",
+        "default": "100"
+      },
+      "product_ref_group": {
+        "plist_name": "productRefGroup",
+        "kind": "to_one",
+        "default": null
+      },
+      "project_dir_path": {
+        "plist_name": "projectDirPath",
+        "kind": "simple",
+        "default": ""
+      },
+      "project_root": {
+        "plist_name": "projectRoot",
+        "kind": "simple",
+        "default": ""
+      },
+      "package_references": {
+        "plist_name": "packageReferences",
+        "kind": "to_many",
+        "default": null
+      },
+      "project_references": {
+        "plist_name": "projectReferences",
+        "kind": "references_by_keys",
+        "default": null
+      }
+    },
+    "PBXGroup": {
+      "children": {
+        "plist_name": "children",
+        "kind": "to_many",
+        "default": null
+      },
+      "source_tree": {
+        "plist_name": "sourceTree",
+        "kind": "simple",
+        "default": "<group>"
+      },
+      "path": {
+        "plist_name": "path",
+        "kind": "simple",
+        "default": null
+      },
+      "name": {
+        "plist_name": "name",
+        "kind": "simple",
+        "default": null
+      },
+      "uses_tabs": {
+        "plist_name": "usesTabs",
+        "kind": "simple",
+        "default": null
+      },
+      "indent_width": {
+        "plist_name": "indentWidth",
+        "kind": "simple",
+        "default": null
+      },
+      "tab_width": {
+        "plist_name": "tabWidth",
+        "kind": "simple",
+        "default": null
+      },
+      "wraps_lines": {
+        "plist_name": "wrapsLines",
+        "kind": "simple",
+        "default": null
+      },
+      "comments": {
+        "plist_name": "comments",
+        "kind": "simple",
+        "default": null
+      }
+    }
+  },
+  "parents": {
+    "XCConfigurationList": "AbstractObject",
+    "XCBuildConfiguration": "AbstractObject",
+    "PBXFileSystemSynchronizedBuildFileExceptionSet": "AbstractObject",
+    "PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet": "AbstractObject",
+    "PBXBuildFile": "AbstractObject",
+    "AbstractBuildPhase": "AbstractObject",
+    "PBXBuildRule": "AbstractObject",
+    "PBXContainerItemProxy": "AbstractObject",
+    "PBXTargetDependency": "AbstractObject",
+    "PBXReferenceProxy": "AbstractObject",
+    "AbstractTarget": "AbstractObject",
+    "PBXCopyFilesBuildPhase": "AbstractBuildPhase",
+    "PBXResourcesBuildPhase": "AbstractBuildPhase",
+    "PBXSourcesBuildPhase": "AbstractBuildPhase",
+    "PBXFrameworksBuildPhase": "AbstractBuildPhase",
+    "PBXHeadersBuildPhase": "AbstractBuildPhase",
+    "PBXShellScriptBuildPhase": "AbstractBuildPhase",
+    "PBXAggregateTarget": "AbstractTarget",
+    "PBXLegacyTarget": "AbstractTarget",
+    "XCVersionGroup": "PBXGroup",
+    "PBXVariantGroup": "PBXGroup",
+    "XCRemoteSwiftPackageReference": "AbstractObject",
+    "XCLocalSwiftPackageReference": "AbstractObject",
+    "XCSwiftPackageProductDependency": "AbstractObject",
+    "PBXRezBuildPhase": "AbstractBuildPhase",
+    "PBXFileReference": "AbstractObject",
+    "PBXFileSystemSynchronizedRootGroup": "AbstractObject",
+    "PBXNativeTarget": "AbstractTarget",
+    "PBXProject": "AbstractObject",
+    "PBXGroup": "AbstractObject"
+  }
+}

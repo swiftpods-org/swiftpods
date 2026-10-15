@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/libarchive/libarchive",
+  "version": "3.8.9",
+  "commit": "27cbc7827172698143e440801fc0ba39ccb4f1f5",
+  "purpose": "Public API headers for the macOS system libarchive.2; no library implementation is bundled.",
+  "sha256": {
+    "archive.h": "5dc85c3288bd0f293b9d99101627f1bfbc775a0d400640881bcbf056acca59f2",
+    "archive_entry.h": "ce6d82c6ed0132022136566195b6b2494a93c0e2db46d968d52624bd296bfcbf"
+  }
+}

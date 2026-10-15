@@ -1,0 +1,170 @@
+#!/usr/bin/env python3
+"""Regression corpus for locked sources, versions and the public hook file API."""
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+from bootstrap import ROOT, environment
+from reference_compare import reference_environment
+from reporting import execute
+
+
+FILE_API = r'''
+pre_install do |installer|
+  accessor = installer.pod_targets.find { |target| target.pod_name == 'FileKit' }.file_accessors.find { |value| value.spec.library_specification? }
+  relative = ->(values) { values.map { |path| path.relative_path_from(accessor.root).to_s }.sort }
+  names = %w[source_files headers public_headers private_headers project_headers arc_source_files non_arc_source_files resources resource_bundle_files on_demand_resources_files]
+  values = names.to_h { |name| [name, relative.call(accessor.public_send(name))] }
+  values['resource_bundles'] = accessor.resource_bundles.transform_values { |paths| relative.call(paths) }
+  values['on_demand_resources'] = accessor.on_demand_resources.transform_values { |value| {'paths' => relative.call(value[:paths]), 'category' => value[:category].to_s} }
+  values['root'] = accessor.root.basename.to_s
+  values['spec'] = accessor.spec.name
+  values['platform_name'] = accessor.platform_name.to_s
+  File.write('file-api.json', JSON.pretty_generate(values))
+  created = Xcodeproj::Project.new(File.join(Dir.pwd, 'Hook.xcodeproj'))
+  target = created.new_target(:static_library, 'Hook', :osx, '13.0')
+  group = created.main_group.new_group('Generated', 'Generated')
+  group.new_file('marker.c')
+  begin
+    target.unknown_swiftpods_attribute = 'must fail'
+    unknown_rejected = false
+  rescue NoMethodError
+    unknown_rejected = true
+  end
+  raise 'Unknown PBX setter was accepted' unless unknown_rejected
+  values = {'target' => target.name, 'platform' => target.platform_name.to_s, 'minimum' => target.deployment_target, 'configurations' => target.build_configurations.map(&:name).sort, 'group' => group.path, 'file' => group['marker.c'].path, 'unknown_setter_rejected' => unknown_rejected}
+  created.save
+  File.write('project-api.json', JSON.pretty_generate(values))
+end
+'''
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--gem-home', type=Path)
+    args = parser.parse_args()
+    parent = Path(tempfile.mkdtemp(prefix='native-compatibility-', dir=ROOT / '.build'))
+    print('Compatibility regressions:', parent, flush=True)
+    native_env = environment()
+    native_env['SWIFTPODS_CACHE_ROOT'] = str(parent / 'native-cache')
+    ruby, reference_env = reference_environment(args.gem_home, parent) if args.gem_home else (None, None)
+    binary = ROOT / '.build/debug/swiftpods'
+    def native(work, *arguments, success=True):
+        result = subprocess.run([str(binary), *arguments, '--json'], cwd=work, env=native_env, capture_output=True, text=True, timeout=90)
+        (work / 'native-last.log').write_text(result.stdout + result.stderr)
+        assert (result.returncode == 0) == success, (arguments, result.stdout[-3000:], result.stderr[-3000:])
+        return json.loads(result.stdout)
+    def reference(work, *arguments, success=True):
+        code = "require 'bundler/setup';require 'cocoapods';Pod::Command.run(ARGV)"
+        result = subprocess.run([ruby, '-e', code, '--', *arguments, '--no-ansi'], cwd=work, env=reference_env, capture_output=True, text=True, timeout=120)
+        (work / 'reference-last.log').write_text(result.stdout + result.stderr)
+        assert (result.returncode == 0) == success, (arguments, result.stdout[-3000:], result.stderr[-3000:])
+        return result
+    def git(path, *arguments):
+        return subprocess.check_output(['git', '-C', str(path), *arguments], stderr=subprocess.STDOUT, text=True).strip()
+    def repository(path):
+        path.mkdir(); (path / 'README').write_text('isolated test fixture\n')
+        git(path, 'init'); commit(path)
+    def commit(path):
+        git(path, 'add', '.'); git(path, '-c', 'user.name=SwiftPods Tests', '-c', 'user.email=tests@example.invalid', 'commit', '-m', 'fixture')
+    source = parent / 'source'; repository(source)
+    (source / 'source.c').write_text('int compatibility_kit(void) { return 1; }\n'); commit(source)
+    revision = git(source, 'rev-parse', 'HEAD')
+    first, second = parent / 'first.git', parent / 'second.git'
+    for path in [first, second]: repository(path)
+    def spec(repo, name, version, marker, dependencies=None):
+        file = repo / name / version / (name + '.podspec.json'); file.parent.mkdir(parents=True, exist_ok=True)
+        value = {'name': name, 'version': version, 'summary': marker, 'homepage': 'https://swiftpods.org', 'authors': 'Tests', 'license': 'MIT', 'source': {'git': str(source), 'commit': revision}, 'source_files': '*.c', 'platforms': {'osx': '13.0'}, 'dependencies': dependencies or {}}
+        file.write_text(json.dumps(value)); commit(repo)
+    spec(second, 'Kit', '1.0', 'locked-second')
+    engines = ['native', 'reference'] if args.gem_home else ['native']
+    projects = {}
+    def manifest(work, feature=False):
+        (work / 'Podfile').write_text("platform :osx, '13.0'\ninstall! 'cocoapods', :integrate_targets => false\nsource " + repr(first.as_uri()) + '\nsource ' + repr(second.as_uri()) + "\ntarget 'App' do\n pod 'Kit'\n" + (" pod 'Feature'\n" if feature else '') + "end\npre_install { |installer| File.write('selected-specs.json', JSON.generate(installer.pod_targets.to_h { |target| [target.pod_name, target.root_spec.summary] })) }\n")
+    for engine in engines:
+        work = parent / engine; work.mkdir(); projects[engine] = work; manifest(work)
+        (native if engine == 'native' else reference)(work, 'install')
+    spec(first, 'Kit', '1.0', 'earlier-first')
+    for engine, work in projects.items():
+        (native if engine == 'native' else reference)(work, 'install', '--repo-update')
+        installed = json.loads((work / 'selected-specs.json').read_text())
+        assert installed['Kit'] == 'locked-second', (engine, installed)
+    # A newly added dependency cannot silently upgrade an unchanged locked pod.
+    spec(second, 'Kit', '2.0', 'new-version')
+    spec(second, 'Feature', '1.0', 'requires-new-kit', {'Kit': ['>= 2']})
+    for engine, work in projects.items():
+        previous = (work / 'Podfile.lock').read_bytes(); manifest(work, feature=True)
+        (native if engine == 'native' else reference)(work, 'install', '--repo-update', success=False)
+        assert (work / 'Podfile.lock').read_bytes() == previous
+    # Non-source options cannot enable prerelease candidates.
+    prerelease = parent / 'prerelease'; prerelease.mkdir()
+    spec(second, 'PreviewKit', '1.0', 'stable'); spec(second, 'PreviewKit', '2.0.pre', 'preview')
+    for options in ['', ', :inhibit_warnings => true', ', :modular_headers => true', ", :configurations => ['Debug']"]:
+        (prerelease / 'Podfile').write_text("platform :osx, '13.0'\nsource " + repr(second.as_uri()) + "\ntarget 'App' do\n pod 'PreviewKit'" + options + '\nend\n')
+        report = native(prerelease, 'outdated', '--no-integrate')
+        available = next(event['pods'] for event in report['events'] if event['kind'] == 'outdated')
+        assert available[0]['available'] == '1.0', available
+    if args.gem_home:
+        code = "require 'bundler/setup';require 'cocoapods';p=Pod::Podfile.new { target('App') { pod 'PreviewKit', :inhibit_warnings=>true } };s=Pod::Spec.new { |v| v.name='PreviewKit';v.version='2.0.pre' };abort('Unexpected prerelease acceptance') if Pod::Resolver.allocate.send(:valid_possibility_version_for_root_name?,p.dependencies.first,Molinillo::DependencyGraph.new,s)"
+        subprocess.run([ruby, '-e', code], cwd=parent, env=reference_env, check=True, timeout=30)
+    filekit = parent / 'FileKit'; (filekit / 'Sources/Nested').mkdir(parents=True); (filekit / 'Resources').mkdir()
+    for name in ['Public.h', 'Private.hpp', 'Project.hxx', 'Implementation.m', 'Excluded.h', 'Nested/Inline.ipp']:
+        (filekit / 'Sources' / name).write_text('// fixture\n')
+    for name in ['kept.txt', 'excluded.txt', 'tagged.txt']: (filekit / 'Resources' / name).write_text(name)
+    value = {'name': 'FileKit', 'version': '1.0', 'summary': 'Public file API', 'homepage': 'https://swiftpods.org', 'authors': 'Tests', 'license': 'MIT', 'source': {'git': str(source)}, 'platforms': {'osx': '13.0'}, 'source_files': ['Sources', 'Sources/Nested'], 'public_header_files': [], 'private_header_files': 'Sources/Private.hpp', 'project_header_files': 'Sources/Project.hxx', 'exclude_files': ['Sources/Excluded.h', 'Resources/excluded.txt'], 'requires_arc': 'Sources/*.m', 'resources': 'Resources/*.txt', 'resource_bundles': {'Data': ['Resources/*.txt']}, 'on_demand_resources': {'Tag': {'paths': ['Resources/tagged.txt'], 'category': 'initial_install'}}}
+    (filekit / 'FileKit.podspec.json').write_text(json.dumps(value))
+    observations = {}
+    for engine in engines:
+        work = parent / ('files-' + engine); work.mkdir()
+        (work / 'Podfile').write_text("platform :osx, '13.0'\ninstall! 'cocoapods', :integrate_targets => false\nsource " + repr(second.as_uri()) + "\ntarget 'App' do\n pod 'FileKit', :path => '../FileKit'\nend\n" + FILE_API)
+        (native if engine == 'native' else reference)(work, 'install')
+        observations[engine] = json.loads((work / 'file-api.json').read_text())
+        observations[engine]['project_api'] = json.loads((work / 'project-api.json').read_text())
+        assert observations[engine]['public_headers'] == ['Sources/Nested/Inline.ipp', 'Sources/Public.h'], observations[engine]
+        assert 'Resources/excluded.txt' not in observations[engine]['resource_bundle_files']
+    if args.gem_home:
+        assert observations['native'] == observations['reference'], observations
+    # A lockfile edit during a hook must survive install failure and recovery.
+    work = parent / 'lock-conflict'; work.mkdir()
+    (work / 'Podfile').write_text("platform :osx, '13.0'\ninstall! 'cocoapods', :integrate_targets => false\nsource " + repr(second.as_uri()) + "\ntarget 'App' do\n pod 'FileKit', :path => '../FileKit'\nend\npost_install { File.write('Podfile.lock', 'external-edit') }\n")
+    rejected = native(work, 'install', success=False)
+    assert any(event.get('code') == 'SP-LOCK-CONFLICT' for event in rejected['events'])
+    native(work, 'recover')
+    assert (work / 'Podfile.lock').read_text() == 'external-edit'
+    duplicate_cases = []
+    for phase in ['pre_integrate', 'post_install', 'post_integrate']:
+        work = parent / ('duplicate-' + phase); work.mkdir()
+        podfile = work / 'Podfile'; podfile.write_text(phase + ' {}\n' + phase + ' {}\n')
+        rejected = native(work, 'ipc', 'podfile', str(podfile), success=False)
+        assert any('Specifying multiple' in event.get('message', '') for event in rejected['events']), rejected
+        assert not (work / '.swiftpods').exists()
+        if args.gem_home:
+            result = subprocess.run([ruby, '-e', "require 'bundler/setup';require 'cocoapods';Pod::Podfile.from_file(ARGV.fetch(0))", str(podfile)], cwd=work, env=reference_env, capture_output=True, text=True, timeout=30)
+            assert result.returncode != 0 and 'Specifying multiple' in result.stderr, result.stderr
+        duplicate_cases.append('Podfile.reject_duplicate_' + phase)
+    work = parent / 'duplicate-pre_install'; work.mkdir()
+    podfile = work / 'Podfile'
+    podfile.write_text("platform :osx, '13.0'\ninstall! 'cocoapods', :integrate_targets => false\ntarget('App') {}\npre_install { File.write('last-hook.txt', 'first') }\npre_install { File.write('last-hook.txt', 'second') }\n")
+    native(work, 'install')
+    assert (work / 'last-hook.txt').read_text() == 'second'
+    if args.gem_home:
+        (work / 'last-hook.txt').unlink()
+        subprocess.run([ruby, '-e', "require 'bundler/setup';require 'cocoapods';Pod::Podfile.from_file(ARGV.fetch(0)).pre_install!(nil)", str(podfile)], cwd=work, env=reference_env, check=True, timeout=30)
+        assert (work / 'last-hook.txt').read_text() == 'second'
+    duplicate_cases.append('Podfile.replace_duplicate_pre_install')
+    verified = ['locked spec repository preserved when an earlier source gains the same version', 'unchanged version pin remains a constraint when a new dependency conflicts', 'warning/modular/configuration options do not enable prereleases', 'public hook FileAccessor delegates to native file selection', 'empty public patterns retain visible headers', 'private/project/excluded/nested headers', 'ARC selection', 'resource bundles and ODR exclusions', 'external lockfile edit survives failed install and recovery']
+    cases = ['FileAccessor.' + name for name in ['source_files', 'headers', 'public_headers', 'private_headers', 'project_headers', 'arc_source_files', 'non_arc_source_files', 'resources', 'resource_bundles', 'resource_bundle_files', 'on_demand_resources', 'on_demand_resources_files', 'root', 'spec', 'platform_name']]
+    cases += ['Project.' + name for name in ['new', 'new_target', 'new_group', 'new_file', 'save', 'unknown_setter_rejected']]
+    cases += duplicate_cases
+    report = {'status': 'passed', 'engine': 'swift', 'fixture': str(parent), 'verified': verified, 'verified_cases': cases, 'unverified': ['arbitrary private plugin APIs', 'remote authenticated sources']}
+    name = 'native-compatibility-reference.json' if args.gem_home else 'native-compatibility.json'
+    if args.gem_home: report['reference'] = '1.17.0'
+    (ROOT / 'test-results' / name).write_text(json.dumps(report, indent=2) + '\n')
+    print(json.dumps(report, indent=2))
+
+
+if __name__ == '__main__':
+    execute(main, 'native-compatibility-reference.json' if '--gem-home' in sys.argv else 'native-compatibility.json')

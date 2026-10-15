@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "id": "swift-native-external-ruby-3.4",
+  "swiftpods_version": "0.1.0-dev",
+  "status": "experimental",
+  "runtime": {
+    "mode": "external",
+    "engine": "ruby",
+    "version": "3.4.11",
+    "minimum_version": "3.4.11",
+    "maximum_version_exclusive": "3.5.0",
+    "abi": "3.4.0",
+    "homebrew_formula": "ruby@3.4",
+    "role": "user_dsl_and_hooks_only"
+  },
+  "matrix": [],
+  "known_limitations": [
+    "Native fixture and isolated reference reports certify only their declared scope; complete stable acceptance is not established.",
+    "The public DSL contract covers 26 Podfile methods, 15 installation options and 53 podspec attributes. Arbitrary private plugin APIs and unknown SDK identities inside Swift packages are outside the supported profile.",
+    "Apple SDK fixtures build three linkage modes across macOS, iOS, tvOS, watchOS, visionOS and Mac Catalyst. Physical device execution, signed archives, Swift binary module stability and every supplementary host/platform combination require separate acceptance.",
+    "Mercurial requires an external hg executable; local checkout, locked revision, selected update and offline behavior have dedicated fixtures. Remote authentication, clean Homebrew installation, signing, notarization, Intel, minimum macOS and remote CI require independent evidence."
+  ],
+  "engine": "swift",
+  "behavior_reference": {
+    "cocoapods": {
+      "version": "1.17.0",
+      "repository": "https://github.com/CocoaPods/CocoaPods.git",
+      "commit": "5493bfd201a3be9325123cfa59142760afe198d7"
+    },
+    "cocoapods-core": {
+      "version": "1.17.0",
+      "repository": "https://github.com/CocoaPods/Core.git",
+      "commit": "f14b9a21f3aacd771c1eb9b099910d33a6d2cce0"
+    }
+  },
+  "required_matrix": {
+    "platforms": [
+      "macOS",
+      "iOS",
+      "tvOS",
+      "watchOS",
+      "visionOS",
+      "Mac Catalyst"
+    ],
+    "linkage": [
+      "library",
+      "static",
+      "dynamic"
+    ],
+    "configurations": [
+      "Debug",
+      "Release"
+    ],
+    "evidence": "Only rows from current passing reports are copied to packaged matrix"
+  }
+}

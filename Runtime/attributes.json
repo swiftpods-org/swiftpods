@@ -1,0 +1,604 @@
+{
+  "app_host_name": {
+    "container": null,
+    "default": null,
+    "inherited": false,
+    "multi_platform": true,
+    "root_only": false,
+    "singular": null,
+    "types": [
+      "String"
+    ]
+  },
+  "authors": {
+    "container": "Hash",
+    "default": null,
+    "inherited": true,
+    "multi_platform": false,
+    "root_only": true,
+    "singular": "author",
+    "types": [
+      "String",
+      "Array",
+      "Hash"
+    ]
+  },
+  "changelog": {
+    "container": null,
+    "default": null,
+    "inherited": true,
+    "multi_platform": false,
+    "root_only": true,
+    "singular": null,
+    "types": [
+      "String"
+    ]
+  },
+  "cocoapods_version": {
+    "container": null,
+    "default": null,
+    "inherited": true,
+    "multi_platform": false,
+    "root_only": true,
+    "singular": null,
+    "types": [
+      "String"
+    ]
+  },
+  "compiler_flags": {
+    "container": "Array",
+    "default": null,
+    "inherited": true,
+    "multi_platform": true,
+    "root_only": false,
+    "singular": "compiler_flag",
+    "types": [
+      "String"
+    ]
+  },
+  "default_subspecs": {
+    "container": "Array",
+    "default": null,
+    "inherited": true,
+    "multi_platform": false,
+    "root_only": true,
+    "singular": "default_subspec",
+    "types": [
+      "Array",
+      "String",
+      "Symbol"
+    ]
+  },
+  "dependencies": {
+    "container": "Hash",
+    "default": null,
+    "inherited": true,
+    "multi_platform": true,
+    "root_only": false,
+    "singular": null,
+    "types": [
+      "String"
+    ]
+  },
+  "deprecated": {
+    "container": null,
+    "default": false,
+    "inherited": true,
+    "multi_platform": false,
+    "root_only": true,
+    "singular": null,
+    "types": [
+      "TrueClass",
+      "FalseClass"
+    ]
+  },
+  "deprecated_in_favor_of": {
+    "container": null,
+    "default": null,
+    "inherited": true,
+    "multi_platform": false,
+    "root_only": true,
+    "singular": null,
+    "types": [
+      "String"
+    ]
+  },
+  "description": {
+    "container": null,
+    "default": null,
+    "inherited": true,
+    "multi_platform": false,
+    "root_only": true,
+    "singular": null,
+    "types": [
+      "String"
+    ]
+  },
+  "documentation_url": {
+    "container": null,
+    "default": null,
+    "inherited": true,
+    "multi_platform": false,
+    "root_only": true,
+    "singular": null,
+    "types": [
+      "String"
+    ]
+  },
+  "exclude_files": {
+    "container": "Array",
+    "default": null,
+    "inherited": false,
+    "multi_platform": true,
+    "root_only": false,
+    "singular": null,
+    "types": [
+      "String"
+    ]
+  },
+  "frameworks": {
+    "container": "Array",
+    "default": null,
+    "inherited": true,
+    "multi_platform": true,
+    "root_only": false,
+    "singular": "framework",
+    "types": [
+      "String"
+    ]
+  },
+  "header_dir": {
+    "container": null,
+    "default": null,
+    "inherited": true,
+    "multi_platform": true,
+    "root_only": false,
+    "singular": null,
+    "types": [
+      "String"
+    ]
+  },
+  "header_mappings_dir": {
+    "container": null,
+    "default": null,
+    "inherited": true,
+    "multi_platform": true,
+    "root_only": false,
+    "singular": null,
+    "types": [
+      "String"
+    ]
+  },
+  "homepage": {
+    "container": null,
+    "default": null,
+    "inherited": true,
+    "multi_platform": false,
+    "root_only": true,
+    "singular": null,
+    "types": [
+      "String"
+    ]
+  },
+  "info_plist": {
+    "container": "Hash",
+    "default": null,
+    "inherited": false,
+    "multi_platform": true,
+    "root_only": false,
+    "singular": null,
+    "types": [
+      "String"
+    ]
+  },
+  "libraries": {
+    "container": "Array",
+    "default": null,
+    "inherited": true,
+    "multi_platform": true,
+    "root_only": false,
+    "singular": "library",
+    "types": [
+      "String"
+    ]
+  },
+  "license": {
+    "container": "Hash",
+    "default": null,
+    "inherited": true,
+    "multi_platform": false,
+    "root_only": true,
+    "singular": null,
+    "types": [
+      "String"
+    ]
+  },
+  "module_map": {
+    "container": null,
+    "default": null,
+    "inherited": true,
+    "multi_platform": true,
+    "root_only": true,
+    "singular": null,
+    "types": [
+      "TrueClass",
+      "FalseClass",
+      "String"
+    ]
+  },
+  "module_name": {
+    "container": null,
+    "default": null,
+    "inherited": true,
+    "multi_platform": false,
+    "root_only": true,
+    "singular": null,
+    "types": [
+      "String"
+    ]
+  },
+  "name": {
+    "container": null,
+    "default": null,
+    "inherited": false,
+    "multi_platform": false,
+    "root_only": false,
+    "singular": null,
+    "types": [
+      "String"
+    ]
+  },
+  "on_demand_resources": {
+    "container": "Hash",
+    "default": null,
+    "inherited": false,
+    "multi_platform": true,
+    "root_only": false,
+    "singular": "on_demand_resource",
+    "types": [
+      "String",
+      "Array",
+      "Hash"
+    ]
+  },
+  "platforms": {
+    "container": "Hash",
+    "default": null,
+    "inherited": true,
+    "multi_platform": false,
+    "root_only": false,
+    "singular": null,
+    "types": [
+      "String"
+    ]
+  },
+  "pod_target_xcconfig": {
+    "container": "Hash",
+    "default": null,
+    "inherited": true,
+    "multi_platform": true,
+    "root_only": false,
+    "singular": null,
+    "types": [
+      "String"
+    ]
+  },
+  "prefix_header_contents": {
+    "container": null,
+    "default": null,
+    "inherited": true,
+    "multi_platform": true,
+    "root_only": false,
+    "singular": null,
+    "types": [
+      "Array",
+      "String"
+    ]
+  },
+  "prefix_header_file": {
+    "container": null,
+    "default": null,
+    "inherited": true,
+    "multi_platform": true,
+    "root_only": false,
+    "singular": null,
+    "types": [
+      "TrueClass",
+      "FalseClass",
+      "String"
+    ]
+  },
+  "prepare_command": {
+    "container": null,
+    "default": null,
+    "inherited": true,
+    "multi_platform": false,
+    "root_only": true,
+    "singular": null,
+    "types": [
+      "String"
+    ]
+  },
+  "preserve_paths": {
+    "container": "Array",
+    "default": null,
+    "inherited": false,
+    "multi_platform": true,
+    "root_only": false,
+    "singular": "preserve_path",
+    "types": [
+      "String"
+    ]
+  },
+  "private_header_files": {
+    "container": "Array",
+    "default": null,
+    "inherited": false,
+    "multi_platform": true,
+    "root_only": false,
+    "singular": null,
+    "types": [
+      "String"
+    ]
+  },
+  "project_header_files": {
+    "container": "Array",
+    "default": null,
+    "inherited": false,
+    "multi_platform": true,
+    "root_only": false,
+    "singular": null,
+    "types": [
+      "String"
+    ]
+  },
+  "public_header_files": {
+    "container": "Array",
+    "default": null,
+    "inherited": false,
+    "multi_platform": true,
+    "root_only": false,
+    "singular": null,
+    "types": [
+      "String"
+    ]
+  },
+  "readme": {
+    "container": null,
+    "default": null,
+    "inherited": true,
+    "multi_platform": false,
+    "root_only": true,
+    "singular": null,
+    "types": [
+      "String"
+    ]
+  },
+  "requires_app_host": {
+    "container": null,
+    "default": false,
+    "inherited": false,
+    "multi_platform": true,
+    "root_only": false,
+    "singular": null,
+    "types": [
+      "TrueClass",
+      "FalseClass"
+    ]
+  },
+  "requires_arc": {
+    "container": null,
+    "default": true,
+    "inherited": true,
+    "multi_platform": true,
+    "root_only": false,
+    "singular": null,
+    "types": [
+      "TrueClass",
+      "FalseClass",
+      "String",
+      "Array"
+    ]
+  },
+  "resource_bundles": {
+    "container": "Hash",
+    "default": null,
+    "inherited": false,
+    "multi_platform": true,
+    "root_only": false,
+    "singular": "resource_bundle",
+    "types": [
+      "String",
+      "Array"
+    ]
+  },
+  "resources": {
+    "container": "Array",
+    "default": null,
+    "inherited": false,
+    "multi_platform": true,
+    "root_only": false,
+    "singular": "resource",
+    "types": [
+      "String"
+    ]
+  },
+  "scheme": {
+    "container": "Hash",
+    "default": null,
+    "inherited": false,
+    "multi_platform": true,
+    "root_only": false,
+    "singular": null,
+    "types": [
+      "Hash"
+    ]
+  },
+  "screenshots": {
+    "container": "Array",
+    "default": null,
+    "inherited": true,
+    "multi_platform": false,
+    "root_only": true,
+    "singular": "screenshot",
+    "types": [
+      "String"
+    ]
+  },
+  "script_phases": {
+    "container": "Array",
+    "default": null,
+    "inherited": false,
+    "multi_platform": true,
+    "root_only": false,
+    "singular": "script_phase",
+    "types": [
+      "Hash"
+    ]
+  },
+  "social_media_url": {
+    "container": null,
+    "default": null,
+    "inherited": true,
+    "multi_platform": false,
+    "root_only": true,
+    "singular": null,
+    "types": [
+      "String"
+    ]
+  },
+  "source": {
+    "container": "Hash",
+    "default": null,
+    "inherited": true,
+    "multi_platform": false,
+    "root_only": true,
+    "singular": null,
+    "types": [
+      "String"
+    ]
+  },
+  "source_files": {
+    "container": "Array",
+    "default": null,
+    "inherited": false,
+    "multi_platform": true,
+    "root_only": false,
+    "singular": null,
+    "types": [
+      "String"
+    ]
+  },
+  "static_framework": {
+    "container": null,
+    "default": false,
+    "inherited": true,
+    "multi_platform": false,
+    "root_only": true,
+    "singular": null,
+    "types": [
+      "TrueClass",
+      "FalseClass"
+    ]
+  },
+  "summary": {
+    "container": null,
+    "default": null,
+    "inherited": true,
+    "multi_platform": false,
+    "root_only": true,
+    "singular": null,
+    "types": [
+      "String"
+    ]
+  },
+  "swift_versions": {
+    "container": "Array",
+    "default": null,
+    "inherited": true,
+    "multi_platform": false,
+    "root_only": true,
+    "singular": "swift_version",
+    "types": [
+      "String"
+    ]
+  },
+  "test_type": {
+    "container": null,
+    "default": null,
+    "inherited": false,
+    "multi_platform": false,
+    "root_only": false,
+    "singular": null,
+    "types": [
+      "Symbol",
+      "String"
+    ]
+  },
+  "user_target_xcconfig": {
+    "container": "Hash",
+    "default": null,
+    "inherited": true,
+    "multi_platform": true,
+    "root_only": false,
+    "singular": null,
+    "types": [
+      "String"
+    ]
+  },
+  "vendored_frameworks": {
+    "container": "Array",
+    "default": null,
+    "inherited": false,
+    "multi_platform": true,
+    "root_only": false,
+    "singular": "vendored_framework",
+    "types": [
+      "String"
+    ]
+  },
+  "vendored_libraries": {
+    "container": "Array",
+    "default": null,
+    "inherited": false,
+    "multi_platform": true,
+    "root_only": false,
+    "singular": "vendored_library",
+    "types": [
+      "String"
+    ]
+  },
+  "version": {
+    "container": null,
+    "default": null,
+    "inherited": true,
+    "multi_platform": false,
+    "root_only": true,
+    "singular": null,
+    "types": [
+      "String"
+    ]
+  },
+  "weak_frameworks": {
+    "container": "Array",
+    "default": null,
+    "inherited": true,
+    "multi_platform": true,
+    "root_only": false,
+    "singular": "weak_framework",
+    "types": [
+      "String"
+    ]
+  },
+  "xcconfig": {
+    "container": "Hash",
+    "default": null,
+    "inherited": true,
+    "multi_platform": true,
+    "root_only": false,
+    "singular": null,
+    "types": [
+      "String"
+    ]
+  }
+}

@@ -1,0 +1,71 @@
+"""Build actual binary SDKs with distinct platform payloads; no Ruby project tools."""
+from pathlib import Path
+import plistlib
+import subprocess
+
+
+def run(arguments, cwd, log, env=None):
+    with log.open('wb') as output:
+        result = subprocess.run([str(arg) for arg in arguments], cwd=cwd, env=env,
+                                stdout=output, stderr=subprocess.STDOUT, timeout=300)
+    text = log.read_text(errors='replace')
+    if result.returncode or ' warning:' in text or '\nwarning:' in text:
+        raise RuntimeError('SDK fixture command failed or warned: ' + str(log))
+    return text
+
+
+def sdk(root, name, dynamic=False, library=False, platforms=('macosx', 'iphoneos', 'iphonesimulator')):
+    """Return an XCFramework; keep producer intermediates outside consumer pods."""
+    producer = root / ('producer-' + name)
+    producer.mkdir()
+    arguments = ['xcodebuild', '-create-xcframework']
+    for platform in platforms:
+        folder = producer / platform
+        folder.mkdir()
+        value = {'macosx': 42, 'iphoneos': 101, 'iphonesimulator': 202, 'appletvos': 301, 'appletvsimulator': 302, 'watchos': 401, 'watchsimulator': 402, 'xros': 501, 'xrsimulator': 502, 'maccatalyst': 601}[platform]
+        source = folder / 'sdk.c'
+        source.write_text(f'int {name}_value(void) {{ return {value}; }}\n')
+        framework = folder / (name + '.framework')
+        contents = framework / 'Versions/A' if platform == 'macosx' else framework
+        headers = folder / 'Headers' if library else contents / 'Headers'
+        headers.mkdir(parents=True)
+        headers.joinpath(name + '.h').write_text(f'int {name}_value(void);\n#define {name}_EXPECTED {value}\n')
+        if not library:
+            contents.joinpath('Modules').mkdir()
+            contents.joinpath('Modules/module.modulemap').write_text(f'framework module {name} {{ umbrella header "{name}.h" export * }}\n')
+            resources = contents / 'Resources' if platform == 'macosx' else contents
+            resources.mkdir(exist_ok=True)
+            resources.joinpath('Info.plist').write_bytes(plistlib.dumps({
+                'CFBundleIdentifier': 'org.swiftpods.' + name, 'CFBundleName': name,
+                'CFBundleExecutable': name, 'CFBundlePackageType': 'FMWK',
+                'CFBundleVersion': '1', 'CFBundleShortVersionString': '1.0',
+                'CFBundleSupportedPlatforms': [{'macosx': 'MacOSX', 'iphoneos': 'iPhoneOS', 'iphonesimulator': 'iPhoneSimulator', 'appletvos': 'AppleTVOS', 'appletvsimulator': 'AppleTVSimulator', 'watchos': 'WatchOS', 'watchsimulator': 'WatchSimulator', 'xros': 'XROS', 'xrsimulator': 'XRSimulator', 'maccatalyst': 'MacOSX'}[platform]],
+                'MinimumOSVersion': {'macosx': '13.0', 'watchos': '10.0', 'watchsimulator': '10.0', 'xros': '1.0', 'xrsimulator': '1.0'}.get(platform, '15.0')}))
+        binaries = []
+        architectures = ['arm64'] if platform in ('iphoneos', 'appletvos', 'xros') else ['arm64', 'arm64_32'] if platform == 'watchos' else ['arm64', 'x86_64']
+        target_os = {'macosx': 'macos13.0', 'iphoneos': 'ios15.0', 'iphonesimulator': 'ios15.0-simulator', 'appletvos': 'tvos15.0', 'appletvsimulator': 'tvos15.0-simulator', 'watchos': 'watchos10.0', 'watchsimulator': 'watchos10.0-simulator', 'xros': 'xros1.0', 'xrsimulator': 'xros1.0-simulator', 'maccatalyst': 'ios15.0-macabi'}[platform]
+        for arch in architectures:
+            triple = arch + '-apple-' + target_os
+            flags = ['xcrun', '--sdk', 'macosx' if platform == 'maccatalyst' else platform, 'clang', '-target', triple, '-Wall', '-Wextra', '-Werror']
+            binary = folder / arch
+            if dynamic:
+                run([*flags, '-dynamiclib', source, '-install_name', '@rpath/' + name + '.framework/' + name,
+                     '-compatibility_version', '1.0', '-current_version', '1.0', '-o', binary], root, folder / (arch + '-compile.log'))
+            else:
+                obj = folder / (arch + '.o')
+                run([*flags, '-c', source, '-o', obj], root, folder / (arch + '-compile.log'))
+                run(['xcrun', 'libtool', '-static', '-o', binary, obj], root, folder / (arch + '-archive.log'))
+            binaries.append(binary)
+        product = folder / ('lib' + name + '.a') if library else contents / name
+        run(['xcrun', 'lipo', '-create', *binaries, '-output', product], root, folder / 'universal.log')
+        if not library and platform == 'macosx':
+            framework.joinpath('Versions/Current').symlink_to('A')
+            for item in ('Headers', 'Modules', 'Resources', name):
+                framework.joinpath(item).symlink_to('Versions/Current/' + item)
+        if library:
+            arguments += ['-library', product, '-headers', headers]
+        else:
+            arguments += ['-framework', framework]
+    output = root / (name + '.xcframework')
+    run([*arguments, '-output', output], root, producer / 'xcframework.log')
+    return output

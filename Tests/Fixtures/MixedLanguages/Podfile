@@ -1,0 +1,40 @@
+platform :osx, '13.0'
+project 'Demo.xcodeproj'
+workspace 'Demo'
+use_frameworks! :linkage => :static
+install! 'cocoapods', :deterministic_uuids => true
+
+require_relative 'helpers/dependencies'
+
+target 'Demo' do
+  fixture_dependencies if ENV.fetch('ENABLE_FIXTURE', '1') == '1'
+end
+
+pre_install do |installer|
+  fixture_phase('pre_install')
+  raise 'Local prepare_command must run before pre_install in 1.17.0' unless File.exist?('Modules/GameCore/prepare-ran')
+  raise 'Expected a real installer' unless installer.is_a?(Pod::Installer)
+end
+
+pre_integrate do |installer|
+  fixture_phase('pre_integrate')
+  raise 'Expected a real sandbox' unless installer.sandbox.is_a?(Pod::Sandbox)
+end
+
+post_install do |installer|
+  fixture_phase('post_install')
+  raise 'Expected a real Xcode project' unless installer.pods_project.is_a?(Xcodeproj::Project)
+  installer.pods_project.targets.each do |target|
+    target.build_configurations.each do |config|
+      config.build_settings['SWIFTPODS_HOOK_MARKER'] = 'preserved'
+      config.build_settings['GCC_TREAT_WARNINGS_AS_ERRORS'] = 'YES'
+      config.build_settings['SWIFT_TREAT_WARNINGS_AS_ERRORS'] = 'YES'
+    end
+  end
+end
+
+post_integrate do |installer|
+  fixture_phase('post_integrate')
+  raise 'Workspace is missing after integration' unless File.exist?('Demo.xcworkspace/contents.xcworkspacedata')
+  raise 'Project is not integrated' unless File.read('Demo.xcodeproj/project.pbxproj').include?('[CP] Check Pods Manifest.lock')
+end
