@@ -29,6 +29,7 @@ class EvidenceTests(unittest.TestCase):
         for name in self.names: self.write(name, self.report)
         registry = {'requirements': [{'id': 'T-001', 'reports': self.names}], 'external_gates': ['physical_devices'],
                     'api': {'methods': {'method': {'report': 'fixture.json'}}}, 'coverage_policy': 'bounded fixture'}
+        self.registry = registry
         (self.root / 'Profiles/contract.json').write_text(json.dumps(registry))
         patches = [patch.object(acceptance, 'ROOT', self.root), patch.object(acceptance, 'source_digest', return_value='source'), patch.object(acceptance, 'contract_digest', return_value='contract'), patch.object(acceptance, 'source_revision', side_effect=lambda: self.revision)]
         for replacement in patches:
@@ -37,11 +38,69 @@ class EvidenceTests(unittest.TestCase):
     def write(self, name, value):
         (self.root / 'test-results' / name).write_text(json.dumps(value))
 
+    def improvement(self):
+        difference = {'id': 'fixture.correct_output', 'feature': 'Fixture', 'parity': False,
+                      'reference': 'incorrect output', 'native': 'correct output'}
+        report = dict(self.report, differences=[difference], verified_cases=['method', 'unchanged_input', 'correct_output'])
+        rule = {'feature': 'Fixture', 'report': 'fixture.json', 'kind': 'reference_bug_fix', 'preserves_input_contract': True,
+                'evidence': {'fixture.json': ['unchanged_input', 'correct_output']}}
+        self.registry['compatibility_policy'] = {'mode': 'input_compatible', 'inherit_reference_bugs': False,
+                                                'improvements': {'fixture.correct_output': rule}}
+        self.write('fixture.json', report)
+        (self.root / 'Profiles/contract.json').write_text(json.dumps(self.registry))
+        return report, rule
+
+    def external_gate(self):
+        evidence = self.root / 'device.log'; evidence.write_text('fixture')
+        supplied = self.root / 'external.json'
+        supplied.write_text(json.dumps({'source_digest': 'source', 'contract_digest': 'contract', 'gates': {'physical_devices': {'status': 'passed', 'evidence': [{'path': str(evidence), 'sha256': hashlib.sha256(evidence.read_bytes()).hexdigest()}]}}}))
+        return supplied
+
     def testPassingLocalReportsLeaveExternalGateUnverified(self):
         result = acceptance.collect(self.names)
         self.assertEqual(result['status'], 'passed')
         self.assertEqual(result['stable_acceptance'], 'not_established')
         self.assertEqual(result['external_gates']['physical_devices']['status'], 'unverified')
+
+    def testTestedInputCompatibleImprovementDoesNotRequireReferenceBugParity(self):
+        self.improvement()
+        local = acceptance.collect(self.names)
+        self.assertEqual(local['stable_acceptance'], 'not_established')
+        result = acceptance.collect(self.names, self.external_gate())
+        self.assertEqual(result['stable_acceptance'], 'established')
+        self.assertEqual(result['blocking_compatibility_differences'], [])
+        self.assertEqual(result['compatibility_differences'][0]['classification'], 'accepted_improvement')
+        self.assertIs(result['compatibility_differences'][0]['parity'], False)
+
+    def testUnregisteredOutputDifferenceRemainsVisibleAndBlocking(self):
+        report, _ = self.improvement()
+        self.registry.pop('compatibility_policy')
+        (self.root / 'Profiles/contract.json').write_text(json.dumps(self.registry))
+        result = acceptance.collect(self.names, self.external_gate())
+        self.assertEqual(result['stable_acceptance'], 'not_established')
+        self.assertEqual(result['blocking_compatibility_differences'][0]['id'], report['differences'][0]['id'])
+
+    def testImprovementRequiresMatchingIdentityAndInputAndEffectCases(self):
+        external = self.external_gate()
+        for field, value in [('preserves_input_contract', False), ('feature', 'another'), ('report', 'another.json'),
+                             ('kind', 'unverified'), ('evidence', {}), ('evidence', {'absent.json': ['correct_output']})]:
+            _, rule = self.improvement()
+            rule[field] = value
+            (self.root / 'Profiles/contract.json').write_text(json.dumps(self.registry))
+            self.assertEqual(acceptance.collect(self.names, external)['stable_acceptance'], 'not_established', field)
+        for cases in [['method', 'unchanged_input'], ['method', 'correct_output']]:
+            report, _ = self.improvement()
+            self.write('fixture.json', dict(report, verified_cases=cases))
+            self.assertEqual(acceptance.collect(self.names, external)['stable_acceptance'], 'not_established', cases)
+
+    def testAcceptedImprovementDoesNotReplaceRequiredAPIOrUnitEvidence(self):
+        report, _ = self.improvement()
+        self.write('fixture.json', dict(report, verified_cases=['unchanged_input', 'correct_output']))
+        result = acceptance.collect(self.names, self.external_gate())
+        self.assertEqual(result['blocking_compatibility_differences'], [])
+        self.assertEqual(result['stable_acceptance'], 'not_established')
+        partial = acceptance.collect(['fixture.json'])
+        self.assertIsNone(partial['swift_unit_tests'])
 
     def testMissingAndFailedReportsAreRejected(self):
         for report in [dict(self.report, status='skipped'), dict(self.report, status='failed'), dict(self.report, status='running')]:

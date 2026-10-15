@@ -63,6 +63,7 @@ def manifest(destination):
     tested_source, contract = source_digest(), contract_digest()
     result['swiftpods_source'] = {'base_commit': subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(), 'worktree_has_changes': bool(subprocess.check_output(['git', 'status', '--porcelain'], cwd=ROOT)), 'files_digest': tested_source}
     registry = json.loads((ROOT / 'Profiles/contract.json').read_text())
+    result['compatibility_policy'] = registry.get('compatibility_policy', {})
     result['contract_digest'] = contract
     evidence, current = [], {}
     for name in ['native-units.json'] + [suite['report'] for suite in registry['suites']]:

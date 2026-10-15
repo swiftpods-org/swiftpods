@@ -225,12 +225,20 @@ combination of attributes, plugins and destinations.
 BridgeSupport comparisons run both installers with the same Apple-tool environment,
 without reference-only Bundler variables leaking into that external tool. The
 reference currently supplies a nonexistent aggregate header path; the native
-installer supplies its generated header. This output difference is recorded and
-blocks baseline parity. A failed
+installer supplies its generated header. This is a recorded, tested reference bug
+fix under the input-compatible contract and does not block acceptance. A failed
 tool invocation is tested separately in both engines; it warns and retains the
 missing resource reference. No direct-tool fallback is counted as installer parity.
 The [BridgeSupport diagnosis](BridgeSupport.md) includes the reproducer, arguments,
 source-level cause and observable consequences.
+
+Compatibility preserves the syntax and meaning of existing input files and the
+supported public hook API. It does not require reproducing reference bugs or
+internal implementation details. `Profiles/contract.json` lists tested
+improvements with evidence for unchanged inputs and correct effects. Reports
+retain the raw difference and its classification. Unregistered or unproven
+differences remain blocking; a more concise implementation does not permit losing
+settings, changing locked dependencies or silently ignoring declarations.
 
 The authoritative aggregate is `test-results/check.json`, produced by
 `check.py --full --package PATH`. It records source/contract digests, revision,

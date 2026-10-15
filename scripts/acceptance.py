@@ -5,6 +5,28 @@ from pathlib import Path
 from reporting import ROOT, contract_digest, source_digest, source_revision
 
 
+def classify_differences(registry, content):
+    policy = registry.get('compatibility_policy', {})
+    improvements = policy.get('improvements', {})
+    differences = []
+    for name, report in content.items():
+        for value in report.get('differences', []):
+            if value.get('parity') is not False:
+                continue
+            rule = improvements.get(value.get('id'), {})
+            evidence = rule.get('evidence', {})
+            accepted = (policy.get('mode') == 'input_compatible'
+                        and policy.get('inherit_reference_bugs') is False
+                        and rule.get('kind') in ('reference_bug_fix', 'implementation_improvement')
+                        and rule.get('preserves_input_contract') is True
+                        and rule.get('feature') == value.get('feature') and rule.get('report') == name
+                        and bool(evidence)
+                        and all(cases and all(case in content.get(required, {}).get('verified_cases', []) for case in cases)
+                                for required, cases in evidence.items()))
+            differences.append(dict(value, report=name, classification='accepted_improvement' if accepted else 'unverified_difference'))
+    return differences
+
+
 def collect(names, external=None):
     source, contract = source_digest(), contract_digest()
     revision = source_revision()
@@ -68,8 +90,10 @@ def collect(names, external=None):
                     raise RuntimeError('External gate evidence changed: ' + str(file))
             gates[name] = gate
     complete = all(value == 'covered_by_current_reports' for value in statuses.values())
-    differences = [dict(value, report=name) for name, report in content.items() for value in report.get('differences', []) if value.get('parity') is False]
-    stable = complete and not differences and all(entry['status'] == 'covered_by_current_case' for entry in api) and not revision['dirty'] and all(gate['status'] == 'passed' for gate in gates.values())
+    differences = classify_differences(registry, content)
+    blocking_differences = [value for value in differences if value['classification'] != 'accepted_improvement']
+    stable = complete and not blocking_differences and all(entry['status'] == 'covered_by_current_case' for entry in api) and not revision['dirty'] and all(gate['status'] == 'passed' for gate in gates.values())
     return {'status': 'passed', 'engine': 'swift', 'reports': reports, 'requirements': requirements, 'api_coverage': api, 'external_gates': gates,
             'stable_acceptance': 'established' if stable else 'not_established', 'source_revision': revision, 'compatibility_differences': differences,
-            'coverage_policy': registry['coverage_policy'], 'swift_unit_tests': json.loads((ROOT / 'test-results/native-units.json').read_text())['test_count']}
+            'blocking_compatibility_differences': blocking_differences, 'compatibility_policy': registry.get('compatibility_policy', {}),
+            'coverage_policy': registry['coverage_policy'], 'swift_unit_tests': content.get('native-units.json', {}).get('test_count')}

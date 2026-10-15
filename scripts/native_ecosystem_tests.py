@@ -80,8 +80,11 @@ def main():
     env['PATH'] = str(tools) + ':' + env.get('PATH', '')
     bridge_manifest = "platform :osx, '13.0'\nuse_frameworks!\ngenerate_bridge_support!\ntarget 'Demo' do\n pod 'SimpleKit', :path => './Modules/SimpleKit'\nend\n"
     bridge.joinpath('Podfile').write_text(bridge_manifest); cli(bridge, 'install')
+    assert bridge.joinpath('Podfile').read_text() == bridge_manifest
     bridge_metadata = bridge.joinpath('Pods/Target Support Files/Pods-Demo/Pods-Demo.bridgesupport').read_bytes()
     assert b'<signatures' in bridge_metadata
+    assert b'Pods_DemoVersionNumber' in bridge_metadata and b'Pods_DemoVersionString' in bridge_metadata
+    assert str(bridge / 'Pods/Target Support Files/Pods-Demo/Pods-Demo-umbrella.h') in (parent / 'metadata-tool.log').read_text()
     # CMake is the owner of its project; a regeneration removes integration.
     work = parent / 'cmake'; work.mkdir(); module(work)
     work.joinpath('main.c').write_text('#include <SimpleKit/SimpleKit.h>\n#include <stdio.h>\nint main(void) { printf("cmake=%d\\n", simple_value()); return 0; }\n')
@@ -169,13 +172,13 @@ def main():
         result = subprocess.run([ruby, '-e', code, '--', 'install', '--no-ansi'], cwd=comparison, env=reference_env, capture_output=True, text=True, timeout=120)
         parent.joinpath('bridge-reference.log').write_text(result.stdout + result.stderr)
         assert result.returncode == 0, parent / 'bridge-reference.log'
+        assert comparison.joinpath('Podfile').read_bytes() == bridge.joinpath('Podfile').read_bytes()
         reference_metadata = comparison / 'Pods/Target Support Files/Pods-Demo/Pods-Demo.bridgesupport'
         if reference_metadata.is_file():
             assert reference_metadata.read_bytes() == bridge_metadata
         else:
             assert str(comparison / 'Pods/Pods-Demo-umbrella.h') in (parent / 'metadata-tool.log').read_text()
-            differences.append({'feature': 'BridgeSupport', 'reference': 'installer invokes the Apple tool with a nonexistent Pods/Pods-Demo-umbrella.h path; no metadata produced', 'native': 'invokes the same tool with the generated aggregate header and produces metadata', 'parity': False})
-            limitations.append('BridgeSupport output differs from the reference installer; its aggregate header path is invalid')
+            differences.append({'id': 'BridgeSupport.aggregate_header_path', 'feature': 'BridgeSupport', 'reference': 'installer invokes the Apple tool with a nonexistent Pods/Pods-Demo-umbrella.h path; no metadata produced', 'native': 'invokes the same tool with the generated aggregate header and produces metadata', 'parity': False})
         verified.append('BridgeSupport installer outputs observed in the same Apple-tool environment; differences recorded explicitly')
         bridge_tool.write_text("#!/bin/sh\nprintf 'fixture metadata failure\\n' >&2\nexit 47\n")
         bridge_tool.chmod(0o755)
@@ -190,7 +193,8 @@ def main():
             assert '.bridgesupport' in failure.joinpath('Pods/Pods.xcodeproj/project.pbxproj').read_text(), engine
         verified.append('BridgeSupport command failure preserves the same missing resource reference without fabricating a file')
     name = 'native-ecosystem-reference.json' if args.gem_home else 'native-ecosystem.json'
-    report = {'status': 'passed', 'engine': 'swift', 'fixture': str(parent), 'verified': verified, 'differences': differences, 'unverified': limitations}
+    report = {'status': 'passed', 'engine': 'swift', 'fixture': str(parent), 'verified': verified, 'differences': differences, 'unverified': limitations,
+              'verified_cases': ['BridgeSupport.unchanged_manifest', 'BridgeSupport.correct_aggregate_header', 'BridgeSupport.aggregate_declarations']}
     ROOT.joinpath('test-results', name).write_text(json.dumps(report, indent=2) + '\n'); print(json.dumps(report, indent=2))
 
 

@@ -27,8 +27,19 @@ passing evidence after source changes. Packaged fixtures use the release binary.
 
 `--skip-apple` omits required build checks and cannot establish stable acceptance.
 `--require-stable` additionally rejects a dirty revision, missing API/effect cases,
-missing required reports or unverified external gates. Passing the local corpus
+missing required reports, unverified differences or unverified external gates. Passing the local corpus
 alone reports `stable_acceptance: not_established`.
+
+The compatibility contract is `input_compatible`: preserve existing manifests,
+helpers, supported public hooks and lockfiles while permitting simpler native
+implementations and corrected behavior. Reference bugs are not inherited.
+`compatibility_policy.improvements` in `Profiles/contract.json` links each tested
+improvement to unchanged-input and correct-effect cases. The aggregate retains
+`compatibility_differences`, including raw `parity: false`, and records the
+classification. `blocking_compatibility_differences` excludes only improvements
+whose current evidence satisfies that policy. BridgeSupport's corrected header
+path is the first such case. This does not waive required reports or external
+acceptance gates.
 
 ## External evidence
 

@@ -5,9 +5,10 @@ runtime language bridges. `generate_bridge_support!` enables it. The ordinary
 dependency resolver, compiled libraries and Swift module interfaces do not use
 this metadata.
 
-The isolated 1.17.0 reference and SwiftPods currently produce different results
-for this option in the same environment. This is a recorded compatibility
-difference, not a passing parity check.
+The isolated 1.17.0 reference and SwiftPods produce different results for this
+option in the same environment. SwiftPods preserves the input and fixes the
+reference's header path. This is a tested improvement under the input-compatible
+contract; reproducing the reference failure is not required.
 
 ## Reproducer
 
@@ -72,7 +73,10 @@ A separate fixture forces the metadata tool to fail. Both installers warn,
 retain the missing resource reference, and do not fabricate an output file.
 Tool availability and behavior depend on the Apple environment.
 
-The current SwiftPods behavior is retained while this difference is documented.
-The acceptance report records `parity: false`; stable baseline parity remains
-unestablished. Reproducing the reference path bug or excluding this behavior from
-the compatibility promise would require an explicit contract change.
+SwiftPods retains the working generation. The acceptance report preserves
+`parity: false` as an observation and classifies
+`BridgeSupport.aggregate_header_path` as `accepted_improvement` when the current
+native and reference reports prove unchanged manifests, the existing header path
+and metadata containing aggregate declarations. This fix does not block stable
+acceptance. Missing proof, unrelated differences and unverified external gates
+remain separate acceptance requirements.

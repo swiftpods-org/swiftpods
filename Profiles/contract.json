@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "profile": "swift-native-external-ruby-3.4",
   "reference_version": "1.17.0",
   "suites": [
@@ -1550,5 +1550,38 @@
     "signed_apple_archives",
     "supplementary_host_matrix"
   ],
-  "coverage_policy": "A mapped report is evidence for its recorded cases, not proof of every combination. Stable acceptance also requires all external gates and a clean source revision."
+  "coverage_policy": "A mapped report is evidence for its recorded cases, not proof of every combination. Stable acceptance also requires all external gates and a clean source revision.",
+  "compatibility_policy": {
+    "mode": "input_compatible",
+    "inherit_reference_bugs": false,
+    "input_contract": [
+      "Podfile",
+      "podspec",
+      "podspec.json",
+      "Ruby helpers and supported public hooks",
+      "existing lockfiles"
+    ],
+    "improvements": {
+      "BridgeSupport.aggregate_header_path": {
+        "feature": "BridgeSupport",
+        "kind": "reference_bug_fix",
+        "preserves_input_contract": true,
+        "report": "native-ecosystem-reference.json",
+        "evidence": {
+          "native-ecosystem.json": [
+            "BridgeSupport.unchanged_manifest",
+            "BridgeSupport.correct_aggregate_header",
+            "BridgeSupport.aggregate_declarations"
+          ],
+          "native-ecosystem-reference.json": [
+            "BridgeSupport.unchanged_manifest",
+            "BridgeSupport.correct_aggregate_header",
+            "BridgeSupport.aggregate_declarations"
+          ]
+        },
+        "rationale": "Resolve the generated aggregate header through its actual directory and produce metadata for the unchanged manifest.",
+        "documentation": "docs/BridgeSupport.md"
+      }
+    }
+  }
 }

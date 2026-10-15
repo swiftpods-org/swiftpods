@@ -8,6 +8,10 @@ no reference engine, third-party installation gems or Ruby interpreter.
 
 The compatibility profile remains experimental until stable acceptance is
 established. Passing fixtures certify the scope recorded in their reports.
+Compatibility preserves existing inputs and their meaning. The native engine
+may use simpler implementations and correct reference bugs; tested improvements
+are reported explicitly. BridgeSupport's corrected aggregate header path is one
+such improvement and no longer blocks acceptance.
 
 Implemented functionality includes:
 
