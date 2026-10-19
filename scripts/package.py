@@ -62,6 +62,7 @@ def main():
         (staging / "bin").mkdir()
         shutil.copy2(ROOT / ".build/release/swiftpods", staging / "bin/swiftpods")
         shutil.copy2(ROOT / "README.md", staging / "README.md")
+        shutil.copy2(ROOT / "LICENSE", staging / "LICENSE")
         shutil.copytree(ROOT / "docs", staging / "docs")
         shutil.copy2(
             ROOT / "Sources/ProcessSupport/ArchiveHeaders/LICENSE.txt",

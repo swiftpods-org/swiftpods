@@ -1,0 +1,113 @@
+name: Verify published installation
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Published release version without v
+        required: true
+      manifest_sha256:
+        description: SHA-256 of the published release.json
+        required: true
+      verify_homebrew:
+        description: Also verify the accepted official homebrew/core formula
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel, macos-26, macos-26-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      MANIFEST_SHA256: ${{ inputs.manifest_sha256 }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Validate pinned inputs and download the published manifest
+        run: |
+          mkdir -p test-results .build
+          python3 - <<'PY'
+          import hashlib, json, os, re, urllib.request
+          from pathlib import Path
+          version, digest = (os.environ[key] for key in ('RELEASE_VERSION', 'MANIFEST_SHA256'))
+          assert re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?', version)
+          assert re.fullmatch(r'[0-9a-f]{64}', digest)
+          base = 'https://github.com/swiftpods-org/swiftpods/releases/download/v' + version + '/'
+          manifest = urllib.request.urlopen(base + 'release.json', timeout=60).read()
+          assert hashlib.sha256(manifest).hexdigest() == digest
+          metadata = json.loads(manifest)
+          assert metadata['version'] == version and metadata['runtime_mode'] == 'external'
+          assert metadata['publishable'] is True and metadata['development'] is False
+          Path('test-results/release.json').write_bytes(manifest)
+          installer = urllib.request.urlopen(base + 'install.py', timeout=60).read()
+          assert hashlib.sha256(installer).hexdigest() == metadata['installer_sha256']
+          Path('.build/install.py').write_bytes(installer)
+          PY
+      - name: Install compatible external Ruby
+        run: |
+          set -euo pipefail
+          brew update
+          brew install ruby@3.4
+          brew upgrade ruby@3.4
+          echo "SWIFTPODS_RUBY=$(brew --prefix ruby@3.4)/bin/ruby" >> "$GITHUB_ENV"
+      - name: Install and test the accepted official Homebrew formula
+        if: inputs.verify_homebrew
+        run: |
+          set -euo pipefail
+          brew info --json=v2 --formula swiftpods > test-results/formula.json
+          python3 - <<'PYTHON'
+          import json, os
+          formula = json.load(open('test-results/formula.json'))['formulae'][0]
+          assert formula['tap'] == 'homebrew/core'
+          assert formula['versions']['stable'] == os.environ['RELEASE_VERSION']
+          PYTHON
+          brew install --formula swiftpods 2>&1 | tee test-results/homebrew-install.log
+          brew test swiftpods 2>&1 | tee test-results/homebrew-test.log
+          swiftpods runtime verify --json > test-results/homebrew-runtime.json
+          swiftpods version --json > test-results/homebrew-version.json
+          python3 - <<'PYTHON'
+          import json, os
+          assert json.load(open('test-results/homebrew-version.json'))['swiftpods_version'] == os.environ['RELEASE_VERSION']
+          PYTHON
+      - name: Install the pinned release with its checksummed installer
+        run: |
+          python3 .build/install.py --version "$RELEASE_VERSION" --manifest-sha256 "$MANIFEST_SHA256" --prefix "$PWD/.build/pinned"
+          echo "$PWD/.build/pinned/bin" >> "$GITHUB_PATH"
+          .build/pinned/bin/swiftpods runtime verify --json > test-results/installer-runtime.json
+      - name: Execute a Ruby hook using the installed product
+        run: |
+          mkdir .build/project
+          cd .build/project
+          cat > Podfile <<'RUBY'
+          platform :osx, '13.0'
+          target 'Acceptance' do
+          end
+          post_install do |installer|
+            raise 'Missing sandbox' unless installer.sandbox.root.directory?
+            File.write('hook-result', 'passed')
+          end
+          RUBY
+          swiftpods install --no-integrate --json > ../../test-results/installed-hook.json
+          test "$(cat hook-result)" = passed
+          swiftpods install --no-integrate --offline --deployment --json > ../../test-results/installed-deployment.json
+      - name: Record the independent machine
+        if: always()
+        run: |
+          sw_vers > test-results/host.txt
+          uname -m >> test-results/host.txt
+          xcodebuild -version >> test-results/host.txt
+          swift --version >> test-results/host.txt
+          brew --version >> test-results/host.txt
+          git rev-parse HEAD >> test-results/host.txt
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        if: always()
+        with:
+          name: installation-${{ matrix.runner }}
+          include-hidden-files: true
+          path: test-results/

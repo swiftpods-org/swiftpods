@@ -17,6 +17,8 @@ from reporting import execute
 def main():
     bundle = Path(sys.argv[1]).resolve()
     manifest = json.loads((bundle / "compatibility.json").read_text())
+    assert "LICENSE" in manifest["files"]
+    assert (bundle / "LICENSE").read_bytes() == (ROOT / "LICENSE").read_bytes()
     assert manifest["engine"] == "swift"
     assert manifest["gems"] == [] and manifest["native_ruby_libraries"] == []
     assert not any(
@@ -79,7 +81,7 @@ def main():
     assert released["development"] and not released["publishable"]
     assert all(
         asset["url"].startswith(
-            "https://github.com/swiftpods-org/swiftpods-release/releases/"
+            "https://github.com/swiftpods-org/swiftpods/releases/"
         )
         for asset in released["assets"]
     )
@@ -160,6 +162,7 @@ def main():
                 "runtime_path_boundaries": runtime_paths,
                 "verified": [
                     "runtime inventory excludes reference engine/gems",
+                    "product MIT license is included in the verified distribution",
                     "relocation",
                     "release URLs",
                     "checksummed installer",

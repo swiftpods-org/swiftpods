@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "id": "swift-native-external-ruby-3.4",
-  "swiftpods_version": "0.1.0-dev",
+  "swiftpods_version": "0.1.0",
   "status": "experimental",
   "runtime": {
     "mode": "external",

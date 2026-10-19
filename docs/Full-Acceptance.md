@@ -123,14 +123,16 @@ current Homebrew report and log in the evidence archive. CI performs these steps
 on each configured runner. A successful check on a developer machine does not
 certify a pristine machine or any other macOS/architecture.
 
-## Repository handoff
+## Repository and release ownership
 
-`swiftpods-code` owns implementation, contracts and evidence generation.
-`swiftpods-release` receives prepared archives, checksums, installer and root
-`Formula/swiftpods.rb`; archives are release assets rather than source files.
+`swiftpods-org/swiftpods` owns implementation, contracts, evidence generation,
+installation tooling and GitHub Releases. Prepared archives, checksums, the
+installer and matching evidence are release assets rather than Git source files.
+The generated binary Homebrew fixture supports isolated installation tests;
+it is not the source-build formula for submission to `homebrew/core`.
 `swiftpods-site` documents the product workflow at swiftpods.org. Release
 metadata and acceptance evidence identify the actual published artifacts and
-their verified scope. Updating these repositories does not imply publication.
+their verified scope. Updating either repository does not imply publication.
 Release assembly requires one matching full evidence archive per distribution.
 It verifies archive inventory, source/toolchain and tested manifest/executable
 identities before producing a destination. Failed assembly leaves no partial

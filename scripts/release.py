@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare release assets, checksums and a Homebrew tap; never publishes them."""
+"""Prepare release assets, checksums and a binary Homebrew fixture; never publishes."""
 
 import argparse
 import hashlib
@@ -79,6 +79,7 @@ def homebrew_formula(version, assets):
         "class Swiftpods < Formula",
         '  desc "Dependency manager for Apple platform projects"',
         '  homepage "https://swiftpods.org"',
+        '  license "MIT"',
         "  version " + json.dumps(version),
         "  depends_on :macos",
         '  depends_on "ruby@3.4"',
@@ -111,6 +112,7 @@ def homebrew_formula(version, assets):
         '    libexec.install Dir["*"]',
         "    # Prevent Homebrew from moving verified metafiles out of libexec.",
         '    (prefix/"README.md").write (libexec/"README.md").read',
+        '    (prefix/"LICENSE").write (libexec/"LICENSE").read',
         '    (bin/"swiftpods").write_env_script libexec/"bin/swiftpods",',
         '      SWIFTPODS_RUBY: Formula["ruby@3.4"].opt_bin/"ruby", SWIFTPODS_BUNDLE: libexec',
         '    system bin/"swiftpods", "runtime", "verify", "--json"',
@@ -246,7 +248,7 @@ def prepare(args, destination):
                 "minimum_macos": minimum,
                 "filename": filename,
                 "sha256": sha256,
-                "url": "https://github.com/swiftpods-org/swiftpods-release/releases/download/v"
+                "url": "https://github.com/swiftpods-org/swiftpods/releases/download/v"
                 + args.version
                 + "/"
                 + filename,
@@ -284,27 +286,17 @@ def prepare(args, destination):
     formula = destination / "homebrew-tap/Formula/swiftpods.rb"
     formula.parent.mkdir(parents=True)
     formula.write_text(homebrew_formula(args.version, assets))
-    (formula.parents[1] / "README.md").write_text("""# SwiftPods
+    (formula.parents[1] / "README.md").write_text("""# SwiftPods binary installation fixture
 
-Install [SwiftPods](https://swiftpods.org) with Homebrew. Declare pods and Swift
-Package Manager dependencies in one Podfile and build with Xcode.
+This generated formula checks installation of the prepared binary archives
+through an isolated Homebrew tap. It is not the source-build formula submitted
+to homebrew/core, and must not replace the project's README.
 
-## Installation
-
-```sh
-brew install swiftpods
-```
-
-Homebrew installs a compatible Ruby as a separate dependency.
-
-## Upgrade
-
-```sh
-brew upgrade swiftpods
-```
+Publish the release assets in the main repository's GitHub Releases.
+The official Homebrew formula is maintained in homebrew/core after acceptance.
 
 [Website](https://swiftpods.org) ·
-[Project](https://github.com/swiftpods-org/swiftpods-code)
+[Project](https://github.com/swiftpods-org/swiftpods)
 """)
     print(
         "Manifest SHA-256:",

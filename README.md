@@ -5,9 +5,14 @@ Declare both for your Apple project, install dependencies, and build with Xcode.
 
 [Website](https://swiftpods.org) ·
 [Installation and CI](docs/Release.md) ·
-[GitHub](https://github.com/swiftpods-org/swiftpods-code)
+[GitHub](https://github.com/swiftpods-org/swiftpods) ·
+[Releases](https://github.com/swiftpods-org/swiftpods/releases)
 
 ## Installation
+
+Version 0.1.0 and official Homebrew distribution are being prepared. The command
+below will be available after SwiftPods is accepted into Homebrew. Until then,
+see [development setup](docs/Development.md) to build from source.
 
 ```sh
 brew install swiftpods
@@ -134,3 +139,9 @@ swiftpods --help
 ```
 
 Visit [swiftpods.org](https://swiftpods.org) for the project website.
+
+## License
+
+SwiftPods is distributed under the [MIT License](LICENSE). Third-party headers
+and reference-test dependencies retain their own license notices. The packaged
+distribution includes the SwiftPods license and the notices for bundled headers.

@@ -87,7 +87,7 @@ jobs:
         with:
           pattern: evidence-*
           path: evidence
-      - name: Assemble checksums, installer and Homebrew tap
+      - name: Assemble checksums, installer and binary Homebrew test fixture
         env:
           RELEASE_VERSION: ${{ inputs.version }}
         run: |
@@ -99,5 +99,5 @@ jobs:
             --destination dist/release
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: swiftpods-release-assets
+          name: swiftpods-assets
           path: dist/release/

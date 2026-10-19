@@ -168,7 +168,7 @@ def main():
     if bool(args.manifest) != bool(args.archive):
         parser.error("Local installation requires both --manifest and --archive")
     url = (
-        "https://github.com/swiftpods-org/swiftpods-release/releases/download/v"
+        "https://github.com/swiftpods-org/swiftpods/releases/download/v"
         + args.version
         + "/release.json"
     )

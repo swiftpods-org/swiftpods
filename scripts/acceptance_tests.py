@@ -2,6 +2,7 @@
 """Exercise missing, stale, changed and incomplete acceptance evidence."""
 
 import hashlib
+import io
 import json
 import os
 import runpy
@@ -141,6 +142,69 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(
             result["external_gates"]["physical_devices"]["status"], "unverified"
         )
+
+    def testLicenseChangesInvalidateSourceEvidence(self):
+        license_file = self.root / "LICENSE"
+        license_file.write_text("original license")
+        with patch.object(reporting, "ROOT", self.root):
+            before = reporting.source_digest()
+            license_file.write_text("updated license")
+            self.assertNotEqual(reporting.source_digest(), before)
+
+    def testInstallerDownloadsThePinnedReleaseFromTheMainRepository(self):
+        version = "0.1.0"
+        base = "https://github.com/swiftpods-org/swiftpods/releases/download/v0.1.0/"
+        metadata = {
+            "swiftpods_version": version,
+            "runtime": {"mode": "external"},
+            "build_host": {"architecture": "arm64"},
+            "minimum_macos": "13.0",
+        }
+        payload = io.BytesIO()
+        with zipfile.ZipFile(payload, "w") as archive:
+            archive.writestr("SwiftPods/compatibility.json", json.dumps(metadata))
+            binary = zipfile.ZipInfo("SwiftPods/bin/swiftpods")
+            binary.external_attr = 0o100755 << 16
+            archive.writestr(binary, "#!/bin/sh\nexit 0\n")
+        archive_bytes = payload.getvalue()
+        asset = {
+            "os": "macos",
+            "architecture": "arm64",
+            "minimum_macos": "13.0",
+            "sha256": hashlib.sha256(archive_bytes).hexdigest(),
+            "url": base + "swiftpods-0.1.0-macos-13.0-arm64.zip",
+        }
+        manifest = json.dumps(
+            {"schema_version": 1, "version": version, "assets": [asset]}
+        ).encode()
+        responses = {base + "release.json": manifest, asset["url"]: archive_bytes}
+
+        def download(url, **_):
+            response = io.BytesIO(responses[url])
+            response.url = url
+            return response
+
+        prefix = self.root / "installed"
+        argv = [
+            "install.py",
+            "--version",
+            version,
+            "--manifest-sha256",
+            hashlib.sha256(manifest).hexdigest(),
+            "--prefix",
+            str(prefix),
+        ]
+        with (
+            patch("sys.argv", argv),
+            patch.object(installer.urllib.request, "urlopen", side_effect=download) as fetch,
+            patch.object(installer, "select_asset", return_value=asset),
+            patch.object(installer, "verify_distribution"),
+        ):
+            installer.main()
+        self.assertEqual(
+            [call.args[0] for call in fetch.call_args_list], list(responses)
+        )
+        installer.verify_launcher(prefix)
 
     def testInstallerTreatsMissingMacOSPatchComponentAsZero(self):
         asset = {"os": "macos", "architecture": "arm64", "minimum_macos": "13.0.0"}

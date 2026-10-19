@@ -118,6 +118,21 @@ final class CLIInvocationTests: XCTestCase {
         }
     }
 
+    func testVersionCommandsMatchTheReleaseProfile() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let profile = try readObject(root.appendingPathComponent("Profiles/baseline.json"))
+        let version = try XCTUnwrap(profile["swiftpods_version"] as? String)
+        XCTAssertEqual(CLI.version, version)
+        for command in ["version", "--version"] {
+            try withProject { _, project, environment in
+                let result = try invoke([command, "--project-directory", project.path], environment)
+                XCTAssertEqual(result.0, 0)
+                XCTAssertEqual(result.1["swiftpods_version"] as? String, version)
+            }
+        }
+    }
+
     func testVersionRejectsUnknownArguments() throws {
         for command in ["version", "--version"] {
             try withProject { _, project, environment in

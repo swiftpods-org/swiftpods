@@ -38,6 +38,7 @@ def source_digest():
         "Gemfile",
         "Gemfile.lock",
         "README.md",
+        "LICENSE",
         "docs",
     ]:
         root = ROOT / name
