@@ -11,8 +11,12 @@ module Pod
       @specifications = {}
     end
 
-    def pod_dir(name) = Pathname(@directories[name] || (@root + name).to_s)
-    def specification(name) = @specifications[name]
+    def pod_dir(name)
+      name = name.split("/", 2).first
+      Pathname(@directories[name] || (@root + name).to_s)
+    end
+
+    def specification(name) = @specifications[name.split("/", 2).first]
     def public_headers = @public_headers ||= SwiftPods::Record.new(:root => @root + "Headers/Public")
   end
 

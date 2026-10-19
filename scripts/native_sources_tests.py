@@ -46,7 +46,7 @@ def main():
         return {
             "name": name,
             "version": version,
-            "source": source or {"http": location, "sha256": checksum},
+            "source": source or {"http": location, "sha256": checksum, "flatten": True},
             "source_files": "Sources/*.c",
             "dependencies": deps or {},
         }

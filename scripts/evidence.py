@@ -4,6 +4,7 @@
 import argparse
 import hashlib
 import json
+import os
 import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
@@ -13,6 +14,39 @@ from reporting import ROOT, contract_digest, source_digest, source_revision
 
 def digest(data):
     return hashlib.sha256(data).hexdigest()
+
+
+def packaged_identity(name, report):
+    if name != "native-distribution.json" and not name.startswith("native-packaged-"):
+        return None
+    bundle = report.get("bundle_digest")
+    executable = report.get("executable", {}).get("sha256")
+    if not bundle or not executable:
+        raise RuntimeError("Missing tested package identity: " + name)
+    return bundle, executable
+
+
+def verify_payload(bundle, metadata):
+    files = {}
+    for path in sorted(bundle.rglob("*")):
+        if path.parent == bundle and path.name in (
+            "compatibility.json",
+            "compatibility.cms",
+        ):
+            continue
+        name = path.relative_to(bundle).as_posix()
+        if path.is_symlink():
+            if not path.resolve().is_relative_to(bundle.resolve()):
+                raise RuntimeError("Package symlink escapes its bundle: " + name)
+            files[name] = {"symlink": os.readlink(path)}
+        elif path.is_file():
+            files[name] = {"sha256": digest(path.read_bytes())}
+    if (
+        files != metadata["files"]
+        or digest(json.dumps(files, sort_keys=True).encode())
+        != metadata["bundle_digest"]
+    ):
+        raise RuntimeError("Tested package payload changed before evidence export")
 
 
 def required_reports():
@@ -157,6 +191,16 @@ def export(destination):
             executable = Path(value["executable"]["path"])
             manifest = executable.parent.parent / "compatibility.json"
             metadata = json.loads(manifest.read_text())
+            expected = packaged_identity(name, value)
+            actual = (
+                metadata["bundle_digest"],
+                metadata["files"]["bin/swiftpods"]["sha256"],
+            )
+            if expected != actual:
+                raise RuntimeError(
+                    "Tested package identity changed before evidence export: " + name
+                )
+            verify_payload(executable.parent.parent, metadata)
             bundles[metadata["bundle_digest"]] = {
                 "bundle_digest": metadata["bundle_digest"],
                 "manifest_sha256": digest(manifest.read_bytes()),
@@ -276,9 +320,13 @@ def validate(path, metadata=None, manifest_sha256=None):
             reports
         ) != len(required_reports()):
             raise RuntimeError("Evidence is missing required packaged reports")
+        tested_packages = set()
         for entry in reports:
             data = archive.read("reports/" + entry["report"])
             value = json.loads(data)
+            identity = packaged_identity(entry["report"], value)
+            if identity:
+                tested_packages.add(identity)
             if digest(data) != entry["sha256"] or value.get("status") != "passed":
                 raise RuntimeError(
                     "Acceptance report checksum/status mismatch: " + entry["report"]
@@ -292,6 +340,12 @@ def validate(path, metadata=None, manifest_sha256=None):
             ]:
                 if value[key] != acceptance[key]:
                     raise RuntimeError("Report identity mismatch: " + entry["report"])
+        indexed_packages = {
+            (bundle["bundle_digest"], bundle["executable_sha256"])
+            for bundle in index["bundles"]
+        }
+        if indexed_packages != tested_packages:
+            raise RuntimeError("Evidence package index does not match tested reports")
         if metadata:
             source = metadata["swiftpods_source"]
             if (

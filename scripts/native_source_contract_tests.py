@@ -71,7 +71,7 @@ def main():
     thread.start()
     try:
         manifest(
-            f"pod 'ArchiveKit', :http => 'http://127.0.0.1:{server.server_port}/kit.zip', :sha256 => '{checksum}', :headers => {{ 'X-Fixture' => 'allowed' }}"
+            f"pod 'ArchiveKit', :http => 'http://127.0.0.1:{server.server_port}/kit.zip', :sha256 => '{checksum}', :flatten => true, :headers => {{ 'X-Fixture' => 'allowed' }}"
         )
         cli("install", "--no-integrate")
         assert (

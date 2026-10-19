@@ -76,7 +76,12 @@ def main():
             text=True,
         )
     )
-    assert inherited == expected, (inherited, expected)
+    own_configurations = {"Debug": ["OwnKit"], "Release": ["OwnKit"]}
+    assert expected["NoneChild"]["configurations"] == {"Debug": [], "Release": []}
+    assert inherited["NoneChild"]["configurations"] == own_configurations
+    corrected = json.loads(json.dumps(expected))
+    corrected["NoneChild"]["configurations"] = own_configurations
+    assert inherited == corrected, (inherited, expected)
     code = "require 'bundler/setup';require 'cocoapods';abort('Unexpected reference version') unless Pod::VERSION == '1.17.0';Pod::Command.run(ARGV)"
     log = parent / "reference-install.log"
     with log.open("wb") as output:
@@ -110,12 +115,26 @@ def main():
         "verified": [
             "same Debug/Staging/Release executable results in independent engines",
             "complete/search_paths/none inheritance",
-            "nested inheritance declarations match reference analysis including none after search_paths",
+            "nested inheritance matches reference except the registered none default-configuration fix",
             "matching per-file ARC, prefix header and localized resource behavior",
             "multiple pod projects",
             "live project hooks and immediate saves",
             "Installer and Project identity",
             "lockfile lifecycle",
+        ],
+        "verified_cases": [
+            "Targets.none_nested_input",
+            "Targets.none_nested_configurations",
+        ],
+        "none_nested_observations": {"native": inherited, "reference": expected},
+        "differences": [
+            {
+                "id": "Targets.none_nested_configurations",
+                "feature": "Targets",
+                "parity": False,
+                "reference": "none after search_paths disables an own unconfigured dependency",
+                "native": "own dependency remains enabled in Debug and Release",
+            }
         ],
         "unverified": [
             "project/lock byte parity",

@@ -14,7 +14,10 @@ enum FileFingerprint {
         }
         let manager = FileManager.default
         let target = try manager.destinationOfSymbolicLink(atPath: link.path)
-        var pending = (target.hasPrefix("/") ? target : parent + "/" + target).split(separator: "/").map(String.init)
+        func components(_ path: String) -> [String] {
+            (path as NSString).pathComponents.filter { $0 != "/" }
+        }
+        var pending = components(target.utf8.first == 47 ? target : parent + "/" + target)
         var resolved: [String] = []
         var hops = 0
         while !pending.isEmpty {
@@ -31,12 +34,13 @@ enum FileFingerprint {
                 guard hops <= 64 else { return false }
                 let next = try manager.destinationOfSymbolicLink(atPath: path)
                 resolved.removeLast()
-                if next.hasPrefix("/") { resolved.removeAll() }
-                pending = next.split(separator: "/").map(String.init) + pending
+                if next.utf8.first == 47 { resolved.removeAll() }
+                pending = components(next) + pending
             }
         }
-        let destination = "/" + resolved.joined(separator: "/")
-        return destination == boundary || destination.hasPrefix(boundary + "/")
+        // Both sides already use physical paths. Foundation URL standardization
+        // treats /private/var aliases differently for existing and dangling paths.
+        return resolved.starts(with: components(boundary))
     }
 
     static func file(_ url: URL) throws -> String {

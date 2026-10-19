@@ -3,13 +3,12 @@ import Foundation
 enum NativeFileSelection {
     static let headers = Set(["h", "hh", "hpp", "ipp", "tpp", "hxx", "def", "inl", "inc"])
     static let sources = Set(["m", "mm", "i", "c", "cc", "cpp", "cxx", "c++", "swift"])
+    static let objectSources = sources.union(["s", "S", "C", "M"])
+    // Assembly and Metal are compiled when explicitly selected. Directory defaults and
+    // FileAccessor.other_source_files retain the declarative source extensions.
+    static let compilableSources = objectSources.union(["metal"])
     static func excluded(_ file: URL, by paths: Set<URL>) -> Bool {
-        let file = file.standardizedFileURL.path
-        return paths.contains {
-            var path = $0.standardizedFileURL.path
-            while path.count > 1 && path.hasSuffix("/") { path.removeLast() }
-            return file == path || file.hasPrefix(path + "/")
-        }
+        paths.contains { NativePath.relativeComponents(of: file, to: $0) != nil }
     }
     static func files(_ patterns: Any?, root: URL, headersOnly: Bool = false) throws -> [URL] {
         var result = Set<URL>()
@@ -17,9 +16,8 @@ enum NativeFileSelection {
         for pattern in nativeStrings(patterns) {
             for path in try nativeGlob(pattern, root: root) {
                 if (try? path.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
-                    let relative =
-                        path.path == root.standardizedFileURL.path
-                        ? "." : String(path.path.dropFirst(root.standardizedFileURL.path.count + 1))
+                    guard let components = NativePath.relativeComponents(of: path, to: root) else { continue }
+                    let relative = components.isEmpty ? "." : components.joined(separator: "/")
                     guard
                         relative.caseInsensitiveCompare(pattern.trimmingCharacters(in: CharacterSet(charactersIn: "/")))
                             == .orderedSame
@@ -43,6 +41,16 @@ enum NativeFileSelection {
     static func paths(_ patterns: Any?, attributes: [String: Any], root: URL) throws -> [URL] {
         let excluded = Set(try nativeGlob(attributes["exclude_files"], root: root))
         return try nativeGlob(patterns, root: root).filter { !self.excluded($0, by: excluded) }
+    }
+    /// Localized directories become individual build inputs; filter after expansion.
+    static func resourcePaths(_ patterns: Any?, attributes: [String: Any], root: URL) throws -> [URL] {
+        let excluded = Set(try nativeGlob(attributes["exclude_files"], root: root))
+        let expanded = try NativeResources.expandedPaths(nativeGlob(patterns, root: root))
+        return Set(expanded.map(\.standardizedFileURL)).filter {
+            !self.excluded($0, by: excluded)
+                && !($0.pathExtension == "lproj"
+                    && (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true)
+        }.sorted { $0.path < $1.path }
     }
     static func sourceFiles(_ attributes: [String: Any], root: URL) throws -> [URL] {
         let excluded = Set(try nativeGlob(attributes["exclude_files"], root: root))

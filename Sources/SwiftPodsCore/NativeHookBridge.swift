@@ -77,6 +77,7 @@ enum NativeHookGraph {
             let root = graph["rootObject"] as? String,
             objects[root]?["isa"] as? String == "PBXProject"
         else { throw Diagnostic("SP-HOOK-GRAPH", stage: "hook", "Hook returned an invalid project graph") }
+        try NativePBXPaths.validateGraph(objects, file: value["path"] as? String)
         for (id, object) in objects {
             guard id.range(of: #"\A[A-Fa-f0-9]{24}\z"#, options: .regularExpression) != nil, object["isa"] is String
             else { throw Diagnostic("SP-HOOK-GRAPH", stage: "hook", "Invalid PBX object", file: id) }

@@ -32,18 +32,18 @@ enum NativeInspection {
         guard args.isEmpty else {
             throw Diagnostic("SP-CLI-ARGUMENT", stage: "inspect", "Unknown spec inspection option")
         }
-        let cache = URL(fileURLWithPath: bundle.environment(from: environment)["SWIFTPODS_CACHE_ROOT"]!)
+        let cache = URL(fileURLWithPath: bundle.cacheRootPath(from: environment))
         let repositories = try NativeRepositories(cache: cache).records().compactMap { $0["url"] as? String }
         let declared =
             sources.map { $0.split(separator: ",").map(String.init) } ?? (repositories + ["https://cdn.cocoapods.org/"])
         let dsl = try NativeDSL(bundle: bundle, environment: environment, directory: project, overrides: overrides)
         let catalog = try NativeSources(
             project: project, cache: cache, sources: declared, dsl: dsl,
-            offline: environment["SWIFTPODS_OFFLINE"] == "1", refresh: false, hardened: false)
+            offline: environment["SWIFTPODS_OFFLINE"] == "1", refreshRepositories: false, hardened: false)
         let dependency = try NativeDependency(["name": name, "requirements": version.map { ["= " + $0] } ?? [">= 0"]])
         let requirement = try PodRequirement(dependency.requirements)
         let candidates = try catalog.candidates(dependency).filter { requirement.accepts($0.version) }.sorted {
-            $0.version > $1.version
+            $0.version.isPreferred(to: $1.version)
         }
         guard let first = candidates.first else {
             throw Diagnostic("SP-SPEC-MISSING", stage: "inspect", "No matching podspec", file: name)

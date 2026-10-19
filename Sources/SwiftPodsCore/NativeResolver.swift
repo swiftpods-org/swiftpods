@@ -102,7 +102,7 @@ struct NativeResolver {
                     if ($0.version.description == pin) != ($1.version.description == pin) {
                         return $0.version.description == pin
                     }
-                    return $0.version > $1.version
+                    return $0.version.isPreferred(to: $1.version)
                 }
             }
             let pin = update.contains(request.root) ? nil : try locked[request.root].map(PodVersion.init)
@@ -147,7 +147,10 @@ struct NativeResolver {
             }
             return nil
         }
-        if let result = try search(dependencies, selected: [:], expanded: [], requests: []) { return result }
+        if let result = try search(dependencies, selected: [:], expanded: [], requests: []) {
+            for spec in result.specs.values.sorted(by: { $0.name < $1.name }) { try spec.validateProfile() }
+            return result
+        }
         throw failure
             ?? Diagnostic("SP-RESOLVE-CONFLICT", stage: "resolve", "Dependency constraints cannot be satisfied")
     }

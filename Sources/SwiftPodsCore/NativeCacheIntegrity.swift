@@ -11,16 +11,22 @@ enum NativeCacheIntegrity {
                 in (try? FileManager.default.contentsOfDirectory(
                     at: cache.appendingPathComponent(kind), includingPropertiesForKeys: [.isDirectoryKey])) ?? []
             where path.lastPathComponent.range(of: #"\A[0-9a-f]{64}\z"#, options: .regularExpression) != nil {
-                let receipt = path.appendingPathExtension(
-                    kind == "git" ? "sha256" : kind == "prepared" ? "json" : "origin.json")
+                if kind == "git" {
+                    _ = try NativeGitCache.verify(path)
+                    counts[kind, default: 0] += 1
+                    continue
+                }
+                if kind == "snapshots" {
+                    _ = try NativeSnapshotCache.verify(path)
+                    counts[kind, default: 0] += 1
+                    continue
+                }
+                let receipt = path.appendingPathExtension("json")
                 guard FileManager.default.fileExists(atPath: receipt.path) else {
                     throw Diagnostic(
                         "SP-CACHE-INTEGRITY", stage: "cache", "Cached source receipt is missing", file: path.path)
                 }
-                let expected =
-                    kind == "git"
-                    ? try String(contentsOf: receipt, encoding: .utf8)
-                    : try readObject(receipt)["fingerprint"] as? String
+                let expected = try readObject(receipt)["fingerprint"] as? String
                 guard let expected, expected == (try FileFingerprint.tree(path, requireContainedLinks: true)) else {
                     throw Diagnostic("SP-CACHE-INTEGRITY", stage: "cache", "Cached sources changed", file: path.path)
                 }

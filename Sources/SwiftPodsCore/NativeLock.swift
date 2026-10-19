@@ -4,6 +4,7 @@ import Foundation
 struct NativeLock {
     let path: URL
     let originalFingerprint: String
+    let originalText: String?
     let raw: [String: Any]
     let versions: [String: String]
     let checksum: String?
@@ -14,13 +15,12 @@ struct NativeLock {
     let repositories: [String: String]
     let declarations: [String: [String]]
     let dependencies: [String: Set<String>]
-    let lockingDependencies: [String: Set<String>]
     init(_ path: URL) throws {
         self.path = path
         originalFingerprint = try FileFingerprint.tree(path)
-        let data =
-            FileManager.default.fileExists(atPath: path.path)
-            ? try NativeYAML.object(String(contentsOf: path, encoding: .utf8), file: path.path) : [:]
+        originalText =
+            FileManager.default.fileExists(atPath: path.path) ? try String(contentsOf: path, encoding: .utf8) : nil
+        let data = try originalText.map { try NativeYAML.object($0, file: path.path) } ?? [:]
         guard try FileFingerprint.tree(path) == originalFingerprint else {
             throw Diagnostic("SP-LOCK-CONFLICT", stage: "resolve", "Lockfile changed while reading", file: path.path)
         }
@@ -61,8 +61,6 @@ struct NativeLock {
         }
         var pins: [String: String] = [:]
         var edges: [String: Set<String>] = [:]
-        var lockingEdges: [String: Set<String>] = [:]
-        var lockingStrings = Set<String>()
         func pod(_ value: Any) throws {
             let name: String
             let children: [Any]
@@ -78,7 +76,7 @@ struct NativeLock {
                 throw Diagnostic("SP-LOCK-SCHEMA", stage: "resolve", "Invalid PODS entry", file: path.path)
             }
             let (full, requirements) = declaration(name)
-            let root = String(full.split(separator: "/").first ?? "")
+            let root = NativePodName.root(full)
             guard requirements.count == 1, let version = requirements.first, (try? PodVersion(version)) != nil else {
                 throw Diagnostic("SP-LOCK-SCHEMA", stage: "resolve", "Invalid locked version", file: path.path)
             }
@@ -87,16 +85,12 @@ struct NativeLock {
                     "SP-LOCK-SCHEMA", stage: "resolve", "Multiple locked versions of " + root, file: path.path)
             }
             pins[root] = version
-            lockingStrings.insert(name)
             for child in children {
                 guard let text = child as? String else {
                     throw Diagnostic("SP-LOCK-SCHEMA", stage: "resolve", "Invalid locked dependency", file: path.path)
                 }
-                let childRoot = String(declaration(text).0.split(separator: "/").first ?? "")
+                let childRoot = NativePodName.root(declaration(text).0)
                 edges[root, default: []].insert(childRoot)
-                // The selected baseline deduplicates dependency strings before
-                // attaching lock-graph edges. Keep the full graph separately.
-                if lockingStrings.insert(text).inserted { lockingEdges[root, default: []].insert(childRoot) }
             }
         }
         if let pods = data["PODS"], !(pods is NSNull) {
@@ -123,7 +117,6 @@ struct NativeLock {
         }
         versions = pins
         dependencies = edges
-        lockingDependencies = lockingEdges
         repositories = sources
         declarations = direct
         checksum = data["PODFILE CHECKSUM"] as? String
@@ -142,6 +135,12 @@ struct NativeLock {
                 state: "recovery_required")
         }
     }
+    func preservingFormatting(_ generated: String) throws -> String {
+        guard let originalText,
+            try jsonData(raw) == jsonData(NativeYAML.object(generated, file: path.path))
+        else { return generated }
+        return originalText
+    }
     func changedRoots(_ direct: [NativeDependency]) throws -> Set<String> {
         guard !declarations.isEmpty else { return [] }
         let current = Dictionary(grouping: direct, by: \.name)
@@ -149,7 +148,7 @@ struct NativeLock {
         // The baseline compares existing declarations against their installed
         // versions. Compatible edits and newly added declarations keep pins.
         for name in declarations.keys {
-            let root = String(name.split(separator: "/").first ?? "")
+            let root = NativePodName.root(name)
             guard let requests = current[name], let version = versions[root] else {
                 changed.insert(root)
                 continue
@@ -169,7 +168,7 @@ struct NativeLock {
             func normalize(_ value: Any) -> Any {
                 if let dictionary = value as? [String: Any] { return dictionary.mapValues(normalize) }
                 if let values = value as? [Any] { return values.map(normalize) }
-                return String(describing: value)
+                return NativeScalarString.number(value) ?? String(describing: value)
             }
             if try jsonData(normalize(source)) != jsonData(normalize(externalSources[request.root] ?? [:])) {
                 changed.insert(request.root)
@@ -180,13 +179,13 @@ struct NativeLock {
     func unlocked(_ roots: Set<String>) -> Set<String> {
         var result = roots
         var queue = Array(roots)
-        let explicit = Set(declarations.keys.map { String($0.split(separator: "/").first ?? "") })
+        let explicit = Set(declarations.keys.map { NativePodName.root($0) })
         var parents: [String: Set<String>] = [:]
-        for (parent, children) in lockingDependencies {
+        for (parent, children) in dependencies {
             for child in children where child != parent { parents[child, default: []].insert(parent) }
         }
         while let root = queue.popLast() {
-            for child in lockingDependencies[root] ?? [] where !result.contains(child) && !explicit.contains(child) {
+            for child in dependencies[root] ?? [] where !result.contains(child) && !explicit.contains(child) {
                 if (parents[child] ?? []).isSubset(of: result), result.insert(child).inserted { queue.append(child) }
             }
         }
@@ -195,7 +194,7 @@ struct NativeLock {
     static func sha1(_ data: Data) -> String {
         Insecure.SHA1.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
-    static func quote(_ text: String) -> String { "'" + text.replacingOccurrences(of: "'", with: "''") + "'" }
+    static func quote(_ text: String) -> String { NativeYAML.quoted(text, single: true) }
     static func make(
         _ resolution: NativeResolution, direct: [NativeDependency], checksum: String, referenceVersion: String,
         manifestChecksum: String, previous: [String: Any] = [:]
@@ -239,7 +238,9 @@ struct NativeLock {
                     "path", "git", "http", "svn", "hg", "tag", "branch", "commit", "revision", "folder", "submodules",
                     "sha256", "sha1", "flatten", "type", "podspec", "headers",
                 ].contains(key) {
-                    if value is [String: Any] || value is [Any] {
+                    if value is [String: Any] || value is [Any]
+                        || (["tag", "commit"].contains(key) && NativeScalarString.number(value) != nil)
+                    {
                         text += try NativeYAML.encode([":" + key: value], indent: 4)
                     } else {
                         text += "    " + quote(":" + key) + ": " + quote(String(describing: value)) + "\n"

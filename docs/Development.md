@@ -11,8 +11,17 @@ Start with `CLI.swift` and `NativeEngine.swift`. The engine creates a new
 and output flags. `NativeCommandRequest` validates the common command envelope
 before project code runs.
 
+`CommandOptions` validates value options against the original argument list,
+then removes global options. `CLIContext` holds the resulting command and its
+immutable dependencies. Its dispatcher selects the environment, inspection and
+storage handlers in `CLI+Environment.swift`, `CLI+Inspection.swift` and
+`CLI+Storage.swift`. Engine commands return to `CLI.swift`, which owns cancellation,
+the project journal and recovery. `graph/why --refresh` follow that same installation
+transaction; `repo push` keeps the engine's validation and publication workflow.
+
 | Responsibility | Entry points |
 | --- | --- |
+| CLI options and command dispatch | `CommandOptions.swift`, `CLIContext.swift`, `CLI+*.swift` |
 | Command routing and output | `NativeCommandSession.swift` |
 | Installation pipeline | `NativeInstallation.swift` |
 | Lock parsing, pins and serialization | `NativeLock.swift` |
@@ -41,6 +50,9 @@ building from integration while retaining one graph and its identity. Shared
 archive preparation and process execution belong to dedicated services rather
 than copied loops. The Ruby API can be loaded without starting the protocol
 session, which makes public-object regressions independently testable.
+Cache path selection belongs to `RuntimeBundle.cacheRootPath(from:)`; the command
+handlers and engine use the same precedence as the runtime environment without
+reading a required value back from a dictionary.
 
 ## Style
 

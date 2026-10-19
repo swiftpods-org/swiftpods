@@ -3,7 +3,31 @@
 import os
 import signal
 import subprocess
+import threading
 import time
+from contextlib import contextmanager
+
+
+@contextmanager
+def termination_signals():
+    """Let SIGTERM unwind owned processes, including threaded fixture runners."""
+    installed = (
+        threading.current_thread() is threading.main_thread()
+        and signal.getsignal(signal.SIGTERM) == signal.SIG_DFL
+    )
+
+    def terminate(signum, frame):
+        # A repeated termination request must not interrupt descendant cleanup.
+        signal.signal(signum, signal.SIG_IGN)
+        raise SystemExit(128 + signum)
+
+    if installed:
+        signal.signal(signal.SIGTERM, terminate)
+    try:
+        yield
+    finally:
+        if installed:
+            signal.signal(signal.SIGTERM, signal.SIG_DFL)
 
 
 def cancel_process_group(process, grace_period=2):
@@ -23,6 +47,32 @@ def cancel_process_group(process, grace_period=2):
     process.wait()
 
 
+@termination_signals()
+def run_captured(arguments, cwd, log_prefix, env=None, timeout=None):
+    """Keep separate durable streams and cancel the owned group on any interruption."""
+    command = [str(argument) for argument in arguments]
+    stdout = log_prefix.with_name(log_prefix.name + ".stdout.log")
+    stderr = log_prefix.with_name(log_prefix.name + ".stderr.log")
+    with stdout.open("wb") as output, stderr.open("wb") as error:
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            env=env,
+            stdout=output,
+            stderr=error,
+            start_new_session=True,
+        )
+        try:
+            status = process.wait(timeout=timeout)
+        except BaseException:
+            cancel_process_group(process)
+            raise
+    return subprocess.CompletedProcess(
+        command, status, stdout.read_text(), stderr.read_text()
+    )
+
+
+@termination_signals()
 def run_logged(
     arguments, cwd, log, env=None, timeout=None, cancelled=None, cancellation_grace=2
 ):

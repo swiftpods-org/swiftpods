@@ -32,7 +32,7 @@ extension NativeXcode {
         }
         let values = consumers.map { target -> Bool in
             let declarations = (target["dependencies"] as? [[String: Any]] ?? []).filter {
-                ($0["name"] as? String)?.split(separator: "/").first.map(String.init) == variant.root
+                ($0["name"] as? String).map(NativePodName.root) == variant.root
             }
             return declarations.compactMap { ($0["options"] as? [String: Any])?["inhibit_warnings"] as? Bool }.first
                 ?? (target["inhibit_warnings"] as? Bool ?? false)
@@ -58,30 +58,13 @@ extension NativeXcode {
         for variant in variantPlan?.variants.values.sorted(by: { $0.label < $1.label }) ?? [] {
             guard resolution.specs[variant.root]?.local == true,
                 value as? Bool == true || nativeStrings(value).contains(variant.root),
-                let id = libraryTargets[variant.key], let product = graph.objects[id]?["productReference"] as? String,
-                let name = graph.objects[product]?["path"] as? String
+                let id = libraryTargets[variant.key]
             else { continue }
-            func xml(_ text: String) -> String {
-                text.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "\"", with: "&quot;")
-                    .replacingOccurrences(of: "<", with: "&lt;").replacingOccurrences(of: ">", with: "&gt;")
-            }
-            let container = multipleProjects ? projectForPod(variant.root).lastPathComponent : "Pods.xcodeproj"
-            let ref =
-                "<BuildableReference BuildableIdentifier=\"primary\" BlueprintIdentifier=\"" + id
-                + "\" BuildableName=\"" + xml(name) + "\" BlueprintName=\"" + xml(variant.label)
-                + "\" ReferencedContainer=\"container:" + xml(container) + "\"/>"
-            let text =
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<Scheme LastUpgradeVersion=\"2700\" version=\"1.3\"><BuildAction parallelizeBuildables=\"YES\" buildImplicitDependencies=\"YES\"><BuildActionEntries><BuildActionEntry buildForTesting=\"YES\" buildForRunning=\"YES\" buildForProfiling=\"YES\" buildForArchiving=\"YES\" buildForAnalyzing=\"YES\">"
-                + ref
-                + "</BuildActionEntry></BuildActionEntries></BuildAction><TestAction buildConfiguration=\"Debug\"><Testables/></TestAction><LaunchAction buildConfiguration=\"Debug\"/><ProfileAction buildConfiguration=\"Release\"/><AnalyzeAction buildConfiguration=\"Debug\"/><ArchiveAction buildConfiguration=\"Release\" revealArchiveInOrganizer=\"YES\"/></Scheme>\n"
-            let path = graph.url.deletingLastPathComponent().appendingPathComponent(
-                "xcshareddata/xcschemes/" + variant.label + ".xcscheme")
-            try FileManager.default.createDirectory(
-                at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
-            if (try? Data(contentsOf: path)) != Data(text.utf8) {
-                try Data(text.utf8).write(to: path, options: .atomic)
-            }
-            managedSchemes.insert(path)
+            let spec = resolution.specs[variant.root]!
+            let attributes = try spec.attributes(spec.name, platform: variant.platform)
+            try writeScheme(
+                id: id, label: variant.label, kind: .library, host: nil,
+                options: attributes["scheme"] as? [String: Any] ?? [:])
         }
     }
 }

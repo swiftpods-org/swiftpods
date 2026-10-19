@@ -8,15 +8,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from bootstrap import (
-    PREFIX,
-    PROFILE,
-    ROOT,
-    environment,
-    manifest,
-    relocate_extensions,
-    relocate_scripts,
-)
+from bootstrap import PREFIX, PROFILE, ROOT, environment, manifest
 
 
 def main():
@@ -75,10 +67,6 @@ def main():
             ROOT / "Sources/ProcessSupport/ArchiveHeaders/LICENSE.txt",
             staging / "licenses/libarchive-public-headers.txt",
         )
-        # RubyGems-generated executables otherwise keep the source checkout's
-        # absolute interpreter path. The launcher selects external Ruby.
-        relocate_scripts(staging)
-        relocate_extensions(staging)
         manifest(staging)
         env = environment(staging)
         env["SWIFTPODS_BUNDLE"] = str(staging)

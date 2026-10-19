@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 
 from bootstrap import ROOT, environment
+from bundle_path_regressions import runtime_boundaries
 from reporting import execute
 
 
@@ -49,6 +50,9 @@ def main():
     relocated.parent.mkdir()
     shutil.copytree(bundle, relocated, symlinks=True)
     env = environment(relocated)
+    runtime_paths = runtime_boundaries(
+        parent, relocated / "bin/swiftpods", env, relocated
+    )
     subprocess.run(
         [str(relocated / "bin/swiftpods"), "runtime", "verify", "--json"],
         env=env,
@@ -97,6 +101,18 @@ def main():
     ]
     subprocess.run(arguments, env=env, check=True)
     subprocess.run(arguments, env=env, check=True)
+    launcher = prefix / "bin/swiftpods"
+    launcher.unlink()
+    result = subprocess.run(arguments, env=env, capture_output=True, text=True)
+    assert result.returncode != 0 and "launcher" in result.stderr
+    assert not launcher.exists()
+    launcher.write_text("user-owned replacement\n")
+    result = subprocess.run(arguments, env=env, capture_output=True, text=True)
+    assert result.returncode != 0 and "launcher" in result.stderr
+    assert launcher.read_text() == "user-owned replacement\n"
+    launcher.unlink()
+    launcher.symlink_to("../libexec/bin/swiftpods")
+    subprocess.run(arguments, env=env, check=True)
     result = subprocess.run(
         arguments[: arguments.index("--manifest-sha256") + 1]
         + ["0" * 64]
@@ -139,17 +155,21 @@ def main():
             {
                 "status": "passed",
                 "engine": "swift",
+                "bundle_digest": manifest["bundle_digest"],
                 "fixture": str(parent),
+                "runtime_path_boundaries": runtime_paths,
                 "verified": [
                     "runtime inventory excludes reference engine/gems",
                     "relocation",
                     "release URLs",
                     "checksummed installer",
                     "idempotent install",
+                    "missing and replaced launchers reject idempotent installation without overwriting user files",
                     "bad checksum rejected",
                     "tampered adapter rejected",
                     "release preparation rejects a changed inventory and leaves no partial destination",
                 ]
+                + ["bundle_path_" + case for case in runtime_paths]
                 + (
                     [
                         "current 60-build/18-archive matrix includes platform architecture configuration and signing status"

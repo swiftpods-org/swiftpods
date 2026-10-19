@@ -254,6 +254,62 @@
       "report": "native-host-platforms.json",
       "apple": true,
       "reference": false
+    },
+    {
+      "id": "native:lifecycle",
+      "script": "scripts/native_lifecycle_tests.py",
+      "report": "native-lifecycle.json",
+      "apple": true,
+      "reference": false
+    },
+    {
+      "id": "native:linker-manifest",
+      "script": "scripts/native_linker_manifest_tests.py",
+      "report": "native-linker-manifest.json",
+      "apple": true,
+      "reference": false
+    },
+    {
+      "id": "native:ownership-source",
+      "script": "scripts/native_ownership_source_tests.py",
+      "report": "native-ownership-source.json",
+      "apple": true,
+      "reference": false
+    },
+    {
+      "id": "native:catalog-module",
+      "script": "scripts/native_catalog_module_tests.py",
+      "report": "native-catalog-module.json",
+      "apple": true,
+      "reference": false
+    },
+    {
+      "id": "native:subspec-files",
+      "script": "scripts/native_subspec_file_tests.py",
+      "report": "native-subspec-files.json",
+      "apple": true,
+      "reference": false
+    },
+    {
+      "id": "native:resource-isolation",
+      "script": "scripts/native_resource_isolation_tests.py",
+      "report": "native-resource-isolation.json",
+      "apple": true,
+      "reference": false
+    },
+    {
+      "id": "native:lint-interface",
+      "script": "scripts/native_lint_interface_tests.py",
+      "report": "native-lint-interface.json",
+      "apple": true,
+      "reference": false
+    },
+    {
+      "id": "native:platform-inference",
+      "script": "scripts/native_platform_inference_tests.py",
+      "report": "native-platform-inference.json",
+      "apple": true,
+      "reference": false
     }
   ],
   "requirements": [
@@ -264,7 +320,8 @@
         "native-compatibility.json",
         "native-contract-reference.json",
         "native-integration.json",
-        "native-resolver-reference.json"
+        "native-resolver-reference.json",
+        "native-lifecycle.json"
       ]
     },
     {
@@ -273,7 +330,8 @@
         "native-contract-reference.json",
         "native-compatibility.json",
         "native-compatibility-reference.json",
-        "native-integration.json"
+        "native-integration.json",
+        "native-lifecycle.json"
       ]
     },
     {
@@ -283,7 +341,8 @@
         "native-compatibility.json",
         "native-contract-reference.json",
         "native-integration.json",
-        "native-resolver-reference.json"
+        "native-resolver-reference.json",
+        "native-lifecycle.json"
       ]
     },
     {
@@ -292,7 +351,8 @@
         "native-contract-reference.json",
         "native-compatibility.json",
         "native-compatibility-reference.json",
-        "native-integration.json"
+        "native-integration.json",
+        "native-lifecycle.json"
       ]
     },
     {
@@ -314,7 +374,8 @@
         "native-management.json",
         "native-source-contract.json",
         "native-compatibility-reference.json",
-        "native-mercurial.json"
+        "native-mercurial.json",
+        "native-lifecycle.json"
       ]
     },
     {
@@ -325,7 +386,8 @@
         "native-management.json",
         "native-source-contract.json",
         "native-compatibility-reference.json",
-        "native-mercurial.json"
+        "native-mercurial.json",
+        "native-lifecycle.json"
       ]
     },
     {
@@ -353,7 +415,8 @@
         "native-contract.json",
         "native-batch-reference.json",
         "native-variant-reference.json",
-        "native-compatibility-reference.json"
+        "native-compatibility-reference.json",
+        "native-lifecycle.json"
       ]
     },
     {
@@ -383,7 +446,8 @@
         "native-ui-reference.json",
         "native-script-reference.json",
         "native-swift-binary.json",
-        "native-host-platforms.json"
+        "native-host-platforms.json",
+        "native-lifecycle.json"
       ]
     },
     {
@@ -419,7 +483,8 @@
       "reports": [
         "native-ecosystem-reference.json",
         "native-configuration-reference.json",
-        "native-layout-reference.json"
+        "native-layout-reference.json",
+        "native-lifecycle.json"
       ]
     },
     {
@@ -460,7 +525,8 @@
         "native-runtime.json",
         "native-integration.json",
         "native-compatibility.json",
-        "native-mercurial.json"
+        "native-mercurial.json",
+        "native-lifecycle.json"
       ]
     },
     {
@@ -469,7 +535,8 @@
         "native-sources.json",
         "native-runtime.json",
         "native-integration.json",
-        "native-compatibility.json"
+        "native-compatibility.json",
+        "native-lifecycle.json"
       ]
     },
     {
@@ -506,7 +573,8 @@
         "native-configuration-reference.json",
         "native-ecosystem-reference.json",
         "native-layout-reference.json",
-        "native-xcconfig-reference.json"
+        "native-xcconfig-reference.json",
+        "native-lifecycle.json"
       ]
     },
     {
@@ -515,6 +583,9 @@
         "T-001",
         "T-002",
         "T-015"
+      ],
+      "reports": [
+        "native-lifecycle.json"
       ]
     },
     {
@@ -581,6 +652,9 @@
       "id": "AC-010",
       "requirements": [
         "T-025"
+      ],
+      "reports": [
+        "native-lifecycle.json"
       ]
     }
   ],
@@ -610,7 +684,8 @@
           "native-contract.json",
           "native-integration.json",
           "native-reference.json",
-          "native-compatibility-reference.json"
+          "native-compatibility-reference.json",
+          "native-lifecycle.json"
         ],
         "case": "dsl:pod"
       },
@@ -883,7 +958,10 @@
         "declarations": "native-contract-reference.json",
         "effects": [
           "native-contract.json",
-          "native-batch.json"
+          "native-batch.json",
+          "native-lifecycle.json",
+          "native-compatibility.json",
+          "native-compatibility-reference.json"
         ],
         "case": "option:share_schemes_for_development_pods"
       },
@@ -958,7 +1036,10 @@
         "effects": [
           "native-contract.json",
           "native-integration.json",
-          "native-reference.json"
+          "native-reference.json",
+          "native-lifecycle.json",
+          "native-compatibility.json",
+          "native-compatibility-reference.json"
         ],
         "case": "attribute:authors"
       },
@@ -993,7 +1074,10 @@
         "effects": [
           "native-contract.json",
           "native-integration.json",
-          "native-reference.json"
+          "native-reference.json",
+          "native-lifecycle.json",
+          "native-compatibility.json",
+          "native-compatibility-reference.json"
         ],
         "case": "attribute:default_subspecs"
       },
@@ -1002,7 +1086,10 @@
         "effects": [
           "native-contract.json",
           "native-integration.json",
-          "native-reference.json"
+          "native-reference.json",
+          "native-lifecycle.json",
+          "native-compatibility.json",
+          "native-compatibility-reference.json"
         ],
         "case": "attribute:dependencies"
       },
@@ -1088,7 +1175,10 @@
         "declarations": "native-contract-reference.json",
         "effects": [
           "native-supplementary.json",
-          "native-supplementary-reference.json"
+          "native-supplementary-reference.json",
+          "native-lifecycle.json",
+          "native-compatibility.json",
+          "native-compatibility-reference.json"
         ],
         "case": "attribute:info_plist"
       },
@@ -1106,7 +1196,10 @@
         "effects": [
           "native-contract.json",
           "native-integration.json",
-          "native-reference.json"
+          "native-reference.json",
+          "native-lifecycle.json",
+          "native-compatibility.json",
+          "native-compatibility-reference.json"
         ],
         "case": "attribute:license"
       },
@@ -1131,7 +1224,10 @@
         "effects": [
           "native-contract.json",
           "native-integration.json",
-          "native-reference.json"
+          "native-reference.json",
+          "native-lifecycle.json",
+          "native-compatibility.json",
+          "native-compatibility-reference.json"
         ],
         "case": "attribute:name"
       },
@@ -1140,7 +1236,10 @@
         "effects": [
           "native-ecosystem.json",
           "native-ecosystem-reference.json",
-          "native-supplementary-reference.json"
+          "native-supplementary-reference.json",
+          "native-lifecycle.json",
+          "native-compatibility.json",
+          "native-compatibility-reference.json"
         ],
         "case": "attribute:on_demand_resources"
       },
@@ -1148,7 +1247,10 @@
         "declarations": "native-contract-reference.json",
         "effects": [
           "native-batch.json",
-          "native-batch-reference.json"
+          "native-batch-reference.json",
+          "native-lifecycle.json",
+          "native-compatibility.json",
+          "native-compatibility-reference.json"
         ],
         "case": "attribute:platforms"
       },
@@ -1157,7 +1259,10 @@
         "effects": [
           "native-configuration.json",
           "native-configuration-reference.json",
-          "native-xcconfig-reference.json"
+          "native-xcconfig-reference.json",
+          "native-lifecycle.json",
+          "native-compatibility.json",
+          "native-compatibility-reference.json"
         ],
         "case": "attribute:pod_target_xcconfig"
       },
@@ -1165,7 +1270,10 @@
         "declarations": "native-contract-reference.json",
         "effects": [
           "native-layout.json",
-          "native-layout-reference.json"
+          "native-layout-reference.json",
+          "native-lifecycle.json",
+          "native-compatibility.json",
+          "native-compatibility-reference.json"
         ],
         "case": "attribute:prefix_header_contents"
       },
@@ -1240,7 +1348,10 @@
         "declarations": "native-contract-reference.json",
         "effects": [
           "native-batch.json",
-          "native-batch-reference.json"
+          "native-batch-reference.json",
+          "native-lifecycle.json",
+          "native-compatibility.json",
+          "native-compatibility-reference.json"
         ],
         "case": "attribute:requires_arc"
       },
@@ -1249,7 +1360,10 @@
         "effects": [
           "native-ecosystem.json",
           "native-ecosystem-reference.json",
-          "native-supplementary-reference.json"
+          "native-supplementary-reference.json",
+          "native-lifecycle.json",
+          "native-compatibility.json",
+          "native-compatibility-reference.json"
         ],
         "case": "attribute:resource_bundles"
       },
@@ -1266,7 +1380,10 @@
         "declarations": "native-contract-reference.json",
         "effects": [
           "native-supplementary.json",
-          "native-supplementary-reference.json"
+          "native-supplementary-reference.json",
+          "native-lifecycle.json",
+          "native-compatibility.json",
+          "native-compatibility-reference.json"
         ],
         "case": "attribute:scheme"
       },
@@ -1283,7 +1400,10 @@
         "declarations": "native-contract-reference.json",
         "effects": [
           "native-script-phases.json",
-          "native-script-reference.json"
+          "native-script-reference.json",
+          "native-lifecycle.json",
+          "native-compatibility.json",
+          "native-compatibility-reference.json"
         ],
         "case": "attribute:script_phases"
       },
@@ -1301,7 +1421,10 @@
         "effects": [
           "native-sources.json",
           "native-source-contract.json",
-          "native-mercurial.json"
+          "native-mercurial.json",
+          "native-lifecycle.json",
+          "native-compatibility.json",
+          "native-compatibility-reference.json"
         ],
         "case": "attribute:source"
       },
@@ -1309,7 +1432,10 @@
         "declarations": "native-contract-reference.json",
         "effects": [
           "native-layout.json",
-          "native-layout-reference.json"
+          "native-layout-reference.json",
+          "native-lifecycle.json",
+          "native-compatibility.json",
+          "native-compatibility-reference.json"
         ],
         "case": "attribute:source_files"
       },
@@ -1335,7 +1461,10 @@
         "declarations": "native-contract-reference.json",
         "effects": [
           "native-batch.json",
-          "native-batch-reference.json"
+          "native-batch-reference.json",
+          "native-lifecycle.json",
+          "native-compatibility.json",
+          "native-compatibility-reference.json"
         ],
         "case": "attribute:swift_versions"
       },
@@ -1343,7 +1472,8 @@
         "declarations": "native-contract-reference.json",
         "effects": [
           "native-supplementary.json",
-          "native-supplementary-reference.json"
+          "native-supplementary-reference.json",
+          "native-lifecycle.json"
         ],
         "case": "attribute:test_type"
       },
@@ -1352,7 +1482,10 @@
         "effects": [
           "native-configuration.json",
           "native-configuration-reference.json",
-          "native-xcconfig-reference.json"
+          "native-xcconfig-reference.json",
+          "native-lifecycle.json",
+          "native-compatibility.json",
+          "native-compatibility-reference.json"
         ],
         "case": "attribute:user_target_xcconfig"
       },
@@ -1397,7 +1530,10 @@
         "effects": [
           "native-configuration.json",
           "native-configuration-reference.json",
-          "native-xcconfig-reference.json"
+          "native-xcconfig-reference.json",
+          "native-lifecycle.json",
+          "native-compatibility.json",
+          "native-compatibility-reference.json"
         ],
         "case": "attribute:xcconfig"
       }
@@ -1546,6 +1682,118 @@
       },
       "Installer.target_installation_results_lifecycle": {
         "report": "native-compatibility-reference.json"
+      },
+      "Specification.source": {
+        "report": "native-compatibility-reference.json",
+        "effects": [
+          "native-compatibility.json",
+          "native-lifecycle.json"
+        ],
+        "case": "Specification.source"
+      },
+      "Specification.license": {
+        "report": "native-compatibility-reference.json",
+        "effects": [
+          "native-compatibility.json",
+          "native-lifecycle.json"
+        ],
+        "case": "Specification.license"
+      },
+      "Specification.consumer": {
+        "report": "native-compatibility-reference.json",
+        "effects": [
+          "native-compatibility.json",
+          "native-lifecycle.json"
+        ],
+        "case": "Specification.consumer"
+      },
+      "Consumer.source": {
+        "report": "native-compatibility-reference.json",
+        "effects": [
+          "native-compatibility.json",
+          "native-lifecycle.json"
+        ],
+        "case": "Consumer.source"
+      },
+      "Consumer.license": {
+        "report": "native-compatibility-reference.json",
+        "effects": [
+          "native-compatibility.json",
+          "native-lifecycle.json"
+        ],
+        "case": "Consumer.license"
+      },
+      "Consumer.version": {
+        "report": "native-compatibility-reference.json",
+        "effects": [
+          "native-compatibility.json",
+          "native-lifecycle.json"
+        ],
+        "case": "Consumer.version"
+      },
+      "Consumer.swift_versions": {
+        "report": "native-compatibility-reference.json",
+        "effects": [
+          "native-compatibility.json",
+          "native-lifecycle.json"
+        ],
+        "case": "Consumer.swift_versions"
+      },
+      "Consumer.authors": {
+        "report": "native-compatibility-reference.json",
+        "effects": [
+          "native-compatibility.json",
+          "native-lifecycle.json"
+        ],
+        "case": "Consumer.authors"
+      },
+      "Consumer.screenshots": {
+        "report": "native-compatibility-reference.json",
+        "effects": [
+          "native-compatibility.json",
+          "native-lifecycle.json"
+        ],
+        "case": "Consumer.screenshots"
+      },
+      "Consumer.deprecated?": {
+        "report": "native-compatibility-reference.json",
+        "effects": [
+          "native-compatibility.json",
+          "native-lifecycle.json"
+        ],
+        "case": "Consumer.deprecated?"
+      },
+      "Consumer.static_framework": {
+        "report": "native-compatibility-reference.json",
+        "effects": [
+          "native-compatibility.json",
+          "native-lifecycle.json"
+        ],
+        "case": "Consumer.static_framework"
+      },
+      "Consumer.base_name": {
+        "report": "native-compatibility-reference.json",
+        "effects": [
+          "native-compatibility.json",
+          "native-lifecycle.json"
+        ],
+        "case": "Consumer.base_name"
+      },
+      "Consumer.platform_validation": {
+        "report": "native-compatibility-reference.json",
+        "effects": [
+          "native-compatibility.json",
+          "native-lifecycle.json"
+        ],
+        "case": "Consumer.platform_validation"
+      },
+      "Consumer.stable_identity": {
+        "report": "native-compatibility-reference.json",
+        "effects": [
+          "native-compatibility.json",
+          "native-lifecycle.json"
+        ],
+        "case": "Consumer.stable_identity"
       }
     }
   },
@@ -1592,6 +1840,144 @@
         },
         "rationale": "Resolve the generated aggregate header through its actual directory and produce metadata for the unchanged manifest.",
         "documentation": "docs/BridgeSupport.md"
+      },
+      "Resolver.shared_dependency_pins": {
+        "feature": "Resolver",
+        "kind": "reference_bug_fix",
+        "preserves_input_contract": true,
+        "report": "native-compatibility-reference.json",
+        "evidence": {
+          "native-compatibility.json": [
+            "Resolver.shared_pins_preserved",
+            "Resolver.shared_pins_explicit_update"
+          ],
+          "native-compatibility-reference.json": [
+            "Resolver.shared_pins_preserved",
+            "Resolver.shared_pins_explicit_update"
+          ]
+        },
+        "rationale": "Retain identical dependency edges from distinct parents so targeted updates preserve pins owned by unchanged dependencies.",
+        "documentation": "docs/Code-Audit.md"
+      },
+      "Scheme.XML_whitespace": {
+        "feature": "Scheme",
+        "kind": "reference_bug_fix",
+        "preserves_input_contract": true,
+        "report": "native-compatibility-reference.json",
+        "evidence": {
+          "native-compatibility.json": [
+            "Scheme.whitespace_input",
+            "Scheme.whitespace_serialization"
+          ],
+          "native-compatibility-reference.json": [
+            "Scheme.whitespace_input",
+            "Scheme.whitespace_serialization"
+          ]
+        },
+        "rationale": "Preserve valid XML whitespace in unchanged scheme arguments and environment values instead of inheriting XML attribute normalization from the reference writer.",
+        "documentation": "docs/Compatibility.md"
+      },
+      "Targets.none_own_dependencies": {
+        "feature": "Targets",
+        "kind": "reference_bug_fix",
+        "preserves_input_contract": true,
+        "report": "native-compatibility-reference.json",
+        "evidence": {
+          "native-compatibility.json": [
+            "Targets.none_own_dependency_input",
+            "Targets.none_own_dependency_enabled"
+          ],
+          "native-compatibility-reference.json": [
+            "Targets.none_own_dependency_input",
+            "Targets.none_own_dependency_enabled"
+          ]
+        },
+        "rationale": "Keep a child target's own unconfigured dependencies enabled under inherit! :none; only parent dependencies and configuration whitelists stop inheriting.",
+        "documentation": "docs/Code-Audit.md"
+      },
+      "Targets.none_nested_configurations": {
+        "feature": "Targets",
+        "kind": "reference_bug_fix",
+        "preserves_input_contract": true,
+        "report": "native-batch-reference.json",
+        "evidence": {
+          "native-batch-reference.json": [
+            "Targets.none_nested_input",
+            "Targets.none_nested_configurations"
+          ],
+          "native-compatibility.json": [
+            "Targets.none_own_dependency_input",
+            "Targets.none_own_dependency_enabled"
+          ],
+          "native-compatibility-reference.json": [
+            "Targets.none_own_dependency_input",
+            "Targets.none_own_dependency_enabled"
+          ]
+        },
+        "rationale": "Preserve own default configuration enablement under none after a search_paths parent; compare all other nested inheritance fields exactly.",
+        "documentation": "docs/Code-Audit.md"
+      },
+      "Sources.mutable_checkout_pins": {
+        "feature": "Sources",
+        "kind": "reference_bug_fix",
+        "preserves_input_contract": true,
+        "report": "native-compatibility-reference.json",
+        "evidence": {
+          "native-compatibility.json": [
+            "Sources.mutable_checkout_input",
+            "Sources.mutable_checkout_pinned",
+            "Sources.mutable_checkout_explicit_update"
+          ],
+          "native-compatibility-reference.json": [
+            "Sources.mutable_checkout_input",
+            "Sources.mutable_checkout_pinned",
+            "Sources.mutable_checkout_explicit_update"
+          ]
+        },
+        "rationale": "Preserve immutable checkout options for unchanged symbolic Git/Mercurial selectors during install and deployment; explicit update remains permitted.",
+        "documentation": "docs/Code-Audit.md"
+      },
+      "ScriptPhases.boolean_log_visibility": {
+        "feature": "ScriptPhases",
+        "kind": "reference_bug_fix",
+        "preserves_input_contract": true,
+        "report": "native-compatibility-reference.json",
+        "evidence": {
+          "native-compatibility.json": [
+            "ScriptPhases.boolean_log_visibility_input",
+            "ScriptPhases.boolean_log_visibility_effect"
+          ],
+          "native-compatibility-reference.json": [
+            "ScriptPhases.boolean_log_visibility_input",
+            "ScriptPhases.boolean_log_visibility_effect"
+          ]
+        },
+        "rationale": "Interpret boolean false as disabling script environment logging instead of silently ignoring it.",
+        "documentation": "docs/Code-Audit.md"
+      },
+      "Glob.character_class_matching": {
+        "feature": "Glob",
+        "kind": "reference_bug_fix",
+        "preserves_input_contract": true,
+        "report": "native-compatibility-reference.json",
+        "evidence": {
+          "native-compatibility.json": [
+            "Glob.class_input",
+            "Glob.literal_members",
+            "Glob.path_boundaries",
+            "Glob.complete_names",
+            "Glob.case_folding"
+          ],
+          "native-compatibility-reference.json": [
+            "Glob.class_input",
+            "Glob.literal_members",
+            "Glob.path_boundaries",
+            "Glob.complete_names",
+            "Glob.case_folding"
+          ]
+        },
+        "rationale": "Use declared character-class members and consistently case-folded range endpoints for unchanged inputs instead of implicitly matching closing delimiters or inheriting asymmetric Ruby 3.4.11 case folding.",
+        "documentation": "docs/Compatibility.md"
       }
     }
   }

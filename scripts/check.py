@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from acceptance import collect
-from processes import run_logged
+from processes import run_logged, termination_signals
 from reporting import ROOT, execute, write_report
 from ruby_runtime import clean_environment, select_ruby
 
@@ -82,6 +82,7 @@ class VerificationStages:
                 self.reports.append(report)
 
 
+@termination_signals()
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(

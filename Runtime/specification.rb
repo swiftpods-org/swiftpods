@@ -59,9 +59,7 @@ module Pod
       child = self.class.new(name, self)
       child.instance_variable_set(:@spec_kind, :library)
       yield child
-      (@data["subspecs"] ||= []) << child.data
-      (@children ||= {})["subspecs"] ||= []
-      @children["subspecs"] << child
+      subspecs << child
       child
     end
 
@@ -70,9 +68,7 @@ module Pod
       child.instance_variable_set(:@spec_kind, :test)
       child.data["test_type"] = "unit"
       yield child if block_given?
-      (@data["testspecs"] ||= []) << child.data
-      (@children ||= {})["testspecs"] ||= []
-      @children["testspecs"] << child
+      subspecs << child
       child
     end
 
@@ -80,9 +76,7 @@ module Pod
       child = self.class.new(name, self)
       child.instance_variable_set(:@spec_kind, :app)
       yield child if block_given?
-      (@data["appspecs"] ||= []) << child.data
-      (@children ||= {})["appspecs"] ||= []
-      @children["appspecs"] << child
+      subspecs << child
       child
     end
 
@@ -113,16 +107,29 @@ module Pod
       found
     end
 
-    def consumer(platform) = Consumer.new(self, platform)
+    def consumer(platform)
+      input = platform.respond_to?(:name) ? platform.name : platform
+      value = platform.is_a?(Pod::Platform) ? platform : Pod::Platform.new(input)
+      raise Pod::Informative, "#{name} is not compatible with #{value.name}" unless supported_on_platform?(value.name)
+      (@consumers ||= {})[value.name] ||= Consumer.new(self, value.name)
+    end
 
     def children(key)
-      @children ||= {}
-      @children[key] ||= data.fetch(key, []).map { |attributes|
-        self.class.new(nil, self).tap { |child|
-          child.data.merge!(attributes)
-          child.instance_variable_set(:@spec_kind, CHILD_KINDS.fetch(key))
-        }
-      }
+      kind = CHILD_KINDS.fetch(key)
+      subspecs.select { |child| (child.instance_variable_get(:@spec_kind) || :library) == kind }
+    end
+
+    # All child kinds share one live collection, including specifications loaded
+    # from JSON. Mutations made by podspec helpers must reach serialization.
+    def subspecs
+      @subspecs ||= CHILD_KINDS.flat_map do |key, kind|
+        data.fetch(key, []).map do |attributes|
+          self.class.new(nil, self).tap do |child|
+            child.data.merge!(attributes)
+            child.instance_variable_set(:@spec_kind, kind)
+          end
+        end
+      end
     end
 
     class Consumer
@@ -130,7 +137,9 @@ module Pod
 
       def initialize(spec, platform)
         @spec = spec
-        @platform_name = (platform.respond_to?(:name) ? platform.name : platform).to_sym
+        input = platform.respond_to?(:name) ? platform.name : platform
+        @platform_name = Pod::Platform.new(input).name
+        raise Pod::Informative, "#{spec.name} is not compatible with #{platform}" unless spec.supported_on_platform?(platform.is_a?(Pod::Platform) ? platform : @platform_name)
       end
 
       def deployment_target

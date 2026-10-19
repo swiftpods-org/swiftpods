@@ -73,12 +73,13 @@ public struct RuntimeBundle {
                 "SP-RUNTIME-OS", stage: "runtime",
                 "Distribution requires macOS \(minimum) or newer; current host is \(currentOS)")
         }
-        guard !files.keys.contains(where: { $0.hasPrefix("runtime/") }) else {
+        let directories = Set(files.keys.compactMap { ($0 as NSString).pathComponents.first })
+        guard !directories.contains("runtime") else {
             throw Diagnostic(
                 "SP-RUNTIME-PROFILE", stage: "runtime", "SwiftPods distributions must not include a Ruby runtime")
         }
         guard manifest["engine"] as? String == "swift",
-            !files.keys.contains(where: { $0.hasPrefix("vendor/") || $0.hasPrefix("gems/") || $0 == "host/host.rb" })
+            directories.isDisjoint(with: ["vendor", "gems"]), files["host/host.rb"] == nil
         else {
             throw Diagnostic(
                 "SP-RUNTIME-ENGINE", stage: "runtime", "This launcher requires the native Swift engine distribution")
@@ -90,9 +91,9 @@ public struct RuntimeBundle {
         }
         for (relative, record) in files {
             let path = root.appendingPathComponent(relative).standardizedFileURL
-            guard !relative.hasPrefix("/"), !relative.split(separator: "/").contains(".."),
-                path.path.hasPrefix(root.path + "/"),
-                path.resolvingSymlinksInPath().path.hasPrefix(root.path + "/")
+            guard relative.utf8.first != 47, !(relative as NSString).pathComponents.contains(".."),
+                NativePath.isDescendant(path, of: root),
+                NativePath.isDescendant(path.resolvingSymlinksInPath(), of: root)
             else {
                 throw Diagnostic(
                     "SP-RUNTIME-INTEGRITY", stage: "runtime", "Bundle path escapes its root", file: relative)
@@ -131,11 +132,14 @@ public struct RuntimeBundle {
         env["SWIFTPODS_BUNDLE"] = root.path
         env["SWIFTPODS_EXECUTABLE"] =
             (Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])).resolvingSymlinksInPath().path
-        env["SWIFTPODS_CACHE_ROOT"] =
-            original["SWIFTPODS_CACHE_ROOT"] ?? original["CP_CACHE_DIR"]
-            ?? URL(fileURLWithPath: original["HOME"] ?? NSHomeDirectory())
-            .appendingPathComponent("Library/Caches/SwiftPods/" + (manifest["id"] as? String ?? "baseline")).path
+        env["SWIFTPODS_CACHE_ROOT"] = cacheRootPath(from: original)
         env["PATH"] = original["PATH"] ?? "/usr/bin:/bin"
         return env
+    }
+
+    func cacheRootPath(from environment: [String: String]) -> String {
+        environment["SWIFTPODS_CACHE_ROOT"] ?? environment["CP_CACHE_DIR"]
+            ?? URL(fileURLWithPath: environment["HOME"] ?? NSHomeDirectory())
+            .appendingPathComponent("Library/Caches/SwiftPods/" + (manifest["id"] as? String ?? "baseline")).path
     }
 }

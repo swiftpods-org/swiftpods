@@ -31,6 +31,17 @@ struct Doctor {
             }
             return value
         }
+        func contained(_ relative: String, in root: URL) throws -> URL {
+            let file = root.appendingPathComponent(relative).standardizedFileURL
+            guard !relative.isEmpty, relative.utf8.first != 47,
+                !(relative as NSString).pathComponents.contains(".."),
+                NativePath.isDescendant(file.resolvingSymlinksInPath(), of: root.resolvingSymlinksInPath())
+            else {
+                throw Diagnostic(
+                    "SP-DOCTOR-PATH", stage: "doctor", "Product path escapes its declared container", file: relative)
+            }
+            return file
+        }
         func binaryURL(_ path: URL) throws -> URL {
             guard path.pathExtension == "framework" else { return path }
             let infoPaths = [
@@ -39,7 +50,7 @@ struct Doctor {
             let name =
                 infoPaths.compactMap { try? plist($0)["CFBundleExecutable"] as? String }.first
                 ?? path.deletingPathExtension().lastPathComponent
-            return path.appendingPathComponent(name)
+            return try contained(name, in: path)
         }
         func minimumOS(_ slices: [BinarySlice], file: URL) {
             guard let deploymentTarget else { return }
@@ -108,14 +119,13 @@ struct Doctor {
                     guard let identifier = library["LibraryIdentifier"] as? String,
                         let relative = library["LibraryPath"] as? String,
                         let arches = library["SupportedArchitectures"] as? [String],
-                        let sdk = library["SupportedPlatform"] as? String,
-                        !identifier.hasPrefix("/"), !relative.hasPrefix("/"),
-                        !identifier.split(separator: "/").contains(".."), !relative.split(separator: "/").contains("..")
+                        let sdk = library["SupportedPlatform"] as? String
                     else {
                         check("xcframework_layout", "failed", "Invalid slice descriptor", file: path)
                         continue
                     }
-                    let slice = path.appendingPathComponent(identifier).appendingPathComponent(relative)
+                    let directory = try contained(identifier, in: path)
+                    let slice = try contained(relative, in: directory)
                     let sliceVariant = library["SupportedPlatformVariant"] as? String ?? "device"
                     let normalizedSDK = sdk == "macos" ? "osx" : sdk
                     if (platform == nil || normalizedSDK == platform) && (variant == nil || sliceVariant == variant)
@@ -268,16 +278,25 @@ struct Doctor {
                 let info = try? plist(application.appendingPathComponent(mac ? "Contents/Info.plist" : "Info.plist"))
                 if let name = info?["CFBundleName"] as? String { applicationNames.insert(name) }
                 if let executable = info?["CFBundleExecutable"] as? String {
-                    applicationNames.insert(executable)
-                    inspectBinary(application.appendingPathComponent((mac ? "Contents/MacOS/" : "") + executable))
+                    do {
+                        _ = try contained(executable, in: application)
+                        let path = try contained((mac ? "Contents/MacOS/" : "") + executable, in: application)
+                        applicationNames.insert(executable)
+                        inspectBinary(path)
+                    } catch { check("application", "failed", String(describing: error), file: application) }
                 } else {
                     check("application", "failed", "CFBundleExecutable is missing", file: application)
                 }
             }
             for location in ["Frameworks", "Contents/Frameworks"] {
-                let root = application.appendingPathComponent(location)
-                for path in (try? manager.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
-                where path.pathExtension == "framework" { inspectBinary(path, embedded: true) }
+                do {
+                    let root = try contained(location, in: application)
+                    for path in (try? manager.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
+                    where path.pathExtension == "framework" {
+                        let relative = NativePath.relativePath(of: path, to: application)
+                        inspectBinary(try contained(relative, in: application), embedded: true)
+                    }
+                } catch { check("application", "failed", String(describing: error), file: application) }
             }
             let resources =
                 manager.enumerator(at: application, includingPropertiesForKeys: nil)?.allObjects.compactMap {

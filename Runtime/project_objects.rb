@@ -152,7 +152,10 @@ module Xcodeproj
         entry
       end
 
-      def sources_build_phase = phase("PBXSourcesBuildPhase")
+      def source_build_phase = phase("PBXSourcesBuildPhase")
+
+      alias sources_build_phase source_build_phase
+
       def frameworks_build_phase = phase("PBXFrameworksBuildPhase")
       def resources_build_phase = phase("PBXResourcesBuildPhase")
       def headers_build_phase = phase("PBXHeadersBuildPhase")
@@ -193,7 +196,7 @@ module Xcodeproj
         value = data["path"].to_s
         return Pathname(value) if data["sourceTree"] == "<absolute>" || value.start_with?("/")
         parent = project.objects.find { |entry| entry.data.fetch("children", []).include?(uuid) }
-        base = data["sourceTree"] == "<group>" && parent ? parent.real_path : project.path.dirname
+        base = data["sourceTree"] == "<group>" && parent ? parent.real_path : project.source_root
         base + value
       end
 
@@ -236,7 +239,9 @@ module Xcodeproj
         entry
       end
 
-      def add_file_reference(reference, *arguments)
+      def add_file_reference(reference, avoid_duplicates = false)
+        existing = files.find { |entry| entry.file_ref == reference } if avoid_duplicates
+        return existing if existing
         entry = project.new_object("PBXBuildFile", "fileRef" => reference.uuid)
         files << entry
         entry
@@ -246,7 +251,7 @@ module Xcodeproj
         references.map do |reference|
           extension = File.extname(reference.path.to_s)
           phase = %w[.h .hh .hpp].include?(extension) ? headers_build_phase : sources_build_phase
-          phase.add_file_reference(reference)
+          phase.add_file_reference(reference, true)
         end
       end
 

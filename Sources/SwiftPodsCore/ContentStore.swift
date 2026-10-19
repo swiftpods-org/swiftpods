@@ -134,7 +134,7 @@ final class ContentStore {
     func clean(_ name: String?) throws -> Int {
         let entries = try list()
         let selected = entries.filter {
-            name == nil || String(describing: $0["origin"] ?? "").localizedCaseInsensitiveContains(name!)
+            name == nil || ($0["origin"] as? [String: Any])?["pod"] as? String == name
         }
         for entry in selected {
             try FileManager.default.removeItem(

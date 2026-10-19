@@ -168,7 +168,9 @@ final class NativeContractTests: XCTestCase {
             XCTAssertEqual(($0 as? Diagnostic)?.code, "SP-SPEC-ATTRIBUTE")
         }
         XCTAssertThrowsError(try NativeSpec(data: ["name": "Kit", "version": "1", "source_files": ["*.c", 12]]))
-        XCTAssertThrowsError(try NativeSpec(data: ["name": "Kit", "version": "1", "cocoapods_version": ">= 1.18"])) {
+        XCTAssertThrowsError(
+            try NativeSpec(data: ["name": "Kit", "version": "1", "cocoapods_version": ">= 1.18"]).validateProfile()
+        ) {
             XCTAssertEqual(($0 as? Diagnostic)?.code, "SP-SPEC-PROFILE")
         }
         XCTAssertThrowsError(try NativeSpec(data: ["name": "Kit", "version": "1", "module_name": "invalid-name"]))

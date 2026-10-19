@@ -24,7 +24,8 @@ enum NativeVariantLabels {
             if omitCommon { names.subtract(common) }
             var suffixes = names.map {
                 $0 == spec.name
-                    ? ".root" : String($0.dropFirst(spec.name.count + 1)).replacingOccurrences(of: "/", with: "_")
+                    ? ".root"
+                    : (NativePodName.relativeName(of: $0, to: spec.name) ?? $0).replacingOccurrences(of: "/", with: "_")
             }.sorted()
             if suffixes.isEmpty { return omitCommon ? ".common" : "" }
             if omitCommon {

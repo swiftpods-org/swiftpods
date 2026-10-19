@@ -5,7 +5,11 @@ module SwiftPods
     # User closures retain this method's lexical scope, never the protocol loop's
     # state. Names such as project, installer and request are valid user locals.
     def evaluate_file(manifest_path)
-      instance_eval(File.read(manifest_path), manifest_path, 1)
+      if File.extname(manifest_path) == ".yaml"
+        import_yaml(YAML.safe_load(File.read(manifest_path), permitted_classes: [Symbol], aliases: false))
+      else
+        instance_eval(File.read(manifest_path), manifest_path, 1)
+      end
     end
 
     attr_reader :targets, :hooks, :data

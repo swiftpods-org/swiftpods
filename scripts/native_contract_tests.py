@@ -10,6 +10,7 @@ from pathlib import Path
 
 from batch_fixture import user_project
 from bootstrap import ROOT, environment
+from processes import run_captured
 from reporting import execute
 
 
@@ -33,14 +34,16 @@ def main():
         GIT_COMMITTER_EMAIL="fixture@swiftpods.org",
     )
     binary = ROOT / ".build/debug/swiftpods"
+    sequence = 0
 
     def cli(*args, success=True, directory=work):
-        result = subprocess.run(
+        nonlocal sequence
+        sequence += 1
+        result = run_captured(
             [str(binary), *map(str, args), "--json"],
-            cwd=directory,
+            directory,
+            parent / ("cli-" + str(sequence)),
             env=env,
-            capture_output=True,
-            text=True,
             timeout=180,
         )
         assert (result.returncode == 0) == success, (args, result.stdout, result.stderr)

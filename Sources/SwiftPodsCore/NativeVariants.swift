@@ -156,6 +156,15 @@ struct NativeVariantPlan {
                 variants[variant.key]?.label += "-" + String(digest(Data(variant.key.utf8)).prefix(16))
             }
         }
+        let frameworks = variants.values.filter { $0.mode != "library" }
+        for group in Dictionary(
+            grouping: frameworks,
+            by: {
+                $0.platform + ":" + resolution.specs[$0.root]!.moduleName.lowercased()
+            }
+        ).values where Set(group.map(\.root)).count > 1 {
+            for variant in group { variants[variant.key]?.scoped = true }
+        }
     }
 
     static func closure(_ direct: [NativeDependency], resolution: NativeResolution) throws -> [NativeDependency] {
@@ -189,10 +198,12 @@ struct NativeVariantPlan {
         let selected = Set(names)
         let ancestors = Set(
             names.flatMap { name -> [String] in
-                let parts = name.split(separator: "/")
+                let parts = NativePodName.components(name)
                 return (1...parts.count).map { parts.prefix($0).joined(separator: "/") }
             })
-        for name in ancestors.sorted(by: { ($0.split(separator: "/").count, $0) < ($1.split(separator: "/").count, $1) }
+        for name in ancestors.sorted(by: {
+            (NativePodName.components($0).count, $0) < (NativePodName.components($1).count, $1)
+        }
         ) {
             let node = try spec.nodes(name).last!.data
             func eligible(_ key: String) -> Bool {
@@ -215,7 +226,7 @@ extension NativeXcode {
         return (manifest["targets"] as? [[String: Any]] ?? []).contains { target in
             guard variantPlan?.consumers[nativeConsumerKey(target)]?[variant.root] == variant.key else { return false }
             let dependencies = (target["dependencies"] as? [[String: Any]] ?? []).filter {
-                ($0["name"] as? String)?.split(separator: "/").first.map(String.init) == variant.root
+                ($0["name"] as? String).map(NativePodName.root) == variant.root
             }
             let explicit = dependencies.compactMap { ($0["options"] as? [String: Any])?["modular_headers"] as? Bool }
             return explicit.contains(true) || (!explicit.contains(false) && target["modular_headers"] as? Bool == true)
@@ -230,7 +241,7 @@ extension NativeXcode {
     }
     func matchesProduct(_ product: String, roots: Set<String>, platform: String) -> Bool {
         guard productPlatforms[product] == platform else { return false }
-        let root = productRoots[product] ?? resourceRoots[graph.objects[product]?["path"] as? String ?? ""] ?? ""
+        let root = productRoots[product] ?? resourceBundleRoots[product] ?? ""
         guard roots.contains(root) else { return false }
         return productVariants[product].map { $0 == variantKey(root, platform) } ?? true
     }
@@ -261,12 +272,19 @@ extension NativeXcode {
                 })
         ).sorted()
     }
-    func headerDirectory(_ root: String, platform: String) -> String {
-        publicHeaderDirectory(platform)
+    func headerDirectory(_ root: String, platform: String, visibility: HeaderVisibility = .publicHeaders) -> String {
+        "Pods/Headers/" + visibility.rawValue + (platformNames.count > 1 ? "/" + platform : "")
             + (variantPlan?.variants[variantKey(root, platform)].map { "/" + $0.headerScope } ?? "")
     }
     func headerSettings(_ roots: Set<String>, platform: String) -> [String] {
-        Array(Set(roots.map { "$(PODS_ROOT)" + headerDirectory($0, platform: platform).dropFirst(4) })).sorted()
+        Array(
+            Set(
+                roots.map {
+                    let expression = "$(PODS_ROOT)" + headerDirectory($0, platform: platform).dropFirst(4)
+                    // A list-form lookup would consume backslashes from PODS_ROOT.
+                    return project.path.contains("\\") ? NativeBuildSetting.quoted(expression) : expression
+                })
+        ).sorted()
     }
 
     func consumerVariantDependencies(_ user: NativePBX, target: String, roots: Set<String>, platform: String) {
@@ -284,7 +302,8 @@ extension NativeXcode {
             let portal = user.add(
                 "swiftpods:variant-project:" + owner,
                 [
-                    "isa": "PBXFileReference", "path": path.path, "sourceTree": "<absolute>",
+                    "isa": "PBXFileReference", "path": NativeBuildSetting.literal(path.path),
+                    "sourceTree": "<absolute>",
                     "lastKnownFileType": "wrapper.pb-project",
                 ])
             let key = "swiftpods:variant-dependency:" + target + ":" + product

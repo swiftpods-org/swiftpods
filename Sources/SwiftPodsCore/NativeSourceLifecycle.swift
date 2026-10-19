@@ -77,12 +77,12 @@ extension NativeSources {
                             spec.name,
                             try self.checkout(
                                 git, selector: self.pinnedSelector(spec.name, source: source),
-                                fresh: self.shouldUpdate(spec.name), submodules: source["submodules"] as? Bool == true))
-                    } else if let http = source["http"] as? String {
+                                fresh: self.shouldUpdate(spec.name), submodules: source["submodules"] as? Bool == true,
+                                pod: spec.name))
+                    } else if source["http"] != nil {
                         results.downloaded(
                             spec.name,
-                            try self.download(
-                                http, pod: spec.name, headers: source["headers"] as? [String: String] ?? [:]))
+                            try self.downloadArchive(source, pod: spec.name))
                     }
                 } catch { results.failed(spec.name, error) }
             }
@@ -113,9 +113,7 @@ extension NativeSources {
                 for patterns in (attributes["resource_bundles"] as? [String: Any] ?? [:]).values {
                     used.formUnion(try nativeGlob(patterns, root: root))
                 }
-                for value in (attributes["on_demand_resources"] as? [String: [String: Any]] ?? [:]).values {
-                    used.formUnion(try nativeGlob(value["paths"], root: root))
-                }
+                used.formUnion(try NativeOnDemandResources(attributes: attributes, root: root).files.keys)
             }
             used.formUnion(
                 try nativeGlob(
@@ -127,11 +125,11 @@ extension NativeSources {
             if installationOptions["clean"] as? Bool != false,
                 let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)
             {
-                let retained = used.map { $0.standardizedFileURL.path.lowercased() }
+                let retained = used.map { $0.standardizedFileURL.pathComponents.map { $0.lowercased() } }
                 while let path = enumerator.nextObject() as? URL {
-                    let value = path.path.lowercased()
+                    let value = path.standardizedFileURL.pathComponents.map { $0.lowercased() }
                     if !retained.contains(where: {
-                        $0 == value || $0.hasPrefix(value + "/") || value.hasPrefix($0 + "/")
+                        $0.starts(with: value) || value.starts(with: $0)
                     }) {
                         enumerator.skipDescendants()
                         try FileManager.default.removeItem(at: path)
@@ -149,10 +147,12 @@ extension NativeSources {
                 "Pods/Target Support Files/" + spec.name + "/source-state.json")
             try FileManager.default.createDirectory(
                 at: receipt.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try jsonData([
-                "identity": sourceIdentity(spec),
-                "fingerprint": FileFingerprint.tree(root, requireContainedLinks: true), "checkout": spec.checkout,
-            ]).write(to: receipt, options: .atomic)
+            try jsonData(
+                NativeSourceState.metadata(
+                    identity: sourceIdentity(spec),
+                    fingerprint: FileFingerprint.tree(root, requireContainedLinks: true),
+                    checkout: spec.checkout)
+            ).write(to: receipt, options: .atomic)
         }
     }
 }
@@ -162,7 +162,7 @@ enum NativeVCS {
         try NativeSourceOptions.validate(source, file: destination.path)
         var checkout: [String: String] = [:]
         if let location = source["svn"] as? String {
-            guard !location.hasPrefix("-") else {
+            guard !CommandOptions.hasOptionPrefix(location) else {
                 throw Diagnostic("SP-SOURCE-URL", stage: "download", "Invalid SVN source")
             }
             let suffix = source["tag"] as? String ?? source["branch"] as? String ?? source["folder"] as? String
@@ -183,7 +183,7 @@ enum NativeVCS {
             for key in ["tag", "branch", "folder"] { if let value = source[key] as? String { checkout[key] = value } }
             try command("/usr/bin/env", arguments + ["--", url, destination.path])
         } else if let location = source["hg"] as? String {
-            guard !location.hasPrefix("-") else {
+            guard !CommandOptions.hasOptionPrefix(location) else {
                 throw Diagnostic("SP-SOURCE-URL", stage: "download", "Invalid Mercurial source")
             }
             let revision =

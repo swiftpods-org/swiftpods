@@ -84,5 +84,8 @@ class Pod::Lockfile
     end
   end
 
-  def version(name) = versions[name]
+  def version(name)
+    locked = versions
+    locked[name] || locked.find { |pod, _| pod.split("/", 2).first == name }&.last
+  end
 end

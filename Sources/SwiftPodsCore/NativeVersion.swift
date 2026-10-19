@@ -1,7 +1,7 @@
 import Foundation
 
 /// Pod versions preserve their spelling while comparing numeric components
-/// without integer overflow and normalizing zeros before prerelease components.
+/// without integer overflow. Only release components normalize trailing zeros.
 struct PodVersion: Comparable, Hashable, CustomStringConvertible {
     private enum Segment: Comparable, Hashable {
         case number(String)
@@ -34,43 +34,59 @@ struct PodVersion: Comparable, Hashable, CustomStringConvertible {
                 return left.lexicographicallyPrecedes(right)
             case (.text(let left), .text(let right)):
                 return left < right
-            case (.text, .number): return true
-            case (.number, .text): return false
+            case (.text, .number): return false
+            case (.number, .text): return true
             }
         }
     }
 
     let description: String
     private let releaseSegments: [Segment]
-    private let comparisonSegments: [Segment]
+    private let canonicalRelease: [Segment]
+    private let prereleaseSegments: [Segment]?
     let isPrerelease: Bool
 
     init(_ value: String) throws {
-        guard value.range(of: #"\A[0-9]+(?:\.[0-9A-Za-z]+)*(?:-[0-9A-Za-z.]+)?\z"#, options: .regularExpression) != nil
+        let value = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard
+            value.range(of: #"\A[0-9]+(?:\.[0-9A-Za-z-]++)*(?:\+[0-9A-Za-z.-]+)?\z"#, options: .regularExpression)
+                != nil
         else {
             throw Diagnostic("SP-SPEC-VERSION", stage: "resolve", "Invalid pod version: \(value)")
         }
         description = value
-        let normalized = value.replacingOccurrences(of: "-", with: ".pre.")
+        // Build metadata is retained for serialization but has no version precedence.
+        let comparable = String(value.split(separator: "+", maxSplits: 1)[0])
+        // CocoaPods classifies hyphenated versions as prereleases, while numeric
+        // segments before the first letter still contribute to release precedence.
+        isPrerelease = comparable.contains { $0.isLetter || $0 == "-" }
         let expression = try NSRegularExpression(pattern: "[0-9]+|[A-Za-z]+")
-        let segments = expression.matches(in: normalized, range: NSRange(normalized.startIndex..., in: normalized))
-            .compactMap {
-                Range($0.range, in: normalized).map { Segment(String(normalized[$0])) }
+        func tokenize(_ text: String) -> [Segment] {
+            expression.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap {
+                Range($0.range, in: text).map { Segment(String(text[$0])) }
             }
+        }
+        let segments = tokenize(comparable)
         releaseSegments = Array(segments.prefix(while: \.isNumber))
         let prerelease = Array(segments.dropFirst(releaseSegments.count))
-        isPrerelease = !prerelease.isEmpty
-        comparisonSegments = Self.trimZeros(releaseSegments) + Self.trimZeros(prerelease)
+        prereleaseSegments = prerelease.isEmpty ? nil : prerelease
+        canonicalRelease = Self.trimZeros(releaseSegments)
     }
 
     private init(releaseSegments: [Segment]) {
         description = releaseSegments.map(\.spelling).joined(separator: ".")
         self.releaseSegments = releaseSegments
-        comparisonSegments = Self.trimZeros(releaseSegments)
+        canonicalRelease = Self.trimZeros(releaseSegments)
+        prereleaseSegments = nil
         isPrerelease = false
     }
 
     var release: Self { Self(releaseSegments: releaseSegments) }
+
+    /// Keep precedence semantic, but select a deterministic spelling for equal versions.
+    func isPreferred(to other: Self) -> Bool {
+        self == other ? description > other.description : self > other
+    }
 
     /// Precision comes from the declared numeric components, including a digit
     /// component immediately followed by a prerelease letter, as in 1.2.3a.
@@ -98,18 +114,24 @@ struct PodVersion: Comparable, Hashable, CustomStringConvertible {
     }
 
     static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.comparisonSegments == rhs.comparisonSegments
+        lhs.canonicalRelease == rhs.canonicalRelease && lhs.prereleaseSegments == rhs.prereleaseSegments
     }
 
-    func hash(into hasher: inout Hasher) { hasher.combine(comparisonSegments) }
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(canonicalRelease)
+        hasher.combine(prereleaseSegments)
+    }
 
     static func < (lhs: Self, rhs: Self) -> Bool {
-        for index in 0..<max(lhs.comparisonSegments.count, rhs.comparisonSegments.count) {
-            let left = index < lhs.comparisonSegments.count ? lhs.comparisonSegments[index] : .number("0")
-            let right = index < rhs.comparisonSegments.count ? rhs.comparisonSegments[index] : .number("0")
-            if left != right { return left < right }
+        if lhs.canonicalRelease != rhs.canonicalRelease {
+            return lhs.canonicalRelease.lexicographicallyPrecedes(rhs.canonicalRelease)
         }
-        return false
+        switch (lhs.prereleaseSegments, rhs.prereleaseSegments) {
+        case (nil, _): return false
+        case (_, nil): return true
+        case (.some(let left), .some(let right)):
+            return left.lexicographicallyPrecedes(right)
+        }
     }
 }
 

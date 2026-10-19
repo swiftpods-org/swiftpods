@@ -47,9 +47,9 @@ final class NativeXcode {
         ).sorted()
     }
     func variantKey(_ name: String, _ platform: String) -> String {
-        let root = String(name.split(separator: "/").first ?? "")
+        let root = NativePodName.root(name)
         if let key = activeVariants[root], variantPlan?.variants[key]?.platform == platform {
-            return key + (name == root ? "" : "::" + name.dropFirst(root.count + 1))
+            return key + (name == root ? "" : "::" + (NativePodName.relativeName(of: name, to: root) ?? name))
         }
         return name + ":" + platform
     }
@@ -60,11 +60,15 @@ final class NativeXcode {
     var configurationNames: [String] {
         ["Debug", "Release"] + configurationTypes.keys.filter { !["Debug", "Release"].contains($0) }.sorted()
     }
-    var resourceRoots: [String: String] = [:]
     var frameworkResourceBundles = Set<String>()
+    var resourceBundleRoots: [String: String] = [:]
+    var resourceBundleLabels: [String: String] = [:]
+    var customModuleMaps: [String: URL] = [:]
     var vendorSDKs: [String: [NativeVendorSDK]] = [:]
-    init(project: URL, manifest: [String: Any], resolution: NativeResolution, integrateUserProjects: Bool = true) throws
-    {
+    init(
+        project: URL, manifest: [String: Any], resolution: NativeResolution, integrateUserProjects: Bool = true,
+        projectBindings: [String: String]? = nil
+    ) throws {
         self.project = project
         self.manifest = manifest
         self.resolution = resolution
@@ -84,13 +88,33 @@ final class NativeXcode {
             integrationSettings = try readObject(integrationSettingsURL)
             previousProducts.formUnion(integrationSettings["_products"] as? [String] ?? [])
         }
+        let selectedProjects =
+            projectBindings
+            ?? NativeIntegrationLocation.projectBindings(manifest, analyzed: manifest, root: project)
+        let previousRoot = NativeIntegrationLocation.previousRoot(integrationSettings)
+        integrationSettings = try NativeIntegrationLocation.relocated(
+            integrationSettings, to: project, selected: selectedProjects,
+            selectedWorkspaces: NativeIntegrationLocation.workspaceBindings(
+                manifest, projects: selectedProjects, root: project))
         for target in integrateUserProjects ? (manifest["targets"] as? [[String: Any]] ?? []) : [] {
             let path = try projectPath(target)
-            if userProjects[path.path] == nil { userProjects[path.path] = try NativePBX(path, existing: true) }
+            if userProjects[path.path] == nil {
+                let user = try NativePBX(path, existing: true)
+                if let previousRoot {
+                    try NativeIntegrationLocation.relocateGeneratedConfigurations(user, from: previousRoot, to: project)
+                }
+                userProjects[path.path] = user
+            }
         }
-        if let workspace = workspacePath() {
+        var workspaces = Set((integrationSettings["_workspaces"] as? [String: [String]] ?? [:]).keys)
+        if let workspace = workspacePath() { workspaces.insert(workspace.path) }
+        for raw in workspaces.sorted() {
+            let workspace = URL(fileURLWithPath: raw).standardizedFileURL.resolvingSymlinksInPath()
+            guard workspace.lastPathComponent == "contents.xcworkspacedata",
+                workspace.deletingLastPathComponent().pathExtension == "xcworkspace"
+            else { throw Diagnostic("SP-WORKSPACE", stage: "integrate", "Invalid owned workspace", file: raw) }
             try ProjectState(directory: project).registerProject(workspace)
-            workspaceFingerprints[workspace.path] = try FileFingerprint.tree(workspace)
+            workspaceFingerprints[raw] = try FileFingerprint.tree(workspace)
         }
         for user in userProjects.values {
             for object in user.objects.values where object["isa"] as? String == "XCBuildConfiguration" {
@@ -129,6 +153,7 @@ final class NativeXcode {
             return target
         }
         variantPlan = try NativeVariantPlan(manifest: analyzed, resolution: resolution)
+        try validateFrameworkModules()
     }
     func workspacePath() -> URL? {
         guard let first = userProjects.values.sorted(by: { $0.url.path < $1.url.path }).first else { return nil }
@@ -158,8 +183,12 @@ final class NativeXcode {
         var ids: [String: String] = [:]
         let entries: [[String: Any]] = configurationNames.map { configuration in
             var value = settings
-            value["SWIFT_OPTIMIZATION_LEVEL"] = configurationTypes[configuration] == "debug" ? "-Onone" : "-O"
-            value["GCC_OPTIMIZATION_LEVEL"] = configurationTypes[configuration] == "debug" ? "0" : "s"
+            if value["SWIFT_OPTIMIZATION_LEVEL"] == nil {
+                value["SWIFT_OPTIMIZATION_LEVEL"] = configurationTypes[configuration] == "debug" ? "-Onone" : "-O"
+            }
+            if value["GCC_OPTIMIZATION_LEVEL"] == nil {
+                value["GCC_OPTIMIZATION_LEVEL"] = configurationTypes[configuration] == "debug" ? "0" : "s"
+            }
             if value["ENABLE_TESTABILITY"] == nil {
                 value["ENABLE_TESTABILITY"] = configurationTypes[configuration] == "debug" ? "YES" : "NO"
             }
@@ -179,8 +208,18 @@ final class NativeXcode {
             ])
     }
     func file(_ path: String, type: String? = nil, sourceTree: String = "<absolute>") -> String {
-        var object: [String: Any] = ["isa": "PBXFileReference", "path": path, "sourceTree": sourceTree]
-        if let type { object["lastKnownFileType"] = type }
+        var object: [String: Any] = [
+            "isa": "PBXFileReference", "path": NativeBuildSetting.literal(path), "sourceTree": sourceTree,
+        ]
+        if let type {
+            object["lastKnownFileType"] = type
+        } else if URL(fileURLWithPath: path).pathExtension == "C" {
+            object["lastKnownFileType"] = "sourcecode.cpp.cpp"
+        } else if URL(fileURLWithPath: path).pathExtension == "M" {
+            object["lastKnownFileType"] = "sourcecode.cpp.objcpp"
+        } else if URL(fileURLWithPath: path).pathExtension == "metal" {
+            object["lastKnownFileType"] = "sourcecode.metal"
+        }
         return graph.add("file:" + path, object)
     }
     func buildFile(_ reference: String, target: String, settings: [String: Any] = [:]) -> String {

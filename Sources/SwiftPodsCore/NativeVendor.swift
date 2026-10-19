@@ -37,7 +37,7 @@ struct NativeVendorSDK {
             }
             var identifiers = Set<String>()
             for library in libraries {
-                guard let identifier = library["LibraryIdentifier"] as? String, !identifier.contains("/"),
+                guard let identifier = library["LibraryIdentifier"] as? String, !identifier.utf8.contains(47),
                     identifiers.insert(identifier).inserted,
                     let path = library["LibraryPath"] as? String,
                     let platform = library["SupportedPlatform"] as? String,
@@ -182,13 +182,13 @@ struct NativeVendorSDK {
         return try contained(executable, in: library.resolvingSymlinksInPath())
     }
     private static func contained(_ relative: String, in root: URL) throws -> URL {
-        guard !relative.isEmpty, !relative.hasPrefix("/"), !relative.contains("\n"), !relative.contains("\r"),
-            !relative.split(separator: "/").contains(where: { $0 == ".." || $0 == "." })
+        guard !relative.isEmpty, relative.utf8.first != 47, !relative.utf8.contains(where: { $0 == 10 || $0 == 13 }),
+            !(relative as NSString).pathComponents.contains(where: { $0 == ".." || $0 == "." })
         else {
             throw Diagnostic("SP-XCFRAMEWORK-PATH", stage: "integrate", "SDK path escapes its library", file: relative)
         }
         let file = root.appendingPathComponent(relative).standardizedFileURL
-        guard file.resolvingSymlinksInPath().path.hasPrefix(root.resolvingSymlinksInPath().path + "/"),
+        guard NativePath.isDescendant(file.resolvingSymlinksInPath(), of: root.resolvingSymlinksInPath()),
             FileManager.default.fileExists(atPath: file.path)
         else {
             throw Diagnostic(

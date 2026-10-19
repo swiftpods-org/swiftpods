@@ -6,7 +6,7 @@ struct NativeCommandRequest {
     let arguments: [String]
     let project: URL
 
-    init(_ tokens: [String]) throws {
+    init(_ tokens: [String], project: URL? = nil) throws {
         guard let action = tokens.first, !action.isEmpty else {
             throw Diagnostic("SP-CLI-ARGUMENT", stage: "cli", "A command is required")
         }
@@ -14,7 +14,7 @@ struct NativeCommandRequest {
         let path = try CommandOptions.take("--project-directory", from: &arguments)
         self.action = action
         self.arguments = arguments
-        project = URL(fileURLWithPath: path ?? FileManager.default.currentDirectoryPath)
+        self.project = URL(fileURLWithPath: path ?? project?.path ?? FileManager.default.currentDirectoryPath)
             .standardizedFileURL.resolvingSymlinksInPath()
     }
 }

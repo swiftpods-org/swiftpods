@@ -16,6 +16,7 @@ import zipfile
 from pathlib import Path
 
 from bootstrap import ROOT, environment
+from bundle_path_regressions import runtime_boundaries
 from reporting import execute
 
 
@@ -27,6 +28,9 @@ def main():
     env = environment()
     env["SWIFTPODS_CACHE_ROOT"] = str(parent / "cache")
     binary = ROOT / ".build/debug/swiftpods"
+    runtime_paths = runtime_boundaries(
+        parent, binary, env, Path(env["SWIFTPODS_BUNDLE"])
+    )
 
     def cli(*args, success=True):
         result = subprocess.run(
@@ -150,6 +154,7 @@ end
                     "version": "1.0",
                     "source": {
                         "http": f"http://127.0.0.1:{server.server_port}/{name}.zip",
+                        "flatten": True,
                         "sha256": hashlib.sha256(
                             web.joinpath(name + ".zip").read_bytes()
                         ).hexdigest(),
@@ -235,7 +240,9 @@ end
             "clean-install bypass and explicit clean/lock opt-outs",
         ],
         "unverified": ["cancellation during remote authenticated operations"],
+        "runtime_path_boundaries": runtime_paths,
     }
+    report["verified"].extend("bundle_path_" + case for case in runtime_paths)
     ROOT.joinpath("test-results/native-runtime.json").write_text(
         json.dumps(report, indent=2) + "\n"
     )

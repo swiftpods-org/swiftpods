@@ -4,6 +4,18 @@ struct ArtifactIntegrity {
     let project: URL
     var path: URL { project.appendingPathComponent(".swiftpods/Integrity.lock") }
 
+    private func artifactPath(_ relative: String) throws -> URL {
+        let components = (relative as NSString).pathComponents
+        let root = project.appendingPathComponent("Pods").resolvingSymlinksInPath()
+        let file = project.appendingPathComponent(relative).resolvingSymlinksInPath()
+        guard components.first == "Pods", components.count > 1, !components.contains(".."),
+            NativePath.isDescendant(file, of: root)
+        else {
+            throw Diagnostic("SP-INTEGRITY-PATH", stage: "integrity", "Invalid artifact path", file: relative)
+        }
+        return file
+    }
+
     func verify(allowMissing: Bool = false) throws -> [String: Any] {
         let lock = try readObject(path)
         guard lock["schema_version"] as? Int == 1,
@@ -18,12 +30,11 @@ struct ArtifactIntegrity {
         }
         var missing: [String] = []
         for artifact in artifacts {
-            guard let relative = artifact["path"] as? String, relative.hasPrefix("Pods/"),
-                !relative.split(separator: "/").contains("..")
+            guard let relative = artifact["path"] as? String
             else {
                 throw Diagnostic("SP-INTEGRITY-PATH", stage: "integrity", "Invalid artifact path", file: path.path)
             }
-            let file = project.appendingPathComponent(relative)
+            let file = try artifactPath(relative)
             let actual = try FileFingerprint.tree(file, requireContainedLinks: true)
             if actual == "absent" && allowMissing {
                 missing.append(relative)
@@ -55,14 +66,14 @@ struct ArtifactIntegrity {
         var artifacts: [[String: Any]] = []
         var roots = Set<String>()
         for spec in report["specs"] as? [[String: Any]] ?? [] where spec["local"] as? Bool != true {
-            guard let name = (spec["name"] as? String)?.split(separator: "/").first.map(String.init),
+            guard let name = (spec["name"] as? String).map(NativePodName.root),
                 roots.insert(name).inserted
             else { continue }
             guard !name.isEmpty, name != ".", name != "..", !name.contains("/") else {
                 throw Diagnostic("SP-INTEGRITY-PATH", stage: "integrity", "Invalid root pod name")
             }
             let relative = "Pods/" + name
-            let value = try FileFingerprint.tree(project.appendingPathComponent(relative), requireContainedLinks: true)
+            let value = try FileFingerprint.tree(artifactPath(relative), requireContainedLinks: true)
             guard value != "absent" else {
                 throw Diagnostic("SP-INTEGRITY-MISSING", stage: "integrity", "SDK is not installed", file: relative)
             }

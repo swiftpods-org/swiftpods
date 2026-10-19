@@ -11,8 +11,19 @@ from pathlib import Path
 
 from batch_fixture import user_project
 from bootstrap import ROOT, environment
+from glob_character_class_regressions import character_class_parity
+from glob_scalar_regressions import scalar_parity
+from input_contract_regressions import inheritance_case
+from name_boundary_regressions import name_parity
 from reference_compare import reference_environment
 from reporting import execute
+from source_input_regressions import mutable_checkout_case
+from structured_input_regressions import (
+    scheme_whitespace_parity,
+    structured_input_parity,
+)
+from unicode_path_regressions import path_parity
+from value_contract_regressions import serialized_input_parity
 
 FILE_API = r"""
 pre_install do |installer|
@@ -339,7 +350,8 @@ def main():
             and pin(work, "SharedKit") == "2.0"
             and pin(work, "RootB") == "1.0"
         )
-    # Identical lock dependency strings are deduplicated by the baseline graph.
+    # Keep both parents when lock dependency strings are identical. The reference
+    # loses the second edge; native intentionally preserves the unchanged parent.
     spec(second, "SameShared", "1.0", "same-shared")
     spec(second, "SameA", "1.0", "same-a", {"SameShared": [">= 1"]})
     spec(second, "SameB", "1.0", "same-b", {"SameShared": [">= 1"]})
@@ -358,6 +370,16 @@ def main():
     spec(second, "SameA", "2.0", "new-same-a", {"SameShared": [">= 2"]})
     for engine, work in repeated.items():
         arguments = ["update", "SameA"] + (
+            ["--repo-update"] if engine == "native" else []
+        )
+        (native if engine == "native" else reference)(work, *arguments)
+        expected = "1.0" if engine == "native" else "2.0"
+        assert (
+            pin(work, "SameA") == expected
+            and pin(work, "SameShared") == expected
+            and pin(work, "SameB") == "1.0"
+        )
+        arguments = ["update", "SameA", "SameShared"] + (
             ["--repo-update"] if engine == "native" else []
         )
         (native if engine == "native" else reference)(work, *arguments)
@@ -574,6 +596,48 @@ def main():
         )
         assert (work / "last-hook.txt").read_text() == "second"
     duplicate_cases.append("Podfile.replace_duplicate_pre_install")
+    inheritance = inheritance_case(parent / "none-own-native", native, native_env)
+    assert inheritance["build_status"] == 0 and not inheritance["diagnostics"], (
+        inheritance
+    )
+    if args.gem_home:
+        baseline_inheritance = inheritance_case(
+            parent / "none-own-reference", reference, reference_env
+        )
+        assert baseline_inheritance["input_sha256"] == inheritance["input_sha256"]
+        assert baseline_inheritance["build_status"] == 65 and any(
+            "Undefined symbols" in value
+            for value in baseline_inheritance["diagnostics"]
+        ), baseline_inheritance
+    checkout_cases = {}
+    baseline_checkouts = {}
+    for vcs in ["git", "hg"]:
+        observed = mutable_checkout_case(
+            parent / ("mutable-native-" + vcs), native, native_env, vcs
+        )
+        assert (
+            observed["preserved"]
+            and observed["deployment_preserved"]
+            and observed["immutable_lock"]
+            and observed["unchanged_lock"]
+            and observed["updated"]
+        ), observed
+        checkout_cases[vcs] = observed
+        if args.gem_home:
+            baseline = mutable_checkout_case(
+                parent / ("mutable-reference-" + vcs), reference, reference_env, vcs
+            )
+            assert baseline["input_sha256"] == observed["input_sha256"], (
+                observed,
+                baseline,
+            )
+            assert (
+                not baseline["preserved"]
+                and not baseline["deployment_preserved"]
+                and not baseline["immutable_lock"]
+                and baseline["updated"]
+            ), baseline
+            baseline_checkouts[vcs] = baseline
     verified = [
         "locked spec repository preserved when an earlier source gains the same version",
         "unchanged version pin remains a constraint when a new dependency conflicts",
@@ -590,7 +654,7 @@ def main():
         "removing a prerelease requirement conflicts with its locked prerelease; explicit update selects a stable version",
         "new direct declaration does not unlock an existing transitive dependency",
         "targeted update keeps distinct shared edges pinned; explicitly selecting the shared dependency unlocks it",
-        "identical dependency strings follow baseline lock-graph deduplication during targeted update",
+        "targeted update preserves identical shared edges until the shared dependency is explicitly selected",
     ]
     cases = [
         "FileAccessor." + name
@@ -645,10 +709,69 @@ def main():
         ]
     ]
     cases += ["Installer.target_installation_results_lifecycle"]
+    cases += ["Resolver.shared_pins_preserved", "Resolver.shared_pins_explicit_update"]
+    cases += [
+        "Targets.none_own_dependency_input",
+        "Targets.none_own_dependency_enabled",
+    ]
+    cases += [
+        "Sources.mutable_checkout_input",
+        "Sources.mutable_checkout_pinned",
+        "Sources.mutable_checkout_explicit_update",
+    ]
+    verified += [
+        "explicit symbolic Git/Mercurial selectors retain immutable checkout pins until update"
+    ]
     verified += [
         "full root/abstract/concrete target tree with stable object identities across all four hooks",
         "same-named targets in separate projects preserve their distinct hook mutations",
         "installation results remain nil before generation and when generation is skipped",
+    ]
+    glob_values = character_class_parity(parent, engines, native, reference)
+    scalar_globs = scalar_parity(parent, engines, native, reference)
+    unicode_paths = path_parity(parent, engines, native, reference)
+    unicode_names = name_parity(parent, engines, native, reference)
+    verified += [
+        "Unicode filesystem components preserve source selection, header mapping, cleanup and symlinks"
+    ]
+    cases += [
+        "Glob.class_input",
+        "Glob.literal_members",
+        "Glob.path_boundaries",
+        "Glob.complete_names",
+        "Glob.case_folding",
+    ]
+    verified += [
+        "glob character classes preserve literal members, ranges and path boundaries",
+        "glob matches complete filenames and preserves exclusions, visibility and resources",
+    ]
+    serialized_values = serialized_input_parity(parent, engines, native, reference)
+    structured_values = structured_input_parity(parent, engines, native, reference)
+    scheme_values = scheme_whitespace_parity(parent, engines, native, reference)
+    cases += ["Scheme.whitespace_input", "Scheme.whitespace_serialization"]
+    verified += ["scheme XML preserves launch arguments and environment whitespace"]
+    cases += [
+        "ScriptPhases.boolean_log_visibility_input",
+        "ScriptPhases.boolean_log_visibility_effect",
+    ]
+    cases += [
+        "Specification.source",
+        "Specification.license",
+        "Specification.consumer",
+        "Consumer.source",
+        "Consumer.license",
+        "Consumer.version",
+        "Consumer.swift_versions",
+        "Consumer.authors",
+        "Consumer.screenshots",
+        "Consumer.deprecated?",
+        "Consumer.static_framework",
+        "Consumer.base_name",
+        "Consumer.platform_validation",
+        "Consumer.stable_identity",
+    ]
+    verified += [
+        "serialized numeric dependency requirements, Swift versions and invalid attribute containers"
     ]
     report = {
         "status": "passed",
@@ -656,6 +779,15 @@ def main():
         "fixture": str(parent),
         "verified": verified,
         "verified_cases": cases,
+        "none_own_dependency": inheritance,
+        "mutable_checkout_inputs": checkout_cases,
+        "serialized_values": serialized_values,
+        "structured_values": structured_values,
+        "scheme_whitespace": scheme_values,
+        "glob_character_classes": glob_values,
+        "scalar_globs": scalar_globs,
+        "unicode_paths": unicode_paths,
+        "unicode_names": unicode_names,
         "unverified": ["arbitrary private plugin APIs", "remote authenticated sources"],
     }
     name = (
@@ -665,6 +797,68 @@ def main():
     )
     if args.gem_home:
         report["reference"] = "1.17.0"
+        report["differences"] = [
+            {
+                "id": "Glob.character_class_matching",
+                "feature": "Glob",
+                "reference": "Ruby 3.4.11 includes implicit closing delimiters and inconsistently folds class members and range endpoints",
+                "native": "uses declared literal members and consistent case-insensitive ranges for unchanged patterns",
+                "parity": False,
+                "observation": {
+                    key: glob_values[key]
+                    for key in [
+                        "literal-opening",
+                        "literal-set",
+                        "escaped-letter",
+                        "unicode-class",
+                        "literal-casefold",
+                        "mixed-descending",
+                        "mixed-descending-other",
+                    ]
+                },
+            },
+            {
+                "id": "Scheme.XML_whitespace",
+                "feature": "Scheme",
+                "reference": "literal XML attribute whitespace is normalized to spaces",
+                "native": "character references preserve unchanged arguments and environment values",
+                "parity": False,
+                "observation": scheme_values,
+            },
+            {
+                "id": "ScriptPhases.boolean_log_visibility",
+                "feature": "ScriptPhases",
+                "reference": "accepts false but keeps environment logging enabled",
+                "native": "accepts false and disables environment logging",
+                "parity": False,
+                "observation": {
+                    engine: values[-1] for engine, values in structured_values.items()
+                },
+            },
+            {
+                "id": "Sources.mutable_checkout_pins",
+                "feature": "Sources",
+                "reference": "symbolic commit/revision selectors can change downloaded bytes during install and deployment",
+                "native": "uses the immutable checkout recorded in lock until explicitly updated",
+                "parity": False,
+                "observation": baseline_checkouts,
+            },
+            {
+                "id": "Targets.none_own_dependencies",
+                "feature": "Targets",
+                "reference": "none disables a child target's own unconfigured dependency",
+                "native": "none restricts inheritance while preserving the child's own dependency",
+                "parity": False,
+                "observation": baseline_inheritance,
+            },
+            {
+                "id": "Resolver.shared_dependency_pins",
+                "feature": "Resolver",
+                "reference": "identical lock edges lose the unchanged parent and unlock its shared dependency",
+                "native": "retains every parent and keeps shared pins until explicitly included in the update",
+                "parity": False,
+            },
+        ]
     (ROOT / "test-results" / name).write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2))
 
@@ -672,7 +866,9 @@ def main():
 if __name__ == "__main__":
     execute(
         main,
-        "native-compatibility-reference.json"
-        if "--gem-home" in sys.argv
-        else "native-compatibility.json",
+        (
+            "native-compatibility-reference.json"
+            if "--gem-home" in sys.argv
+            else "native-compatibility.json"
+        ),
     )

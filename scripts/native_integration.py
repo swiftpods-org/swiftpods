@@ -16,14 +16,14 @@ def serialize(value):
         return (
             "{"
             + "".join(
-                json.dumps(str(key)) + "=" + serialize(item) + ";"
+                json.dumps(str(key), ensure_ascii=False) + "=" + serialize(item) + ";"
                 for key, item in value.items()
             )
             + "}"
         )
     if isinstance(value, list):
         return "(" + ",".join(serialize(item) for item in value) + ")"
-    return json.dumps(str(value))
+    return json.dumps(str(value), ensure_ascii=False)
 
 
 def project(path, platform="osx"):

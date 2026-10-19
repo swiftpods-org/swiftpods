@@ -588,7 +588,9 @@ swiftpods install --deployment
 swiftpods install --repo-update
 swiftpods update
 swiftpods update ExampleSDK
+swiftpods update ExampleSDK --no-repo-update
 swiftpods outdated
+swiftpods outdated --ignore-prerelease
 swiftpods repo list
 swiftpods repo add CompanySpecs https://example.invalid/specs.git
 swiftpods repo update CompanySpecs
@@ -601,6 +603,19 @@ swiftpods deintegrate
 ```
 
 `init` не перезаписывает существующий Podfile. `deintegrate` удаляет только распознанную pod-интеграцию; сторонние SPM references и пользовательские фазы не удаляются.
+
+`update` обновляет каталоги спецификаций перед разрешением зависимостей;
+`--no-repo-update` сохраняет их текущий cache. `install --repo-update` обновляет
+только каталоги и не разблокирует исходники закреплённых зависимостей, включая
+HTTP archives. Offline-операции не обращаются к удалённым источникам.
+
+`outdated` показывает установленную, допустимую по manifest и последнюю
+доступную версию, даже если manifest запрещает обновление. В JSON поля
+`installed`, `available` и `latest` различают эти значения; `--ignore-prerelease`
+исключает prerelease из поиска последней версии.
+
+`lint --quick` пропускает сборку, сохраняя проверку типов во всех вложенных
+library, test и app specifications.
 
 Дополнительные команды продукта:
 

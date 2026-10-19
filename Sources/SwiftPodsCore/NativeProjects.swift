@@ -8,7 +8,7 @@ extension NativeXcode {
     func projectNameForPod(_ root: String) -> String {
         for target in manifest["targets"] as? [[String: Any]] ?? [] {
             for dependency in target["dependencies"] as? [[String: Any]] ?? []
-            where (dependency["name"] as? String)?.split(separator: "/").first.map(String.init) == root {
+            where (dependency["name"] as? String).map(NativePodName.root) == root {
                 if let name = (dependency["options"] as? [String: Any])?["project_name"] as? String { return name }
             }
         }
@@ -21,7 +21,7 @@ extension NativeXcode {
         guard multipleProjects, aggregateProject == nil else { return }
         let owners = targetOwners.mapValues(projectNameForPod)
         let roots = Set(owners.values).sorted()
-        guard roots.allSatisfy({ !$0.isEmpty && !$0.contains("/") && $0 != "." && $0 != ".." }) else {
+        guard roots.allSatisfy({ !$0.isEmpty && !$0.utf8.contains(47) && $0 != "." && $0 != ".." }) else {
             throw Diagnostic("SP-XCODE-PROJECT", stage: "integrate", "Invalid pod project name")
         }
         guard !roots.contains("Pods") else {

@@ -82,7 +82,7 @@ def main():
                 "roots": roots,
             }
         )
-    cycle_cases = [
+    regression_cases = [
         (
             [
                 {"name": "A", "version": "1.0", "dependencies": {"B": [">= 0"]}},
@@ -125,7 +125,54 @@ def main():
             [["Kit", ">= 0"]],
         ),
     ]
-    for specifications, roots in cycle_cases:
+    regression_cases += [
+        (
+            [
+                {"name": "Kit", "version": version}
+                for version in ["1.2.3+build.7", "1.2.3+build.8"]
+            ],
+            [["Kit", ">= 0"]],
+        ),
+        (
+            [{"name": "Kit", "version": "1.2.3-alpha-beta"}],
+            [["Kit", "= 1.2.3-alpha-beta"]],
+        ),
+        ([{"name": "Kit", "version": "1.2.3+build.7"}], [["Kit", "= 1.2.3+build.7"]]),
+        ([{"name": "Kit", "version": "1.0.0-alpha"}], [["Kit", "= 1.0.0-alpha.0"]]),
+        (
+            [
+                {"name": "Kit", "version": version}
+                for version in ["1.0.0-alpha.2", "1.0.0-alpha.beta"]
+            ],
+            [["Kit", ">= 1.0.0-alpha.0"]],
+        ),
+        (
+            [
+                {"name": "Kit", "version": version}
+                for version in ["1.0.0-alpha", "1.0.0-alpha.0"]
+            ],
+            [["Kit", "= 1.0.0-alpha.0"]],
+        ),
+        ([{"name": "Kit", "version": "1.2.3-alpha"}], [["Kit", "= 1.2.3.alpha"]]),
+    ]
+    regression_cases += [
+        (
+            [{"name": "Kit", "version": version} for version in versions],
+            [["Kit", requirement]],
+        )
+        for versions, requirement in [
+            (["1.0", "1.0.0-1"], ">= 1.0.0-0"),
+            (["1.0"], "= 1.0.0-0"),
+            (["1.0"], "= 1.0-"),
+            (["1.0"], "= 1.0--"),
+            (["1.0.0.5", "1.0.5"], "~> 1.0.0-0"),
+            (["1.0.1.alpha"], "= 1.0-1.alpha"),
+            (["1.0.1beta"], "= 1.0--1beta"),
+            (["1.0.0-0"], "= 1.0.0-0"),
+            (["1.0.0-alpha", "1.0.0-1"], ">= 1.0.0-alpha"),
+        ]
+    ]
+    for specifications, roots in regression_cases:
         index = len(cases)
         catalog = parent / str(index) / "catalog"
         catalog.mkdir(parents=True)
@@ -232,6 +279,7 @@ def main():
             "same conflict outcomes",
             "root requirement ordering and transitive version constraints",
             "cycles across roots and default subspecs rejected; acyclic version fallback retained",
+            "numeric hyphen version precedence, exact aliases and pessimistic bounds match CocoaPods",
         ],
         "unverified": [
             "exhaustive graph space",

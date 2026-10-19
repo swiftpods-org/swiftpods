@@ -57,10 +57,11 @@ final class NativeResolverAuditTests: XCTestCase {
     }
 
     func testPrereleaseVersionsIgnoreTrailingReleaseZeros() throws {
-        let versions = try ["1.a", "1.0.a", "01.00.0.a.0"].map(PodVersion.init)
+        let versions = try ["1.a", "1.0.a", "01.00.0.a"].map(PodVersion.init)
         XCTAssertEqual(Set(versions).count, 1)
         XCTAssertEqual(versions[0], versions[1])
         XCTAssertEqual(versions[1], versions[2])
+        XCTAssertNotEqual(versions[2], try PodVersion("01.00.0.a.0"))
         XCTAssertLessThan(try PodVersion("1.0.a"), try PodVersion("1.0.b"))
         XCTAssertLessThan(try PodVersion("1.0.a"), try PodVersion("1.0"))
     }
@@ -117,7 +118,8 @@ final class NativeResolverAuditTests: XCTestCase {
                 ])
         }
         let sources = try NativeSources(
-            project: root, cache: cache, sources: [], dsl: nil, offline: true, refresh: false, hardened: true)
+            project: root, cache: cache, sources: [], dsl: nil, offline: true, refreshRepositories: false,
+            hardened: true)
         let request = try NativeDependency(["name": "Kit", "options": ["podspec": url]])
         try sources.register([request])
         let result = try sources.candidates(request)

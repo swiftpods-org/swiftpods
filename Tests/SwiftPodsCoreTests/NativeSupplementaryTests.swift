@@ -90,16 +90,24 @@ final class NativeSupplementaryTests: XCTestCase {
         let spec = try NativeSpec(data: [
             "name": "Kit", "version": "1.0",
             "testspecs": [
-                ["name": "UI", "test_type": "ui"], ["name": "Unknown", "test_type": "unknown"],
-                ["name": "Invalid", "test_type": 7],
+                ["name": "UI", "test_type": "ui"]
             ],
         ])
         XCTAssertEqual(try spec.testType("Kit/UI", platform: "ios"), .ui)
         XCTAssertNoThrow(try spec.validateSupplementary(NativeDependency(["name": "Kit/UI"])))
-        for name in ["Unknown", "Invalid"] {
-            XCTAssertThrowsError(try spec.validateSupplementary(NativeDependency(["name": "Kit/" + name]))) { error in
-                XCTAssertEqual((error as? Diagnostic)?.code, "SP-TEST-TYPE")
-            }
+        XCTAssertThrowsError(
+            try NativeSpec(data: [
+                "name": "Kit", "version": "1.0", "testspecs": [["name": "Unknown", "test_type": "unknown"]],
+            ])
+        ) { error in
+            XCTAssertEqual((error as? Diagnostic)?.code, "SP-TEST-TYPE")
+        }
+        XCTAssertThrowsError(
+            try NativeSpec(data: [
+                "name": "Kit", "version": "1.0", "testspecs": [["name": "Invalid", "test_type": 7]],
+            ])
+        ) { error in
+            XCTAssertEqual((error as? Diagnostic)?.code, "SP-SPEC-ATTRIBUTE-TYPE")
         }
     }
     func testUIHostAssociatesRunnerWhileUnitHostUsesBundleLoader() throws {

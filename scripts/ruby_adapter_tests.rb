@@ -5,9 +5,333 @@
 require "tmpdir"
 require "open3"
 require "rbconfig"
+require "yaml"
+require "set"
 require_relative "../Runtime/runtime"
 
 class RubyAdapterRegressions
+  def test_yaml_booleans_reject_strings_numbers_and_collections
+    invalid = ["false", "true", 0, 1, [], {}]
+    invalid.each do |value|
+      [
+        { "set_arc_compatibility_flag" => value },
+        { "generate_bridge_support" => value },
+        { "target_definitions" => [{ "name" => "Demo", "abstract" => value }] },
+        { "target_definitions" => [{ "name" => "Demo", "inhibit_warnings" => { "all" => value } }] },
+        { "target_definitions" => [{ "name" => "Demo", "use_modular_headers" => { "all" => value } }] },
+      ].each do |input|
+        begin
+          SwiftPods::Podfile.new.import_yaml(input)
+          raise "Invalid YAML boolean was accepted: #{input.inspect}"
+        rescue SwiftPods::Unsupported
+          nil
+        end
+      end
+    end
+  end
+
+  def test_yaml_false_flags_preserve_boolean_semantics
+    podfile = SwiftPods::Podfile.new
+    podfile.import_yaml("set_arc_compatibility_flag" => false, "generate_bridge_support" => false,
+                        "target_definitions" => [{ "name" => "Demo", "abstract" => false, "inhibit_warnings" => { "all" => false }, "use_modular_headers" => { "all" => false } }])
+    manifest = podfile.to_hash
+    assert(!manifest["set_arc_compatibility_flag"] && !manifest["generate_bridge_support"], "False YAML flags were enabled")
+    target = manifest.fetch("targets").first
+    assert(target && target["inhibit_warnings"] == false && target["modular_headers"] == false, "False target flags were changed")
+  end
+
+  def test_yaml_podfile_uses_the_same_inherited_declarations_as_ruby
+    value = {
+      "installation_method" => { "name" => "swiftpods", "options" => { "integrate_targets" => false } },
+      "target_definitions" => [{ "name" => "Pods", "abstract" => true, "platform" => { "osx" => "13.0" },
+                                 "build_configurations" => { "Staging" => "debug" },
+                                 "inhibit_warnings" => { "for_pods" => ["ChildKit"] },
+                                 "configuration_pod_whitelist" => { "Staging" => ["ChildKit"] },
+                                 "uses_frameworks" => { "linkage" => "static", "packaging" => "framework" },
+                                 "dependencies" => [{ "Kit" => ["~> 1.0", { "path" => "./Kit" }] }],
+                                 "children" => [{ "name" => "Demo", "user_project_path" => "App.xcodeproj", "dependencies" => ["ChildKit"] }] }],
+    }
+    Dir.mktmpdir("yaml-podfile-") do |root|
+      path = File.join(root, "CocoaPods.podfile.yaml")
+      File.write(path, YAML.dump(value))
+      podfile = SwiftPods::Podfile.new
+      podfile.evaluate_file(path)
+      manifest = podfile.to_hash
+      assert(manifest["options"]["integrate_targets"] == false, "YAML installation options were lost")
+      target = manifest.fetch("targets").first
+      assert(manifest["targets"].length == 1 && target["label"] == "Pods-Demo", "YAML abstract root changed target identity")
+      assert(target["platform"] == { "name" => "osx", "deployment_target" => "13.0" } && target["frameworks"] == "static", "YAML inheritance changed")
+      assert(target["dependencies"].find { |entry| entry["name"] == "Kit" } == { "name" => "Kit", "requirements" => ["~> 1.0"], "options" => { "path" => "./Kit" } }, "YAML dependency changed")
+      child = target["dependencies"].find { |entry| entry["name"] == "ChildKit" }
+      assert(child["options"] == { "inhibit_warnings" => true, "configurations" => ["Staging"] }, "YAML per-pod rules did not inherit")
+      assert(target["configurations"] == { "Staging" => "debug" }, "YAML configuration mapping without a project was lost")
+    end
+  end
+
+  def test_yaml_podfile_rejects_unknown_fields_and_executable_object_tags
+    rejected = false
+    begin
+      SwiftPods::Podfile.new.import_yaml("unrecognized" => true)
+    rescue SwiftPods::Unsupported
+      rejected = true
+    end
+    assert(rejected, "Unknown YAML declarations silently succeeded")
+    Dir.mktmpdir("yaml-podfile-") do |root|
+      path = File.join(root, "CocoaPods.podfile.yaml")
+      File.write(path, "--- !ruby/object:Object {}\n")
+      rejected = false
+      begin
+        SwiftPods::Podfile.new.evaluate_file(path)
+      rescue Psych::DisallowedClass
+        rejected = true
+      end
+      assert(rejected, "YAML object tags were accepted")
+    end
+  end
+
+  def test_specification_metadata_getters_use_public_key_types_without_mutating_raw_data
+    raw = { "name" => "Kit", "license" => { "type" => "MIT", "text" => "    hello\n    world\n" },
+            "source" => { "git" => "fixture.git", "tag" => 1.0 } }
+    spec = Pod::Spec.from_hash(raw)
+    assert(spec.source[:git] == "fixture.git" && spec.source[:tag].is_a?(Float), "Source getter lost symbol keys or numeric type")
+    assert(spec.license == { type: "MIT", text: "hello\nworld\n" }, "License getter lost keys or text normalization")
+    assert(spec.attributes_hash["source"]["tag"].is_a?(Float), "Source getter rewrote raw attributes")
+    assert(spec.attributes_hash["license"]["text"].start_with?("    "), "License getter rewrote raw text")
+  end
+
+  def test_consumer_metadata_preserves_root_value_objects_and_defaults
+    root = Pod::Spec.from_hash({ "name" => "Kit", "version" => "1.0", "swift_versions" => ["5", "6"],
+                                 "authors" => ["A", { "B" => "mail" }], "screenshots" => "image", "deprecated_in_favor_of" => "Other" })
+    child = root.subspec("Core") { }
+    consumer = child.consumer(:osx)
+    assert(consumer.version.is_a?(Pod::Version) && consumer.swift_versions.all? { |v| v.is_a?(Pod::Version) }, "Consumer lost version value objects")
+    assert(consumer.authors == { "A" => nil, "B" => "mail" } && consumer.screenshots == ["image"], "Consumer lost normalized metadata")
+    assert(consumer.deprecated? && consumer.base_name == "Kit", "Consumer lost root metadata")
+    empty = Pod::Spec.new("Empty")
+    assert(empty.license == {} && empty.screenshots == [] && empty.authors.nil? && empty.static_framework.nil?, "Unset root getter defaults differ")
+  end
+
+  def test_consumer_checks_platform_compatibility_and_keeps_object_identity
+    spec = Pod::Spec.from_hash({ "name" => "Kit", "platforms" => { "osx" => "13.0" } })
+    rejected = false
+    begin
+      spec.consumer(:ios)
+    rescue StandardError
+      rejected = true
+    end
+    assert(rejected && !spec.supported_on_platform?(:ios), "Consumer accepted an unsupported platform")
+    assert(!spec.supported_on_platform?(Pod::Platform.new(:osx, "12.0")), "Platform support ignored deployment minima")
+    first = spec.consumer(:osx)
+    assert(first.equal?(spec.consumer("osx")), "Consumer identity changes between equivalent requests")
+    assert(first.equal?(spec.consumer(Pod::Platform.new(:osx, "12.0"))), "Specification consumer should select platform metadata by name")
+  end
+
+  def test_module_identity_normalizes_header_directories_and_keeps_explicit_names
+    { "Kit--Core" => "Kit_Core", "1__Kit" => "_1_Kit" }.each do |name, expected|
+      assert(Pod::Spec.from_hash("name" => name).module_name == expected, "Derived module normalization differs")
+    end
+    spec = Pod::Spec.from_hash("name" => "Kit", "header_dir" => "Custom--Kit", "subspecs" => [{ "name" => "Core" }])
+    assert(spec.module_name == "Custom_Kit" && spec.subspecs.first.module_name == "Custom_Kit", "Header directory or root identity was not normalized")
+    spec.module_name = "_Kit__Core"
+    assert(spec.module_name == "_Kit__Core", "Explicit module identifier changed")
+  end
+
+  def test_module_identifiers_transliterate_fixed_latin_characters_without_runtime_gems
+    { "École" => "Ecole", "Straße" => "Strasse", "Æther-Œuvre" => "AEther_OEuvre", "Łódź" => "Lodz", "ĐÞĲŊŉ×ẞ" => "DThIJNG_nxSS", "東京" => "_", "E\u0301cole" => "E_cole" }.each do |input, expected|
+      spec = Pod::Spec.from_hash("name" => "Kit", "header_dir" => input)
+      assert(spec.module_name == expected, "Module identity differs for #{input}")
+    end
+  end
+
+  def test_json_and_ruby_ui_types_share_symbols_and_the_generated_target_label
+    target = Pod::PodTarget.allocate
+    target.instance_variable_set(:@name, "Kit")
+    ["ui", :ui].each do |type|
+      root = Pod::Spec.from_hash("name" => "Kit", "testspecs" => [{ "name" => "UI", "test_type" => type }])
+      spec = root.test_specs.first
+      assert(spec.test_type == :ui && spec.consumer(:osx).test_type == :ui, "UI type was not normalized")
+      assert(target.test_target_label(spec) == "Kit-UI-UI", "UI label differs from its generated target")
+    end
+    unit = Pod::Spec.from_hash("name" => "Kit", "testspecs" => [{ "name" => "Tests" }]).test_specs.first
+    assert(unit.test_type == :unit && target.test_target_label(unit) == "Kit-Unit-Tests", "Default unit type was lost")
+  end
+
+  def test_none_inheritance_keeps_own_dependencies_and_ignores_parent_configurations
+    podfile = SwiftPods::Podfile.new
+    podfile.target("Parent") do
+      pod "Inherited"
+      pod "Kit", configurations: ["Debug"]
+      target "Child" do
+        inherit! :none
+        pod "Kit"
+        pod "Own", configurations: ["Release"]
+      end
+    end
+    child = podfile.to_hash.fetch("targets").find { |target| target["name"] == "Child" }
+    dependencies = child.fetch("dependencies")
+    assert(dependencies.map { |dependency| dependency["name"] } == %w[Kit Own], "Parent dependencies leaked through none inheritance")
+    assert(!dependencies.first["options"].key?("configurations"), "Own dependency inherited a configuration whitelist")
+    assert(dependencies.last["options"]["configurations"] == ["Release"], "Own explicit configurations were lost")
+  end
+
+  def test_compatible_specification_dsl_require_does_not_load_an_external_engine
+    feature = "cocoapods-core/specification/dsl"
+    require feature
+    assert(require(feature) == false, "Repeated compatibility import changed require semantics")
+    assert(!$LOADED_FEATURES.any? { |path| path.end_with?(feature + ".rb") }, "Compatibility import loaded an external implementation")
+    assert(Pod::Spec.new("Kit").respond_to?(:source_files=), "Specification DSL is unavailable")
+  end
+
+  def test_platform_normalizes_constructor_arguments_without_losing_deployment
+    platform = Pod::Platform.new(:osx, "13.0")
+    copy = Pod::Platform.new(platform)
+    assert(copy == platform && !copy.equal?(platform), "Platform copy changed its value")
+    assert(copy.deployment_target.equal?(platform.deployment_target), "Platform copy replaced its deployment")
+    assert(Pod::Platform.new("macOS", "13.0") == platform, "macOS alias was not normalized")
+    assert(Pod::Platform.new("xrOS").name == :visionos, "xrOS alias was not normalized")
+    assert(Pod::Platform.new("IOS", deployment_target: "14.0") == Pod::Platform.new(:ios, "14.0"), "Deployment hash was ignored")
+    assert(Pod::Platform.new(:ios, {}).deployment_target.nil?, "Empty deployment hash acquired a version")
+  end
+
+  def test_platform_support_checks_accept_names_and_preserve_version_boundaries
+    platform = Pod::Platform.new(:osx, "13.0")
+    assert(platform.supports?(:osx) && platform.supports?("macos"), "Platform name support failed")
+    assert(!platform.supports?(:ios), "Different platform was accepted")
+    assert(platform.supports?(Pod::Platform.new(:osx, "12.0")), "Older deployment was rejected")
+    assert(!platform.supports?(Pod::Platform.new(:osx, "14.0")), "Newer deployment was accepted")
+    assert(Pod::Platform.new(:osx).supports?(platform), "Unspecified deployment rejected the platform")
+  end
+
+  def test_sandbox_subspec_lookups_use_the_same_root_objects
+    sandbox = Pod::Sandbox.new("/tmp/Pods")
+    spec = Pod::Spec.new("Kit")
+    sandbox.directories["Kit"] = "/tmp/LocalKit"
+    sandbox.specifications["Kit"] = spec
+    assert(sandbox.pod_dir("Kit/Core") == sandbox.pod_dir("Kit"), "Subspec directory ignored its local root")
+    assert(sandbox.specification("Kit/Core").equal?(spec), "Subspec specification lost root identity")
+    assert(sandbox.pod_dir("Remote/Core").to_s == "/tmp/Pods/Remote", "Remote subspec retained its suffix")
+    assert(sandbox.specification("KitA/Core").nil?, "Unrelated root matched a name prefix")
+  end
+
+  def test_platform_symbol_comparison_does_not_change_hash_equality
+    platform = Pod::Platform.new(:osx, "13.0")
+    other = Pod::Platform.new(:osx, "13.0.0")
+    assert(platform == :osx && platform != :ios, "Platform Symbol comparison failed")
+    assert(platform == other && platform.eql?(other) && platform.hash == other.hash, "Equal platform keys disagree")
+    assert(!platform.eql?(:osx) && !:osx.eql?(platform), "Platform hash equality is asymmetric with Symbols")
+    assert({ platform => :found }[other] == :found, "Equivalent platform hash lookup failed")
+    assert([platform, :osx].permutation.all? { |keys| keys.to_h { |key| [key, true] }.length == 2 }, "Platform and Symbol keys collapsed")
+  end
+
+  def test_lockfile_root_version_lookup_preserves_subspec_names
+    lockfile = Pod::Lockfile.new("PODS" => [{ "Kit/Core (1.0)" => ["Other"] }, "Kit/UI (1.0)", "KitA (2.0)"])
+    assert(lockfile.version("Kit").to_s == "1.0", "Root version lookup missed installed subspecs")
+    assert(lockfile.version("Kit/Core").to_s == "1.0", "Exact subspec lookup changed")
+    assert(lockfile.version("KitA").to_s == "2.0", "Root names were matched by prefix")
+    assert(lockfile.version("Ki").nil? && lockfile.version("Kit/Missing").nil?, "Missing dependency acquired another version")
+    assert(lockfile.pod_names == %w[Kit/Core Kit/UI KitA], "Version lookup changed locked pod names")
+    exact = Pod::Lockfile.new("PODS" => ["Kit/Core (1.0)", "Kit (2.0)"])
+    assert(exact.version("Kit").to_s == "2.0", "Subspec fallback replaced an exact match")
+  end
+
+  def test_version_hash_equality_is_symmetric_and_semantic
+    version = Pod::Version.new("1.0")
+    assert(version == "1.0", "Friendly string comparison changed")
+    assert(!version.eql?("1.0") && !"1.0".eql?(version), "Hash equality is asymmetric with strings")
+    assert(!version.eql?(nil) && !version.eql?(Gem::Version.new("1.0")), "Hash equality accepts another key type")
+    equivalents = [version, Pod::Version.new("1.0.0"), Pod::Version.new("1.0+build.7")]
+    equivalents.each do |other|
+      assert(version.eql?(other) && other.eql?(version) && version.hash == other.hash, "Equivalent versions disagree as hash keys")
+      assert({ version => :found }[other] == :found && { other => :found }[version] == :found, "Equivalent version lookup failed")
+    end
+    assert(Set.new(equivalents).length == 1, "Equivalent versions are separate set members")
+    ["1.0", version].permutation.each do |keys|
+      assert(keys.to_h { |key| [key, key] }.length == 2, "String and version keys collapse in one insertion order")
+    end
+  end
+
+  def test_prerelease_comparison_matches_native_requirements
+    alpha = Pod::Version.new("1.0.0-alpha")
+    zero = Pod::Version.new("1.0.0-alpha.0")
+    assert(alpha < zero && alpha != zero, "Significant prerelease zero was removed")
+    assert([alpha, zero].uniq.length == 2, "Prerelease hashing collapsed different versions")
+    assert(!Pod::Requirement.new("= 1.0.0-alpha.0").satisfied_by?(alpha), "Wrong exact prerelease was accepted")
+    assert(Pod::Version.new("1.0.0-alpha.2") < Pod::Version.new("1.0.0-alpha.beta"), "Numeric prerelease sorted above text")
+    assert(alpha == Pod::Version.new("1.0.alpha+build.7"), "Equivalent prerelease spellings disagree")
+    assert(Pod::Version.new("1.0.0-1") < alpha && Pod::Version.new("1.0.0-1").prerelease?, "Numeric prerelease was lost")
+    assert(Pod::Version.new("1.0.0-1").release == Pod::Version.new("1.0.0"), "Wrong numeric prerelease release")
+    assert(Pod::Requirement.new("~> 1.2.3-alpha.0").satisfied_by?(Pod::Version.new("1.2.9")), "Pessimistic requirement changed")
+    assert(!Pod::Requirement.new("~> 1.2.3-alpha.0").satisfied_by?(Pod::Version.new("1.3.0-alpha")), "Upper prerelease was accepted")
+  end
+
+  def test_version_and_requirement_serialization_preserve_spelling_and_behavior
+    ["1.2.3", "1.2.3+build.7", "1.2.3-alpha-beta", "1.2.3-alpha.0", "1.2.3-1"].each do |spelling|
+      version = Pod::Version.new(spelling)
+      requirement = Pod::Requirement.new("= " + spelling)
+      [Marshal.load(Marshal.dump(version)), YAML.unsafe_load(YAML.dump(version))].each do |restored|
+        assert(restored.to_s == spelling && restored.version == spelling, "Version spelling was lost after serialization")
+        assert(restored.prerelease? == version.prerelease? && restored == version, "Restored version behavior changed")
+        assert([version, restored.freeze].uniq.length == 1, "Restored version hash changed")
+        assert(requirement.satisfied_by?(restored), "Restored version failed its exact requirement")
+      end
+      [Marshal.load(Marshal.dump(requirement)), YAML.unsafe_load(YAML.dump(requirement))].each do |restored|
+        assert(restored.to_s == requirement.to_s && restored.satisfied_by?(version), "Nested requirement serialization changed")
+      end
+    end
+    version = Pod::Version.new("9.0")
+    version.send(:yaml_initialize, nil, { "version" => "1.2.3-alpha.0" })
+    assert(version == Pod::Version.new("1.2.3-alpha.0"), "YAML restoration retained stale comparison data")
+  end
+
+  def test_versions_and_dependency_requirements_accept_build_metadata
+    version = Pod::Version.new("1.2.3+build.7")
+    assert(version.to_s == "1.2.3+build.7", "Build metadata was lost")
+    assert(!version.prerelease? && version == Pod::Version.new("1.2.3+other"), "Metadata affects version precedence")
+    assert([version, Pod::Version.new("1.2.3+other")].uniq.length == 1, "Metadata breaks version hashing")
+    dependency = Pod::Dependency.new("Kit", "= 1.2.3+build.7")
+    assert(dependency.requirement.satisfied_by?(version), "Metadata requirement was rejected")
+    assert(Pod::Requirement.new("~> 1.2.3+build.7").satisfied_by?(Pod::Version.new("1.2.9")), "Metadata changed pessimistic precision")
+    prerelease = Pod::Version.new("1.2.3-alpha-beta")
+    assert(prerelease.to_s == "1.2.3-alpha-beta" && prerelease.prerelease? && prerelease < version, "Compound prerelease was lost")
+  end
+
+  def test_project_directory_controls_group_and_source_root_paths
+    value = graph
+    value["graph"]["objects"]["ROOT"]["projectDirPath"] = "ActualRoot"
+    project = Xcodeproj::Project.new(value)
+    assert(project.object("FILE").real_path.to_s == "/tmp/SwiftPodsAdapter/ActualRoot/Value.swift", "projectDirPath ignored")
+    reference = project.new_file("Standalone.swift", "SOURCE_ROOT")
+    assert(reference.real_path.to_s == "/tmp/SwiftPodsAdapter/ActualRoot/Standalone.swift", "SOURCE_ROOT ignored projectDirPath")
+  end
+
+  def test_subspec_mutations_change_serialized_dependencies
+    spec = Pod::Spec.from_hash("name" => "Kit", "subspecs" => [{ "name" => "Core" }])
+    children = spec.subspecs
+    optional = spec.subspec("Optional") { |child| child.dependency "Unwanted", "~> 1" }
+    spec.test_spec("Tests") { }
+    assert(children.include?(optional), "Captured subspec collection became detached")
+    children.delete_if { |child| child.name.end_with?("/Optional") }
+    assert(spec.to_hash["subspecs"].map { |child| child["name"] } == ["Core"], "Deleted subspec was serialized")
+    assert(spec.to_hash["testspecs"].first["name"] == "Tests", "Library mutation discarded a test spec")
+    assert(spec.subspec_dependencies.map(&:name) == ["Kit/Core"], "Deleted subspec still contributes dependencies")
+    children.clear
+    assert(!spec.to_hash.key?("subspecs") && !spec.to_hash.key?("testspecs"), "Cleared children survived serialization")
+  end
+
+  def test_public_source_phase_and_duplicate_file_policy
+    project = Xcodeproj::Project.new(graph)
+    target = project.new_object("PBXNativeTarget", "name" => "Kit", "buildPhases" => [])
+    phase = target.source_build_phase
+    assert(phase.equal?(target.sources_build_phase), "Source phase aliases created separate phases")
+    file = project.object("FILE")
+    first = phase.add_file_reference(file, true)
+    assert(phase.add_file_reference(file, true).equal?(first), "avoid_duplicates created another build file")
+    target.add_file_references([file])
+    assert(phase.files.length == 1, "Target file insertion duplicated an existing source")
+    phase.add_file_reference(file, false)
+    assert(phase.files.length == 2, "Explicit duplicate insertion was suppressed")
+  end
+
   def assert(value, message)
     raise message unless value
   end

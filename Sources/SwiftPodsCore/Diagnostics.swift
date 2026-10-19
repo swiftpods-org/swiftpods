@@ -56,11 +56,11 @@ public struct Redactor {
 }
 
 public func jsonData(_ object: Any) throws -> Data {
-    try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+    try NativeJSON.data(object)
 }
 
 func readObject(_ url: URL) throws -> [String: Any] {
-    guard let result = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any] else {
+    guard let result = try NativeJSON.decode(Data(contentsOf: url), file: url.path) as? [String: Any] else {
         throw Diagnostic("SP-STATE-INVALID", stage: "read", "Expected a JSON object", file: url.path)
     }
     return result

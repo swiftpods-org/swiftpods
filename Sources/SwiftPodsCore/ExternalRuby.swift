@@ -39,7 +39,7 @@ struct ExternalRuby {
                 "Install ruby@3.4 with Homebrew, or set SWIFTPODS_RUBY to a compatible Ruby executable")
         }
         let executable = URL(fileURLWithPath: path).resolvingSymlinksInPath()
-        guard !executable.path.hasPrefix(bundleRoot.resolvingSymlinksInPath().path + "/") else {
+        guard !NativePath.isDescendant(executable, of: bundleRoot.resolvingSymlinksInPath()) else {
             throw Diagnostic(
                 "SP-RUBY-PATH", stage: "runtime", "Ruby must be installed separately from the SwiftPods distribution")
         }

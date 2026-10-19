@@ -26,14 +26,6 @@ def environment(destination=None):
     return env
 
 
-def relocate_scripts(destination):
-    pass  # Native distributions contain no generated gem executables.
-
-
-def relocate_extensions(destination):
-    pass  # The DSL adapter uses no native gem extensions.
-
-
 def manifest(destination):
     files = {}
     for path in sorted(destination.rglob("*")):

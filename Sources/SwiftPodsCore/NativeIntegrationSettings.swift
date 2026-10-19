@@ -1,6 +1,32 @@
 import Foundation
 
 enum NativeIntegrationSettings {
+    static func projectPaths(_ settings: [String: Any]) -> Set<String> {
+        var keys = Array(settings.keys)
+        keys += Array((settings["_base_configurations"] as? [String: String] ?? [:]).keys)
+        keys += Array((settings["_support_configurations"] as? [String: String] ?? [:]).keys)
+        let configurations = keys.compactMap { key -> String? in
+            guard let separator = key.range(of: ":", options: .backwards) else { return nil }
+            return String(key[..<separator.lowerBound])
+        }
+        return Set(configurations)
+            .union((settings["_swift_packages"] as? [String: Any] ?? [:]).keys)
+            .union((settings["_project_attributes"] as? [String: Any] ?? [:]).keys)
+    }
+
+    static func removingProject(_ path: String, from settings: [String: Any]) -> [String: Any] {
+        var result = settings.filter { !$0.key.hasPrefix(path + ":") }
+        for key in [
+            "_base_configurations", "_support_configurations", "_swift_packages", "_project_attributes",
+            "_project_paths",
+        ] {
+            if let values = result[key] as? [String: Any] {
+                result[key] = values.filter { $0.key != path && !$0.key.hasPrefix(path + ":") }
+            }
+        }
+        return result
+    }
+
     static func restore(_ current: [String: Any], record: [String: Any]) throws -> [String: Any] {
         var result = current
         let originals = record["original"] as? [String: Any] ?? [:]

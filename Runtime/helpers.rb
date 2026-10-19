@@ -34,7 +34,7 @@ module Pod
     def initialize(name, *versions)
       @name = name
       @external_source = versions.last.is_a?(Hash) ? versions.pop : nil
-      @requirement = Gem::Requirement.new(*versions)
+      @requirement = Pod::Requirement.new(*versions)
     end
 
     def root_name = name.split("/").first

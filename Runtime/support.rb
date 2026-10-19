@@ -16,8 +16,8 @@ module SwiftPods
   module EngineIsolation
     COMPATIBLE_FEATURES = %w[
       xcodeproj xcodeproj/project cocoapods cocoapods-core cocoapods/version cocoapods-core/version
-      cocoapods-core/platform cocoapods-core/requirement cocoapods-core/specification cocoapods-
-      core/specification/dsl cocoapods/target/build_type cocoapods/installer cocoapods/hooks_manager
+      cocoapods-core/platform cocoapods-core/requirement cocoapods-core/specification
+      cocoapods-core/specification/dsl cocoapods/target/build_type cocoapods/installer cocoapods/hooks_manager
       cocoapods/installer/base_install_hooks_context cocoapods/installer/pre_install_hooks_context
       cocoapods/installer/post_install_hooks_context
       cocoapods/installer/source_provider_hooks_context

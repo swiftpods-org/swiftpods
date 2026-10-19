@@ -3,6 +3,7 @@ import Foundation
 extension NativeXcode {
     /// Builds the dependency project in dependency order before user integration.
     func generate() throws {
+        try prepareResourceBundleLabels()
         for variant in variantPlan?.variants.values.sorted(by: { $0.label < $1.label }) ?? [] {
             try generateLibraryTarget(variant)
         }
@@ -54,12 +55,14 @@ extension NativeXcode {
             }
             let libraryDirectories = librarySearchDirectories(roots, platform: platform)
             let frameworkDirectories = sdks.filter { !$0.isXCFramework && $0.isFramework }.map {
-                $0.url.deletingLastPathComponent().path
+                NativeBuildSetting.literal($0.url.deletingLastPathComponent().path)
             }
             let staticDirectories = sdks.filter { !$0.isXCFramework && !$0.isFramework }.map {
-                $0.url.deletingLastPathComponent().path
+                NativeBuildSetting.literal($0.url.deletingLastPathComponent().path)
             }
-            let sdkHeaderDirectories = sdks.filter { !$0.isXCFramework }.compactMap { $0.slices.first?.headers?.path }
+            let sdkHeaderDirectories = sdks.filter { !$0.isXCFramework }.compactMap {
+                $0.slices.first?.headers.map { NativeBuildSetting.literal($0.path) }
+            }
             let searchPaths: [String: [String]] = [
                 "FRAMEWORK_SEARCH_PATHS": ["$(BUILT_PRODUCTS_DIR)"] + libraryDirectories + frameworkDirectories,
                 "LIBRARY_SEARCH_PATHS": ["$(BUILT_PRODUCTS_DIR)"] + libraryDirectories + staticDirectories,
@@ -73,6 +76,12 @@ extension NativeXcode {
                     if values.isEmpty { values = ["$(inherited)"] }
                     for path in paths.map(NativeBuildSetting.path) where !values.contains(path) { values.append(path) }
                     settings[key] = values
+                }
+                applyCustomModuleMaps(roots, platform: platform, settings: &settings)
+                if variant.mode == "dynamic" {
+                    let flags = try consumerLinkerFlags(
+                        roots, platform: platform, sources: linkerSources(id, graph: graph), settings: settings)
+                    settings["OTHER_LDFLAGS"] = nativeStrings(settings["OTHER_LDFLAGS"]) + flags
                 }
                 graph.objects[config]?["buildSettings"] = settings
             }

@@ -10,7 +10,7 @@ struct NativeRepositories {
         }.sorted { $0.path < $1.path }.map { path in
             let entry = try readObject(path)
             guard let name = entry["name"] as? String, name == path.deletingPathExtension().lastPathComponent,
-                let url = entry["url"] as? String, !url.isEmpty, !url.hasPrefix("-"),
+                let url = entry["url"] as? String, !url.isEmpty, !CommandOptions.hasOptionPrefix(url),
                 let kind = entry["kind"] as? String, ["git", "cdn"].contains(kind),
                 path.resolvingSymlinksInPath().deletingLastPathComponent() == root.resolvingSymlinksInPath()
             else { throw Diagnostic("SP-REPO-RECORD", stage: "repo", "Invalid repository record", file: path.path) }
@@ -62,7 +62,7 @@ struct NativeRepositories {
             }
             return old
         }
-        guard !url.hasPrefix("-"), branch?.hasPrefix("-") != true else {
+        guard !CommandOptions.hasOptionPrefix(url), branch.map({ CommandOptions.hasOptionPrefix($0) }) != true else {
             throw Diagnostic("SP-REPO-URL", stage: "repo", "Invalid source or branch")
         }
         if cdn, !(url.hasPrefix("https://") || url.hasPrefix("http://")) {
@@ -96,6 +96,8 @@ struct NativeRepositories {
         return try entries.map { old in
             var entry = old
             if entry["kind"] as? String == "git" {
+                let repositoryLock = try NativeCacheLock(cache: cache, key: repositoryKey(entry))
+                defer { repositoryLock.release() }
                 let directory = root.appendingPathComponent(entry["name"] as! String)
                 try requireClean(directory)
                 try command(
@@ -123,17 +125,24 @@ struct NativeRepositories {
         guard entry["kind"] as? String == "git", let url = entry["url"] as? String,
             let commit = entry["revision"] as? String
         else { return nil }
+        let repositoryLock = try NativeCacheLock(cache: cache, key: repositoryKey(entry))
+        defer { repositoryLock.release() }
         let directory = cache.appendingPathComponent("git/" + digest(Data((url + "\n" + commit).utf8)))
         let cacheLock = try NativeCacheLock(cache: cache, key: directory.lastPathComponent)
         defer { cacheLock.release() }
+        var previousOwners: [String] = []
         if FileManager.default.fileExists(atPath: directory.path) {
-            guard let expected = try? String(contentsOf: directory.appendingPathExtension("sha256"), encoding: .utf8),
-                try FileFingerprint.tree(directory, requireContainedLinks: true) == expected
-            else {
-                throw Diagnostic(
-                    "SP-CACHE-INTEGRITY", stage: "repo", "Repository snapshot changed", file: directory.path)
+            if (try? readObject(directory.appendingPathExtension("sha256"))) != nil {
+                let metadata = try NativeGitCache.verify(directory)
+                guard metadata["commit"] as? String == commit,
+                    metadata["origin_identity"] as? String == digest(Data(url.utf8)),
+                    metadata["submodules"] as? Bool != true
+                else { throw Diagnostic("SP-CACHE-INTEGRITY", stage: "repo", "Repository snapshot origin changed") }
+                return directory
             }
-            return directory
+            // A legacy tree receipt cannot authenticate its revision. Verify its
+            // files, then rebuild from the pinned registered checkout locally.
+            previousOwners = try NativeGitCache.maintenanceMetadata(directory)["pod_names"] as? [String] ?? []
         }
         try FileManager.default.createDirectory(
             at: directory.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -144,11 +153,19 @@ struct NativeRepositories {
             ["clone", "--no-checkout", "--", root.appendingPathComponent(entry["name"] as! String).path, staging.path])
         try command("/usr/bin/git", ["checkout", "--detach", commit], directory: staging)
         try FileManager.default.removeItem(at: staging.appendingPathComponent(".git"))
+        _ = try FileFingerprint.tree(staging, requireContainedLinks: true)
+        if FileManager.default.fileExists(atPath: directory.path) { try FileManager.default.removeItem(at: directory) }
         try FileManager.default.moveItem(at: staging, to: directory)
-        try Data(FileFingerprint.tree(directory, requireContainedLinks: true).utf8).write(
-            to: directory.appendingPathExtension("sha256"), options: .atomic)
-        try jsonData(["commit": commit, "origin_identity": digest(Data(url.utf8))]).write(
-            to: directory.appendingPathExtension("origin.json"), options: .atomic)
+        try NativeGitCache.write(
+            directory,
+            metadata: [
+                "commit": commit, "origin_identity": digest(Data(url.utf8)), "submodules": false,
+                "pod_names": previousOwners,
+            ])
         return directory
+    }
+
+    private func repositoryKey(_ entry: [String: Any]) -> String {
+        "repository-" + digest(Data((entry["name"] as? String ?? "").utf8))
     }
 }

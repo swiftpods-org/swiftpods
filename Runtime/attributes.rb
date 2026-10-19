@@ -55,7 +55,8 @@ module Pod
     end
 
     def module_name
-      root.data["module_name"] || root.data["header_dir"] || root.name.gsub(/[^a-zA-Z0-9_]/, "_").sub(/\A(?=[0-9])/, "_")
+      return root.data["module_name"] if root.data["module_name"]
+      SwiftPods::ModuleIdentifier.normalize(root.data["header_dir"] || root.name)
     end
 
     def swift_versions
@@ -64,8 +65,11 @@ module Pod
 
     def swift_version = swift_versions.last
 
+    def test_type = (data["test_type"] || ("unit" if test_specification?))&.to_sym
+
     def authors
       values = root.data["authors"] || root.data["author"]
+      return nil if values.nil?
       return values if values.is_a?(Hash)
       Array(values).each_with_object({}) { |value, result| value.is_a?(Hash) ? result.merge!(value) : result[value] = nil }
     end
@@ -74,11 +78,36 @@ module Pod
 
     def license
       value = root.data["license"]
-      value.is_a?(String) ? { "type" => value } : value
+      return { type: value } if value.is_a?(String)
+      return {} unless value.is_a?(Hash)
+      result = Specification.convert_keys_to_symbol(value)
+      if result[:text].is_a?(String)
+        indentation = result[:text].lines.reject { |line| line.strip.empty? }.map { |line| line[/\A */].size }.min || 0
+        result[:text] = result[:text].gsub(/^ {0,#{indentation}}/, "")
+      end
+      result
+    end
+
+    def source
+      value = root.data["source"]
+      value.is_a?(Hash) ? Specification.convert_keys_to_symbol(value) : value
+    end
+
+    def base_name = data["name"]
+    def requires_arc = data["requires_arc"]
+    def screenshots = Array(root.data["screenshots"])
+    def static_framework = root.data["static_framework"]
+    def deprecated = root.data["deprecated"]
+    def deprecated? = deprecated || !root.data["deprecated_in_favor_of"].nil?
+
+    def prepare_command
+      value = root.data["prepare_command"]
+      return nil if value.nil?
+      indentation = value.lines.reject { |line| line.strip.empty? }.map { |line| line[/\A */].size }.min || 0
+      value.gsub(/^ {0,#{indentation}}/, "").chomp
     end
 
     def cocoapods_version = Requirement.new(root.data["cocoapods_version"] || ">= 0")
-    def subspecs = children("subspecs") + children("testspecs") + children("appspecs")
 
     def available_platforms
       names = platform_requirements.keys
@@ -204,6 +233,13 @@ module Pod
     end
 
     class Consumer
+      %i[base_name version swift_version swift_versions cocoapods_version authors license source screenshots
+         static_framework deprecated deprecated? prepare_command].each do |name|
+        define_method(name) { spec.root.public_send(name) }
+      end
+
+      def test_type = effective(spec, DSL.attributes.fetch(:test_type)) || (:unit if spec.test_specification?)
+
       def pod_target_xcconfig = effective_xcconfig(:pod_target_xcconfig)
 
       def user_target_xcconfig = effective_xcconfig(:user_target_xcconfig)

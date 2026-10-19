@@ -70,6 +70,10 @@ module Xcodeproj
 
     def objects = @graph["objects"].keys.map { |id| object(id) }
     def root_object = object(@graph["rootObject"])
+    def source_root
+      value = root_object.project_dir_path.to_s
+      Pathname(File.expand_path(value.empty? ? "." : value, path.dirname))
+    end
     def main_group = root_object.main_group
     def targets = root_object.targets
     def native_targets = targets.select { |target| target.isa == "PBXNativeTarget" }

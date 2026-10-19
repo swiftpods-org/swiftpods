@@ -32,11 +32,11 @@ extension NativeDependency {
 
 extension NativeSpec {
     func nodes(_ fullname: String) throws -> [(kind: NativeSpecKind, data: [String: Any])] {
-        guard fullname.split(separator: "/").first.map(String.init) == name else {
+        guard NativePodName.components(fullname).first == name else {
             throw Diagnostic("SP-SPEC-SUBSPEC", stage: "resolve", "Spec does not belong to \(name)", file: fullname)
         }
         var path: [(kind: NativeSpecKind, data: [String: Any])] = [(.library, data)]
-        for part in fullname.split(separator: "/").dropFirst() {
+        for part in NativePodName.components(fullname).dropFirst() {
             var matches: [(kind: NativeSpecKind, data: [String: Any])] = []
             for (field, kind): (String, NativeSpecKind) in [
                 ("subspecs", .library), ("testspecs", .test), ("appspecs", .app),
@@ -107,7 +107,7 @@ extension NativeSpec {
                         "SP-TEST-HOST", stage: "resolve", "app_host_name requires requires_app_host = true",
                         file: request.name)
                 }
-                if host.split(separator: "/").first.map(String.init) == name {
+                if NativePodName.components(host).first == name {
                     guard try self.kind(host) == .app else {
                         throw Diagnostic("SP-TEST-HOST", stage: "resolve", "Host must identify an app spec", file: host)
                     }
@@ -124,26 +124,7 @@ extension NativeSpec {
             throw Diagnostic("SP-SPEC-PLIST", stage: "resolve", "info_plist must be a dictionary", file: request.name)
         }
         if let scheme = attributes["scheme"] as? [String: Any] {
-            guard
-                Set(scheme.keys).isSubset(of: [
-                    "launch_arguments", "environment_variables", "code_coverage", "parallelizable",
-                    "build_configurations",
-                ]),
-                scheme["launch_arguments"] == nil || scheme["launch_arguments"] is [String],
-                scheme["environment_variables"] == nil || scheme["environment_variables"] is [String: String],
-                scheme["code_coverage"] == nil || scheme["code_coverage"] is Bool,
-                scheme["parallelizable"] == nil || scheme["parallelizable"] is Bool
-            else { throw Diagnostic("SP-SPEC-SCHEME", stage: "resolve", "Invalid scheme options", file: request.name) }
-            if let value = scheme["build_configurations"] {
-                guard let actions = value as? [String: String],
-                    Set(actions.keys).isSubset(of: ["Run", "Test", "Analyze", "Archive"])
-                else {
-                    throw Diagnostic(
-                        "SP-SPEC-SCHEME", stage: "resolve",
-                        "build_configurations must map Run/Test/Analyze/Archive to configuration names",
-                        file: request.name)
-                }
-            }
+            try NativeSchemeOptions.validate(scheme, file: request.name)
         } else if attributes["scheme"] != nil {
             throw Diagnostic("SP-SPEC-SCHEME", stage: "resolve", "scheme must be a dictionary", file: request.name)
         }

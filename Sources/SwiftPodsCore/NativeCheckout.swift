@@ -1,34 +1,36 @@
 import Foundation
 
 extension NativeSources {
-    func checkout(_ location: String, selector: String, fresh: Bool = false, submodules: Bool = false) throws -> URL {
-        guard !location.hasPrefix("-"), !selector.hasPrefix("-"), !selector.isEmpty else {
+    /// Git resolves local sources against the manifest, including their cache identity.
+    func gitLocation(_ location: String) -> String {
+        NativeSourceOptions.resolvedLocation(location, project: project)
+    }
+
+    func checkout(
+        _ location: String, selector: String, fresh: Bool = false, submodules: Bool = false, pod: String? = nil
+    )
+        throws -> URL
+    {
+        guard !CommandOptions.hasOptionPrefix(location), !CommandOptions.hasOptionPrefix(selector), !selector.isEmpty
+        else {
             throw Diagnostic("SP-SOURCE-URL", stage: "download", "Invalid Git source or revision")
         }
+        let location = gitLocation(location)
         let identity = digest(Data((location + "\n" + selector + (submodules ? "\nsubmodules" : "")).utf8))
         let directory = cache.appendingPathComponent("git/" + identity)
         let cacheLock = try NativeCacheLock(cache: cache, key: identity)
         defer { cacheLock.release() }
-        let receipt = directory.appendingPathExtension("sha256")
-        if FileManager.default.fileExists(atPath: directory.path), (!refresh && !fresh) || offline {
-            guard let expected = try? String(contentsOf: receipt, encoding: .utf8),
-                try FileFingerprint.tree(directory, requireContainedLinks: true) == expected
+        let refresh = fresh || (pod == nil && refreshRepositories)
+        if FileManager.default.fileExists(atPath: directory.path), !refresh || offline {
+            let metadata = try NativeGitCache.verify(directory)
+            guard metadata["origin_identity"] as? String == digest(Data(location.utf8)),
+                selector.range(of: #"\A[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?\z"#, options: .regularExpression) == nil
+                    || (metadata["commit"] as? String)?.lowercased() == selector.lowercased()
             else {
                 throw Diagnostic(
-                    "SP-CACHE-INTEGRITY", stage: "cache", "Cached Git checkout changed", file: directory.path)
+                    "SP-CACHE-INTEGRITY", stage: "cache", "Cached checkout does not match its source revision")
             }
-            if !FileManager.default.fileExists(atPath: directory.appendingPathExtension("origin.json").path) {
-                guard
-                    selector.range(of: #"\A[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?\z"#, options: .regularExpression) != nil
-                else {
-                    throw Diagnostic(
-                        "SP-CACHE-REVISION", stage: "cache",
-                        "Cached checkout predates revision metadata; refresh it with --repo-update",
-                        file: directory.path)
-                }
-                try jsonData(["commit": selector, "origin_identity": digest(Data(location.utf8))]).write(
-                    to: directory.appendingPathExtension("origin.json"), options: .atomic)
-            }
+            if let pod { try NativeGitCache.addOwners([pod], directory: directory, metadata: metadata) }
             try cacheCommit(directory, location: location)
             return directory
         }
@@ -50,21 +52,25 @@ extension NativeSources {
         }
         let commit = String(decoding: revision.output, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
         try FileManager.default.removeItem(at: staging.appendingPathComponent(".git"))
-        let fingerprint = try FileFingerprint.tree(staging, requireContainedLinks: true)
+        _ = try FileFingerprint.tree(staging, requireContainedLinks: true)
         if FileManager.default.fileExists(atPath: directory.path) { try FileManager.default.removeItem(at: directory) }
         try FileManager.default.moveItem(at: staging, to: directory)
-        try Data(fingerprint.utf8).write(to: receipt, options: .atomic)
-        try jsonData(["commit": commit, "origin_identity": digest(Data(location.utf8)), "submodules": submodules])
-            .write(to: directory.appendingPathExtension("origin.json"), options: .atomic)
-        try cacheCommit(directory, location: location)
+        try NativeGitCache.write(
+            directory,
+            metadata: [
+                "commit": commit, "origin_identity": digest(Data(location.utf8)), "submodules": submodules,
+                "pod_names": pod.map { [$0] } ?? [],
+            ])
+        try cacheCommit(directory, location: location, refreshed: true)
         return directory
     }
     func shouldUpdate(_ root: String) -> Bool { updating && (updateRoots.isEmpty || updateRoots.contains(root)) }
     func pinnedSelector(_ root: String, source: [String: Any]) -> String {
-        if let commit = source["commit"] as? String { return commit }
-        let declared = source["tag"] as? String ?? source["branch"] as? String ?? "HEAD"
+        let declared =
+            NativeSourceOptions.gitSelector(source["commit"])
+            ?? NativeSourceOptions.gitSelector(source["tag"]) ?? source["branch"] as? String ?? "HEAD"
         if !shouldUpdate(root), let pin = pinnedCheckouts[root], pin["git"] == source["git"] as? String,
-            pin["tag"] == source["tag"] as? String, pin["branch"] == source["branch"] as? String,
+            pin["tag"] == NativeSourceOptions.gitSelector(source["tag"]), pin["branch"] == source["branch"] as? String,
             let commit = pin["commit"]
         {
             return commit
@@ -73,19 +79,24 @@ extension NativeSources {
     }
     func checkoutIdentity(_ root: String, source: [String: Any], directory: URL) throws -> [String: String] {
         guard let git = source["git"] as? String else { return [:] }
-        var metadata = try readObject(directory.appendingPathExtension("origin.json"))
+        let cacheLock = try NativeCacheLock(cache: cache, key: directory.lastPathComponent)
+        defer { cacheLock.release() }
+        let metadata = try NativeGitCache.verify(directory)
         guard let commit = metadata["commit"] as? String,
-            metadata["origin_identity"] as? String == digest(Data(git.utf8))
+            metadata["origin_identity"] as? String == digest(Data(gitLocation(git).utf8))
         else { throw Diagnostic("SP-SOURCE-REVISION", stage: "download", "Invalid Git revision metadata", file: root) }
-        metadata["pod_names"] = Set((metadata["pod_names"] as? [String] ?? []) + [root]).sorted()
-        try jsonData(metadata).write(to: directory.appendingPathExtension("origin.json"), options: .atomic)
+        try NativeGitCache.addOwners([root], directory: directory, metadata: metadata)
+        try cacheCommit(directory, location: git)
         var identity = ["git": git, "commit": commit]
-        for key in ["branch", "tag"] { if let value = source[key] as? String { identity[key] = value } }
+        for key in ["branch", "tag"] {
+            if let value = NativeSourceOptions.gitSelector(source[key]) { identity[key] = value }
+        }
         if source["submodules"] as? Bool == true { identity["submodules"] = "true" }
         return identity
     }
-    func cacheCommit(_ directory: URL, location: String) throws {
-        let metadata = try readObject(directory.appendingPathExtension("origin.json"))
+    func cacheCommit(_ directory: URL, location: String, refreshed: Bool = false) throws {
+        let location = gitLocation(location)
+        let metadata = try NativeGitCache.verify(directory)
         guard let commit = metadata["commit"] as? String,
             metadata["origin_identity"] as? String == digest(Data(location.utf8))
         else {
@@ -100,13 +111,24 @@ extension NativeSources {
         guard destination.standardizedFileURL.path != directory.standardizedFileURL.path else { return }
         let cacheLock = try NativeCacheLock(cache: cache, key: destination.lastPathComponent)
         defer { cacheLock.release() }
-        guard !FileManager.default.fileExists(atPath: destination.path) else { return }
+        if FileManager.default.fileExists(atPath: destination.path) {
+            var existing: [String: Any]?
+            do {
+                existing = try NativeGitCache.verify(destination)
+            } catch {
+                guard refreshed else { throw error }
+                try FileManager.default.removeItem(at: destination)
+            }
+            if let existing {
+                try NativeGitCache.addOwners(
+                    metadata["pod_names"] as? [String] ?? [], directory: destination, metadata: existing)
+                return
+            }
+        }
         let staging = destination.deletingLastPathComponent().appendingPathComponent(".commit-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: staging) }
         try FileManager.default.copyItem(at: directory, to: staging)
         try FileManager.default.moveItem(at: staging, to: destination)
-        try Data(FileFingerprint.tree(destination, requireContainedLinks: true).utf8).write(
-            to: destination.appendingPathExtension("sha256"), options: .atomic)
-        try jsonData(metadata).write(to: destination.appendingPathExtension("origin.json"), options: .atomic)
+        try NativeGitCache.write(destination, metadata: metadata)
     }
 }

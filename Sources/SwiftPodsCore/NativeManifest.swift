@@ -2,7 +2,42 @@ import Foundation
 
 /// Analyze consumer projects before resolving platform-constrained dependencies.
 enum NativeManifest {
-    static func analyze(_ manifest: [String: Any], project: URL, integrate: Bool) throws -> [String: Any] {
+    /// Accept only the historical path spelling; every other evaluated declaration
+    /// still participates in the digest, including dynamic dependency requirements.
+    static func legacyProjectChecksums(
+        _ contract: [String: Any], project: URL, ownership: [String: Any]
+    ) throws -> Set<String> {
+        var origins = [URL(fileURLWithPath: project.path, isDirectory: true)]
+        if let previous = NativeIntegrationLocation.previousRoot(ownership) { origins.append(previous) }
+        let owned = NativeIntegrationSettings.projectPaths(ownership).sorted()
+        var checksums = Set<String>()
+        for origin in origins {
+            var legacy = contract
+            var changed = false
+            legacy["targets"] = (contract["targets"] as? [[String: Any]] ?? []).map { original -> [String: Any] in
+                var target = original
+                guard let relative = original["project"] as? String, relative.utf8.first != 47 else { return target }
+                let path = URL(fileURLWithPath: relative, relativeTo: origin).standardizedFileURL
+                // Reproduce the old grapheme-based decision only for lock migration.
+                guard !path.path.hasPrefix(origin.path + "/") else {
+                    return target
+                }
+                let previous = owned.first {
+                    URL(fileURLWithPath: $0).deletingLastPathComponent().path == path.path
+                }.map { URL(fileURLWithPath: $0).deletingLastPathComponent().path }
+                target["project"] = previous ?? path.resolvingSymlinksInPath().path
+                changed = true
+                return target
+            }
+            if changed { checksums.insert(digest(try jsonData(legacy))) }
+        }
+        return checksums
+    }
+
+    static func analyze(
+        _ manifest: [String: Any], project: URL, integrate: Bool,
+        sdkContext: NativeSDKContext = NativeSDKContext()
+    ) throws -> [String: Any] {
         for key in ["project", "workspace"]
         where manifest[key] != nil && !(manifest[key] is NSNull) && !(manifest[key] is String) {
             throw Diagnostic("SP-DSL-PROJECT", stage: "analyze", key + " must be a path string")
@@ -12,8 +47,13 @@ enum NativeManifest {
         }
         var result = manifest
         var projects: [String: NativePBX] = [:]
+        let receipt = project.appendingPathComponent("Pods/Target Support Files/SwiftPods-Integration.json")
+        let previousRoot =
+            FileManager.default.fileExists(atPath: receipt.path)
+            ? NativeIntegrationLocation.previousRoot(try readObject(receipt)) : nil
         result["targets"] = try (manifest["targets"] as? [[String: Any]] ?? []).map { original -> [String: Any] in
             var target = original
+            _ = try NativeSwiftPackageDeclaration.list(target["packages"], file: target["name"] as? String)
             if let path = target["project"], !(path is String) {
                 throw Diagnostic("SP-DSL-PROJECT", stage: "analyze", "Project must be a path string")
             }
@@ -41,6 +81,9 @@ enum NativeManifest {
             let graph =
                 try projects[path.path] ?? NativePBX(path.appendingPathComponent("project.pbxproj"), existing: true)
             projects[path.path] = graph
+            if let previousRoot {
+                try NativeIntegrationLocation.relocateGeneratedConfigurations(graph, from: previousRoot, to: project)
+            }
             guard
                 let native = graph.objects.values.first(where: {
                     $0["isa"] as? String == "PBXNativeTarget" && $0["name"] as? String == target["name"] as? String
@@ -56,14 +99,34 @@ enum NativeManifest {
             let settings = try configs.map { config -> [String: Any] in
                 let base = projectConfigs.first { $0["name"] as? String == config["name"] as? String } ?? [:]
                 let generated = project.appendingPathComponent("Pods/Target Support Files")
-                return try NativeBuildSettings.resolved(
-                    config, graph: graph,
-                    base: NativeBuildSettings.resolved(base, graph: graph, missingGeneratedRoot: generated),
-                    missingGeneratedRoot: generated)
+                let scope = try NativeBuildSettings.resolvedScopes(
+                    config, inheriting: base, graph: graph,
+                    missingGeneratedRoot: generated, sdkContext: sdkContext, targetName: native["name"] as? String
+                ).targetScope
+                var values = scope.values
+                for key in [
+                    "MACOSX_DEPLOYMENT_TARGET", "IPHONEOS_DEPLOYMENT_TARGET", "TVOS_DEPLOYMENT_TARGET",
+                    "WATCHOS_DEPLOYMENT_TARGET", "XROS_DEPLOYMENT_TARGET", "SWIFT_VERSION",
+                ] {
+                    values[key] = try scope.expandedValue(key)
+                }
+                let sdk = try scope.expandedValue("SDKROOT", undefinedAsEmpty: true)
+                // SDK conditions use empty substitutions, but lexical platform fallback
+                // must retain unresolved references unless a real SDK confirms the path.
+                if let sdk, !sdk.isEmpty, sdk != "auto",
+                    sdkContext.canonicalName(sdk, relativeTo: graph.sourceRoot) == nil
+                {
+                    values["SDKROOT"] = try scope.expandedValue("SDKROOT")
+                } else {
+                    values["SDKROOT"] = sdk
+                }
+                return values
             }
-            target["project"] =
-                path.path.hasPrefix(project.path + "/")
-                ? String(path.path.dropFirst(project.path.count + 1)) : path.resolvingSymlinksInPath().path
+            if let components = NativePath.relativeComponents(of: path, to: project), !components.isEmpty {
+                target["project"] = components.joined(separator: "/")
+            } else {
+                target["project"] = path.resolvingSymlinksInPath().path
+            }
             if target["platform"] == nil {
                 let platforms: [(String, String, String)] = [
                     ("osx", "macosx", "MACOSX_DEPLOYMENT_TARGET"), ("ios", "iphone", "IPHONEOS_DEPLOYMENT_TARGET"),
@@ -71,15 +134,19 @@ enum NativeManifest {
                     ("visionos", "xr", "XROS_DEPLOYMENT_TARGET"),
                 ]
                 let detected = settings.compactMap { value -> (String, String)? in
-                    let sdk = value["SDKROOT"] as? String ?? ""
+                    let supplied = value["SDKROOT"] as? String ?? ""
+                    let sdk = sdkContext.name(supplied, relativeTo: graph.sourceRoot)
+                    let matches = platforms.filter {
+                        ["", "auto"].contains(supplied)
+                            ? !(value[$0.2] as? String ?? "").isEmpty : sdk.hasPrefix($0.1)
+                    }
                     guard
-                        let entry = platforms.first(where: {
-                            sdk.contains($0.1) || (["", "auto"].contains(sdk) && value[$0.2] != nil)
-                        }), let minimum = value[entry.2] as? String, (try? PodVersion(minimum)) != nil
+                        matches.count == 1, let entry = matches.first,
+                        let minimum = value[entry.2] as? String, (try? PodVersion(minimum)) != nil
                     else { return nil }
                     return (entry.0, minimum)
                 }
-                guard !detected.isEmpty, Set(detected.map { $0.0 }).count == 1 else {
+                guard !detected.isEmpty, detected.count == settings.count, Set(detected.map { $0.0 }).count == 1 else {
                     throw Diagnostic(
                         "SP-PLATFORM-MISSING", stage: "analyze",
                         "Cannot infer one platform and deployment target from the consumer's build configurations",

@@ -93,7 +93,7 @@ module Pod
     def product_module_name = root_spec.module_name
 
     def product_name
-      build_as_framework? ? product_module_name + ".framework" : "lib" + product_module_name + ".a"
+      build_as_framework? ? product_module_name + ".framework" : "lib" + label + ".a"
     end
 
     def support_files_dir = sandbox.root + "Target Support Files" + label

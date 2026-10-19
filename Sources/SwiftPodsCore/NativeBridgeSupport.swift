@@ -43,7 +43,7 @@ extension NativeXcode {
                 try Data(contents.utf8).writeIfChanged(to: header, options: .atomic)
                 headers = [header.path]
             }
-            let flags = headers.isEmpty ? "" : "-I " + NativeLock.quote(path.deletingLastPathComponent().path)
+            let flags = headers.isEmpty ? "" : "-I " + NativeShellString.quote(path.deletingLastPathComponent().path)
             let result = try ToolProcess.run(tool, ["-c", flags, "-o", path.path] + headers, directory: project)
             if result.status != 0 || !FileManager.default.fileExists(atPath: path.path) {
                 // The selected profile preserves the reference's command failure

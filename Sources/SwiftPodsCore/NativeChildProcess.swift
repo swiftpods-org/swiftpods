@@ -7,8 +7,19 @@ final class NativeChildProcess {
     private var status: Int32?
     init(
         executable: String, arguments: [String], directory: URL?, environment: [String: String],
-        input: Int32 = STDIN_FILENO, output: Int32, error: Int32
+        input: Int32, output: Int32, error: Int32
     ) throws {
+        guard !executable.utf8.contains(0), !arguments.contains(where: { $0.utf8.contains(0) }),
+            !environment.contains(where: { $0.key.utf8.contains(0) || $0.value.utf8.contains(0) }),
+            directory.map({ !$0.path.utf8.contains(0) }) ?? true
+        else {
+            throw Diagnostic("SP-PROCESS-ARGUMENT", stage: "execute", "Process inputs cannot contain NUL")
+        }
+        guard environment.keys.allSatisfy(NativeProcessEnvironment.isValidName) else {
+            throw Diagnostic(
+                "SP-PROCESS-ARGUMENT", stage: "execute",
+                "Environment variable names must be nonempty and cannot contain '='")
+        }
         let argv = ([executable] + arguments).map { strdup($0) } + [nil]
         let envp = environment.sorted(by: { $0.key < $1.key }).map { strdup($0.key + "=" + $0.value) } + [nil]
         defer { for value in argv + envp { free(value) } }

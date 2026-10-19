@@ -5,6 +5,7 @@ enum NativePublication {
         arguments: [String], project: URL, bundle: RuntimeBundle, environment: [String: String],
         overrides: [String: String]
     ) throws -> [String: Any] {
+        _ = try NativeValidation.Options(Array(arguments.dropFirst()), additionalFlags: ["--local-only"])
         var args = arguments
         let local = args.contains("--local-only")
         args.removeAll { $0 == "--local-only" }
@@ -13,7 +14,7 @@ enum NativePublication {
         }
         args.removeFirst()
         let path: URL
-        if let raw = args.first, !raw.hasPrefix("-") {
+        if let raw = args.first, !CommandOptions.hasOptionPrefix(raw) {
             path = URL(fileURLWithPath: raw, relativeTo: project).standardizedFileURL
             args.removeFirst()
         } else {
@@ -24,10 +25,10 @@ enum NativePublication {
             }
             path = files[0]
         }
-        let cache = URL(fileURLWithPath: bundle.environment(from: environment)["SWIFTPODS_CACHE_ROOT"]!)
+        let cache = URL(fileURLWithPath: bundle.cacheRootPath(from: environment))
         let repositories = NativeRepositories(cache: cache)
-        guard var entry = try repositories.record(name), entry["name"] as? String == name,
-            entry["kind"] as? String == "git"
+        guard let initialEntry = try repositories.record(name), initialEntry["name"] as? String == name,
+            initialEntry["kind"] as? String == "git"
         else {
             throw Diagnostic(
                 "SP-REPO-MISSING", stage: "repo", "Publication requires a registered Git specs repository", file: name)
@@ -49,11 +50,22 @@ enum NativePublication {
         guard lint["status"] as? String == "passed" else {
             throw Diagnostic("SP-REPO-LINT", stage: "repo", "Specification validation failed", file: path.path)
         }
+        // Lint may install dependencies, so take the exclusive lease afterwards.
+        let lease = try NativeCacheLease(cache: cache, exclusive: true)
+        defer { withExtendedLifetime(lease) {} }
+        guard var entry = try repositories.record(name), try jsonData(entry) == jsonData(initialEntry) else {
+            throw Diagnostic("SP-REPO-CONFLICT", stage: "repo", "Repository changed during validation", file: name)
+        }
+        try repositories.requireClean(directory)
         // Rejected pushes leave the registered checkout unchanged.
         let staging = repositories.root.appendingPathComponent(".publish-" + UUID().uuidString)
         var checkout = directory
+        let transaction = try local ? NativeRepositoryPublication(directory: directory) : nil
         defer { try? FileManager.default.removeItem(at: staging) }
-        if !local {
+        if let transaction {
+            checkout = transaction.staging
+            destination = checkout.appendingPathComponent(relative)
+        } else {
             guard let origin = entry["url"] as? String else {
                 throw Diagnostic("SP-REPO-RECORD", stage: "repo", "Missing publication origin")
             }
@@ -73,16 +85,17 @@ enum NativePublication {
         try FileManager.default.createDirectory(
             at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
         try jsonData(data).write(to: destination, options: .atomic)
-        try command("/usr/bin/git", ["add", "--", destination.path], directory: checkout)
+        let gitOptions = local ? ["-c", "core.worktree=" + checkout.path] : []
+        try command("/usr/bin/git", gitOptions + ["add", "--", destination.path], directory: checkout)
         try command(
             "/usr/bin/git",
-            ["commit", "-m", "Add " + spec.name + " " + spec.version.description, "--", destination.path],
+            gitOptions + ["commit", "-m", "Add " + spec.name + " " + spec.version.description, "--", destination.path],
             directory: checkout)
         if !local { try command("/usr/bin/git", ["push", "origin", "HEAD"], directory: checkout) }
         var refreshed = local
         if local {
-            entry["revision"] = try repositories.revision(directory)
-            try repositories.write(entry)
+            entry["revision"] = try repositories.revision(checkout)
+            try transaction!.publish(entry, repositories: repositories)
         } else {
             refreshed = (try? repositories.update(name)) != nil
         }

@@ -13,19 +13,22 @@ enum NativeResources {
         return candidates
     }
     static func references(
-        _ paths: [URL], owner: String, graph: NativePBX, prefix: String = "", allowMissing: Set<URL> = []
+        _ paths: [URL], owner: String, graph: NativePBX, prefix: String = "", allowMissing: Set<URL> = [],
+        ungrouped: Set<URL> = []
     ) throws -> [String] {
         let candidates = try expandedPaths(paths)
         var refs: [String] = []
-        var directories: [String] = []
+        var directories: [URL] = []
         var variants: [String: [URL]] = [:]
         func file(_ path: URL, type: String? = nil) -> String {
-            var value: [String: Any] = ["isa": "PBXFileReference", "path": path.path, "sourceTree": "<absolute>"]
+            var value: [String: Any] = [
+                "isa": "PBXFileReference", "path": NativeBuildSetting.literal(path.path), "sourceTree": "<absolute>",
+            ]
             if let type { value["lastKnownFileType"] = type }
             return graph.add(prefix + "file:" + path.path, value)
         }
         for path in Set(candidates).sorted(by: { $0.path < $1.path }) {
-            if directories.contains(where: { path.path.hasPrefix($0 + "/") }) { continue }
+            if directories.contains(where: { NativePath.isDescendant(path, of: $0) }) { continue }
             let directory: Bool
             if allowMissing.contains(path) && !FileManager.default.fileExists(atPath: path.path) {
                 directory = false
@@ -33,11 +36,11 @@ enum NativeResources {
                 directory = (try path.resourceValues(forKeys: [.isDirectoryKey])).isDirectory == true
             }
             if path.pathExtension == "lproj", directory { continue }
-            if path.deletingLastPathComponent().pathExtension == "lproj" {
+            if path.deletingLastPathComponent().pathExtension == "lproj", !ungrouped.contains(path) {
                 variants[path.lastPathComponent, default: []].append(path)
                 continue
             }
-            if directory { directories.append(path.path) }
+            if directory { directories.append(path) }
             refs.append(file(path, type: directory && path.pathExtension.isEmpty ? "folder" : nil))
         }
         for (name, localized) in variants.sorted(by: { $0.key < $1.key }) {
@@ -54,7 +57,9 @@ enum NativeResources {
         return refs
     }
 
-    static func apply(_ paths: [URL], target: String, graph: NativePBX, allowMissing: Set<URL> = []) throws {
+    static func apply(
+        _ paths: [URL], target: String, graph: NativePBX, allowMissing: Set<URL> = [], ungrouped: Set<URL> = []
+    ) throws {
         let prefix = "swiftpods:resources:" + target + ":"
         var order = graph.objects[target]?["buildPhases"] as? [String] ?? []
         let phase =
@@ -74,7 +79,8 @@ enum NativeResources {
         var oldReferences = Set(oldBuilds.compactMap { graph.objects[$0]?["fileRef"] as? String })
         for ref in oldReferences { oldReferences.formUnion(graph.objects[ref]?["children"] as? [String] ?? []) }
         for id in oldBuilds { graph.objects.removeValue(forKey: id) }
-        let refs = try references(paths, owner: target, graph: graph, prefix: prefix, allowMissing: allowMissing)
+        let refs = try references(
+            paths, owner: target, graph: graph, prefix: prefix, allowMissing: allowMissing, ungrouped: ungrouped)
         for ref in refs { builds.append(graph.add(prefix + "build:" + ref, ["isa": "PBXBuildFile", "fileRef": ref])) }
         graph.objects[phase]?["files"] = builds
         if !order.contains(phase), !builds.isEmpty { order.append(phase) }

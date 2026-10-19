@@ -1,6 +1,27 @@
 import Foundation
 
 enum NativeBuildSetting {
+    /// Encode filesystem text once before placing it in an Xcode expression.
+    static func literal(_ value: String) -> String {
+        value.replacingOccurrences(of: "$", with: "$$")
+    }
+    /// Unknown PODS_* settings are parsed as lists, then exported as strings.
+    /// An unpaired backslash already quotes the following dollar in that parser.
+    static func scalarLiteral(_ value: String) -> String {
+        var result = ""
+        var backslashes = 0
+        for scalar in value.unicodeScalars {
+            if scalar == "$", backslashes.isMultiple(of: 2) { result += "$" }
+            result.unicodeScalars.append(scalar)
+            backslashes = scalar == "\\" ? backslashes + 1 : 0
+        }
+        return result
+    }
+    static func literalPath(_ value: String) -> String { path(literal(value)) }
+    /// Only use for references that this generator encoded as literal paths.
+    static func decodedLiteral(_ value: String) -> String {
+        value.replacingOccurrences(of: "$$", with: "$")
+    }
     static func quoted(_ value: String) -> String {
         "\"" + value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
     }
@@ -37,7 +58,6 @@ extension NativeXcode {
         var inputs: [String] = []
         var outputs: [String] = []
         var commands: [String] = []
-        func quote(_ text: String) -> String { "'" + text.replacingOccurrences(of: "'", with: "'\\''") + "'" }
         for product in products
         where productRoots[product] != nil && matchesProduct(product, roots: roots, platform: platform) {
             guard let producer = graph.objects.values.first(where: { $0["productReference"] as? String == product }),
@@ -55,7 +75,8 @@ extension NativeXcode {
             inputs.append(input)
             outputs.append("$(TARGET_BUILD_DIR)/$(FRAMEWORKS_FOLDER_PATH)/" + name)
             commands.append(
-                "case \"${CONFIGURATION}\" in\n" + enabled.map(quote).joined(separator: "|") + ")\n  /usr/bin/ditto \""
+                "case \"${CONFIGURATION}\" in\n" + enabled.map(NativeShellString.quote).joined(separator: "|")
+                    + ")\n  /usr/bin/ditto \""
                     + source + "\" \"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/" + name
                     + "\"\n  if [ \"${CODE_SIGNING_ALLOWED:-NO}\" != NO ] && [ -n \"${EXPANDED_CODE_SIGN_IDENTITY:-}\" ]; then /usr/bin/codesign --force --sign \"${EXPANDED_CODE_SIGN_IDENTITY}\" --preserve-metadata=identifier,entitlements \"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/"
                     + name + "\"; fi\n  ;;\n*) /bin/rm -rf \"${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/" + name

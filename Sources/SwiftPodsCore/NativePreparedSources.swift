@@ -1,6 +1,31 @@
 import Foundation
 
 extension NativeSources {
+    /// Local sources stay in the developer's checkout. Record preparation per
+    /// installation, without caching, fingerprinting or replacing their files.
+    func prepareLocal(_ spec: NativeSpec) throws {
+        guard let script = spec.data["prepare_command"] as? String, !script.isEmpty, let directory = spec.directory
+        else { return }
+        guard !hardened else {
+            throw Diagnostic("SP-HARDENED-SCRIPT", stage: "policy", "prepare_command is forbidden", file: spec.name)
+        }
+        let identity = try digest(
+            jsonData(["specification": spec.data, "directory": directory.resolvingSymlinksInPath().path]))
+        let receipt = project.appendingPathComponent(
+            "Pods/Target Support Files/" + spec.name + "/local-prepare-state.json")
+        if !cleanInstall, !shouldUpdate(spec.name), let previous = try? readObject(receipt),
+            previous["schema_version"] as? Int == 1, previous["identity"] as? String == identity
+        {
+            return
+        }
+        // A rejected preparation must not retain a previous success marker.
+        if FileManager.default.fileExists(atPath: receipt.path) { try FileManager.default.removeItem(at: receipt) }
+        try prepare(spec)
+        try FileManager.default.createDirectory(
+            at: receipt.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try jsonData(["schema_version": 1, "identity": identity]).write(to: receipt, options: .atomic)
+    }
+
     func prepareCached(_ spec: NativeSpec) throws {
         guard let directory = spec.directory else { return }
         let key = try digest(

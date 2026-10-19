@@ -42,6 +42,7 @@ final class NativeHookRunner {
         let record = self.record
         func writeEvent(_ url: URL) { record(["kind": "managed_write", "path": url.path]) }
         guard let dsl else { return }
+        try xcode?.validatePackageOwnership()
         let fallback: [String: Any] = [
             "path": project.appendingPathComponent("Pods/Pods.xcodeproj").path, "targets": [],
         ]
@@ -148,6 +149,7 @@ final class NativeHookRunner {
                     writeEvent(user.url)
                 }
             }
+            if let path = try xcode.recordPackageHookChanges() { writeEvent(path) }
         }
         if !plugin { record(["kind": "phase", "name": name]) }
     }

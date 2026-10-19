@@ -4,28 +4,42 @@ struct NativeOnDemandResources {
     var files: [URL: Set<String>] = [:]
     var categories: [String: Set<String>] = [:]
     init() {}
-    init(attributes: [String: Any], root: URL) throws {
-        guard let raw = attributes["on_demand_resources"] else { return }
+    static func declarations(_ raw: Any) throws -> [(tag: String, paths: [String], category: String)] {
         guard let tags = raw as? [String: Any] else {
-            throw Diagnostic(
-                "SP-SPEC-ODR", stage: "integrate", "on_demand_resources must map tags to resource patterns")
+            throw Diagnostic("SP-SPEC-ODR", stage: "resolve", "on_demand_resources must map tags to resource patterns")
         }
-        let excluded = Set(try nativeGlob(attributes["exclude_files"], root: root))
-        for (tag, raw) in tags.sorted(by: { $0.key < $1.key }) {
+        return try tags.sorted(by: { $0.key < $1.key }).map { tag, raw in
             guard !tag.isEmpty, !tag.contains(where: { $0.isWhitespace }) else {
                 throw Diagnostic(
-                    "SP-SPEC-ODR", stage: "integrate", "Resource tags must be nonempty and contain no whitespace")
+                    "SP-SPEC-ODR", stage: "resolve", "Resource tags must be nonempty and contain no whitespace")
             }
             let value = raw as? [String: Any] ?? ["paths": raw]
             let category = value["category"] as? String ?? "download_on_demand"
-            guard ["initial_install", "prefetched", "download_on_demand"].contains(category),
-                value["paths"] is String || value["paths"] is [String]
+            let paths = value["paths"].map { $0 as? [Any] ?? [$0] } ?? []
+            guard Set(value.keys).isSubset(of: ["paths", "category"]),
+                value["category"] == nil || value["category"] is String,
+                ["initial_install", "prefetched", "download_on_demand"].contains(category),
+                paths.allSatisfy({ $0 is String || $0 is NSNull })
             else {
                 throw Diagnostic(
-                    "SP-SPEC-ODR", stage: "integrate", "Invalid on-demand resource paths or category", file: tag)
+                    "SP-SPEC-ODR", stage: "resolve", "Invalid on-demand resource paths or category", file: tag)
             }
-            for path in try nativeGlob(value["paths"], root: root)
-            where !NativeFileSelection.excluded(path, by: excluded) { files[path, default: []].insert(tag) }
+            let patterns = paths.compactMap { $0 as? String }
+            for pattern in patterns { try NativeSpecPaths.validatePath(pattern, file: tag) }
+            return (tag, patterns, category)
+        }
+    }
+
+    init(attributes: [String: Any], root: URL, expandLocalizedDirectories: Bool = true) throws {
+        guard let raw = attributes["on_demand_resources"], !(raw is NSNull) else { return }
+        for (tag, paths, category) in try Self.declarations(raw) {
+            let selected: [URL]
+            if expandLocalizedDirectories {
+                selected = try NativeFileSelection.resourcePaths(paths, attributes: attributes, root: root)
+            } else {
+                selected = try NativeFileSelection.paths(paths, attributes: attributes, root: root)
+            }
+            for path in selected { files[path, default: []].insert(tag) }
             categories[category, default: []].insert(tag)
         }
     }
@@ -50,7 +64,7 @@ struct NativeOnDemandResources {
             for build in graph.objects[phase]?["files"] as? [String] ?? [] {
                 guard let reference = graph.objects[build]?["fileRef"] as? String,
                     let path = graph.objects[reference]?["path"] as? String,
-                    let tags = files[URL(fileURLWithPath: path).standardizedFileURL]
+                    let tags = files[URL(fileURLWithPath: NativeBuildSetting.decodedLiteral(path)).standardizedFileURL]
                 else { continue }
                 var settings = graph.objects[build]?["settings"] as? [String: Any] ?? [:]
                 settings["ASSET_TAGS"] = tags.sorted()
@@ -75,10 +89,10 @@ extension NativeXcode {
             guard let variant = variantPlan?.variants[variantKey(root, platform)], let spec = resolution.specs[root],
                 let directory = spec.directory
             else { continue }
-            result.merge(
-                try NativeOnDemandResources(
-                    attributes: NativeVariantPlan.attributes(spec, names: variant.names, platform: platform),
-                    root: directory))
+            for name in variant.names {
+                result.merge(
+                    try NativeOnDemandResources(attributes: spec.attributes(name, platform: platform), root: directory))
+            }
         }
         return result
     }

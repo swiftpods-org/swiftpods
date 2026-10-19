@@ -50,7 +50,8 @@ enum NativeProjectProjection {
             result.add(
                 "pod-project:" + pod,
                 [
-                    "isa": "PBXFileReference", "path": projectForPod(pod).path, "sourceTree": "<absolute>",
+                    "isa": "PBXFileReference", "path": NativeBuildSetting.literal(projectForPod(pod).path),
+                    "sourceTree": "<absolute>",
                     "lastKnownFileType": "wrapper.pb-project",
                 ])
         }

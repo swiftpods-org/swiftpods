@@ -7,6 +7,8 @@ from native_integration import project, serialize
 
 
 def ruby(value):
+    if value is None:
+        return "nil"
     if isinstance(value, dict):
         return (
             "{"

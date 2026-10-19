@@ -7,7 +7,7 @@ final class NativeSources {
     let cache: URL
     let dsl: NativeDSL?
     let offline: Bool
-    let refresh: Bool
+    let refreshRepositories: Bool
     let hardened: Bool
     private let sources: [String]
     private var found: [String: [NativeSpec]] = [:]
@@ -26,16 +26,19 @@ final class NativeSources {
     var updating = false
     var updateRoots = Set<String>()
     private var materialized: [String: NativeSpec] = [:]
-    init(project: URL, cache: URL, sources: [String], dsl: NativeDSL?, offline: Bool, refresh: Bool, hardened: Bool)
-        throws
-    {
+    private var registeredRepositories: [String: [String: Any]] = [:]
+    init(
+        project: URL, cache: URL, sources: [String], dsl: NativeDSL?, offline: Bool,
+        refreshRepositories: Bool, hardened: Bool
+    ) throws {
+        for source in sources { try NativeSourceOptions.validate(["source": source], file: "Podfile source") }
         cacheLease = try NativeCacheLease(cache: cache, exclusive: false)
         self.project = project
         self.cache = cache
         self.sources = sources
         self.dsl = dsl
         self.offline = offline
-        self.refresh = refresh
+        self.refreshRepositories = refreshRepositories
         self.hardened = hardened
         try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
     }
@@ -95,14 +98,17 @@ final class NativeSources {
             } else if let git = options["git"] as? String {
                 let directory = try checkout(
                     git, selector: pinnedSelector(request.root, source: options), fresh: shouldUpdate(request.root),
-                    submodules: options["submodules"] as? Bool == true)
+                    submodules: options["submodules"] as? Bool == true, pod: request.root)
                 result = [try parsedSpec(findSpec(request.root, directory: directory), directory: directory)]
             } else if let path = options["podspec"] as? String {
-                let url = URL(string: path)
+                let location =
+                    ["podspec", "json"].contains((path as NSString).pathExtension)
+                        || path.contains("://") ? path : path + "/" + request.root + ".podspec"
+                let url = URL(string: location)
                 let file =
                     url?.scheme == "https" || url?.scheme == "http"
-                    ? try downloadedPodspec(path, pod: request.root)
-                    : URL(fileURLWithPath: path, relativeTo: project).standardizedFileURL
+                    ? try downloadedPodspec(location, pod: request.root)
+                    : URL(fileURLWithPath: location, relativeTo: project).standardizedFileURL
                 result = [try parsedSpec(file, external: true)]
             } else if options["http"] != nil || options["svn"] != nil || options["hg"] != nil {
                 let directory = try sourceSnapshot(options, pod: request.root)
@@ -115,7 +121,7 @@ final class NativeSources {
             let repositories = NativeRepositories(cache: cache)
             for raw in selected.map({ [$0] }) ?? sources {
                 var entries: [NativeSpec] = []
-                let registered = try repositories.record(raw)
+                let registered = try registeredRepository(raw, repositories: repositories)
                 let source = registered?["url"] as? String ?? (raw == "trunk" ? "https://cdn.cocoapods.org/" : raw)
                 if let registered, let directory = try repositories.snapshot(registered) {
                     entries = try catalog(request.root, directory: directory, repository: source)
@@ -182,6 +188,17 @@ final class NativeSources {
         return try NativePodspecCache(cache: cache).project(content)
     }
     func materialize(_ candidate: NativeSpec) throws -> NativeSpec {
+        if let file = candidate.catalogFile {
+            let identity = candidate.repository + "\n" + file.path
+            if let existing = materialized[identity] { return existing }
+            let spec = try parsedSpec(file, repository: candidate.repository)
+            guard spec.name == candidate.name, spec.version == candidate.version else {
+                throw Diagnostic(
+                    "SP-SOURCE-IDENTITY", stage: "resolve", "Catalog podspec identity differs from its index")
+            }
+            materialized[identity] = spec
+            return spec
+        }
         guard let url = candidate.data["_spec_url"] as? String else { return candidate }
         if let existing = materialized[url] { return existing }
         let file = try download(url)
@@ -193,6 +210,22 @@ final class NativeSources {
         materialized[url] = spec
         return spec
     }
+    /// One command keeps one catalog revision even if another command refreshes it.
+    private func registeredRepository(_ raw: String, repositories: NativeRepositories) throws -> [String: Any]? {
+        guard var entry = try repositories.record(raw), let name = entry["name"] as? String else { return nil }
+        if let selected = registeredRepositories[name] { return selected }
+        if refreshRepositories, !offline, entry["kind"] as? String == "git" {
+            _ = try repositories.update(name)
+            guard let updated = try repositories.record(name) else {
+                throw Diagnostic(
+                    "SP-REPO-MISSING", stage: "resolve", "Repository disappeared during refresh", file: name)
+            }
+            entry = updated
+        }
+        registeredRepositories[name] = entry
+        return entry
+    }
+
     private func catalog(_ name: String, directory: URL, repository: String) throws -> [NativeSpec] {
         guard
             let enumerator = FileManager.default.enumerator(
@@ -201,7 +234,22 @@ final class NativeSources {
         var result: [NativeSpec] = []
         while let file = enumerator.nextObject() as? URL {
             if [name + ".podspec.json", name + ".podspec"].contains(file.lastPathComponent) {
-                result.append(try parsedSpec(file, repository: repository))
+                if file.pathExtension != "json",
+                    FileManager.default.fileExists(atPath: file.appendingPathExtension("json").path)
+                {
+                    continue
+                }
+                let parent = file.deletingLastPathComponent()
+                if parent.deletingLastPathComponent().lastPathComponent == name,
+                    (try? PodVersion(parent.lastPathComponent)) != nil
+                {
+                    var entry = try NativeSpec(
+                        data: ["name": name, "version": parent.lastPathComponent], repository: repository)
+                    entry.catalogFile = file
+                    result.append(entry)
+                } else {
+                    result.append(try parsedSpec(file, repository: repository))
+                }
             }
         }
         return result

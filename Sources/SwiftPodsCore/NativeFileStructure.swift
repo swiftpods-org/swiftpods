@@ -9,21 +9,28 @@ extension NativeXcode {
         where spec.local || installationOptions["preserve_pod_file_structure"] as? Bool == true {
             guard let directory = spec.directory else { continue }
             let refs = children.filter { id in
-                (graph.objects[id]?["path"] as? String)?.hasPrefix(directory.path + "/") == true
+                guard let path = graph.objects[id]?["path"] as? String else { return false }
+                return NativePath.isDescendant(
+                    URL(fileURLWithPath: NativeBuildSetting.decodedLiteral(path)), of: directory)
             }
             guard !refs.isEmpty else { continue }
             children.removeAll { refs.contains($0) }
             let pod = graph.add(
                 "source-group:" + spec.name,
                 [
-                    "isa": "PBXGroup", "name": spec.name, "path": directory.path, "sourceTree": "<absolute>",
+                    "isa": "PBXGroup", "name": spec.name, "path": NativeBuildSetting.literal(directory.path),
+                    "sourceTree": "<absolute>",
                     "children": [],
                 ])
             children.append(pod)
             var groups: [String: String] = ["": pod]
             for ref in refs.sorted() {
                 guard let path = graph.objects[ref]?["path"] as? String else { continue }
-                let components = path.dropFirst(directory.path.count + 1).split(separator: "/").dropLast()
+                guard
+                    let relative = NativePath.relativeComponents(
+                        of: URL(fileURLWithPath: NativeBuildSetting.decodedLiteral(path)), to: directory)
+                else { continue }
+                let components = relative.dropLast()
                 var parent = pod
                 var prefix = ""
                 for component in components {
@@ -35,7 +42,8 @@ extension NativeXcode {
                     let child = graph.add(
                         "source-group:" + spec.name + ":" + prefix,
                         [
-                            "isa": "PBXGroup", "name": String(component), "path": String(component),
+                            "isa": "PBXGroup", "name": String(component),
+                            "path": NativeBuildSetting.literal(String(component)),
                             "sourceTree": "<group>", "children": [],
                         ])
                     var values = graph.objects[parent]?["children"] as? [String] ?? []

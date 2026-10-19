@@ -6,7 +6,7 @@ public struct StaticInspection {
 
     public func report(bundle: RuntimeBundle?) -> [String: Any] {
         let manager = FileManager.default
-        let podfile = directory.appendingPathComponent("Podfile")
+        let podfile = NativePodfilePath.find(in: directory) ?? directory.appendingPathComponent("Podfile")
         var checks: [[String: Any]] = []
         func check(_ name: String, _ status: String, _ message: String) {
             checks.append(["name": name, "status": status, "message": message])

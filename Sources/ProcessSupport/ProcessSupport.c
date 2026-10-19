@@ -9,23 +9,47 @@
 #include <unistd.h>
 
 #define SP_CHILDREN 512
-static volatile sig_atomic_t children[SP_CHILDREN];
-static volatile sig_atomic_t cancellation = 0;
+_Static_assert(ATOMIC_INT_LOCK_FREE == 2, "Signal state requires lock-free integer atomics");
+_Static_assert(sizeof(pid_t) <= sizeof(int), "Child PIDs must fit in signal-safe atomic integers");
+static _Atomic int children[SP_CHILDREN];
+static int waiting[SP_CHILDREN];
+static _Atomic int signal_readers = 0;
+static _Atomic int cancellation = 0;
 static pthread_mutex_t child_mutex = PTHREAD_MUTEX_INITIALIZER;
 static struct sigaction previous_int, previous_term, previous_pipe;
 static _Atomic int monitoring = 0;
 static pthread_t monitor_thread;
 
 static void signal_children(int number) {
+    atomic_fetch_add(&signal_readers, 1);
     for (int i = 0; i < SP_CHILDREN; ++i) {
-        pid_t pid = (pid_t)children[i];
+        pid_t pid = (pid_t)atomic_load(&children[i]);
         if (pid > 0)
             kill(-pid, number);
     }
+    atomic_fetch_sub(&signal_readers, 1);
+}
+static int registered_child(pid_t pid) {
+    if (pid <= 0)
+        return 0;
+    for (int i = 0; i < SP_CHILDREN; ++i)
+        if (atomic_load(&children[i]) == pid)
+            return 1;
+    return 0;
+}
+static int signal_child(pid_t pid, int number) {
+    atomic_fetch_add(&signal_readers, 1);
+    int registered = registered_child(pid);
+    if (registered)
+        kill(-pid, number);
+    atomic_fetch_sub(&signal_readers, 1);
+    return registered;
 }
 static void forward_signal(int number) {
-    cancellation = number;
+    int saved_errno = errno;
+    atomic_store(&cancellation, number);
     signal_children(number);
+    errno = saved_errno;
 }
 static double elapsed(struct timespec start, struct timespec now) {
     return (double)(now.tv_sec - start.tv_sec) + (double)(now.tv_nsec - start.tv_nsec) / 1000000000.0;
@@ -34,7 +58,7 @@ static void *monitor(void *unused) {
     (void)unused;
     struct timespec start = {0};
     while (atomic_load(&monitoring)) {
-        if (cancellation != 0) {
+        if (atomic_load(&cancellation) != 0) {
             struct timespec now;
             clock_gettime(CLOCK_MONOTONIC, &now);
             if (start.tv_sec == 0)
@@ -51,7 +75,7 @@ static void *monitor(void *unused) {
     return NULL;
 }
 int sp_cancellation_begin(void) {
-    cancellation = 0;
+    atomic_store(&cancellation, 0);
     struct sigaction handler = {0};
     handler.sa_handler = forward_signal;
     sigemptyset(&handler.sa_mask);
@@ -88,11 +112,11 @@ void sp_cancellation_end(void) {
     sigaction(SIGTERM, &previous_term, NULL);
     sigaction(SIGPIPE, &previous_pipe, NULL);
 }
-int sp_cancellation_number(void) { return (int)cancellation; }
+int sp_cancellation_number(void) { return atomic_load(&cancellation); }
 
 int sp_child_spawn(const char *executable, char *const argv[], char *const envp[], const char *directory, int input,
                    int output, int error, pid_t *pid) {
-    if (cancellation != 0)
+    if (atomic_load(&cancellation) != 0)
         return ECANCELED;
     posix_spawn_file_actions_t actions;
     posix_spawnattr_t attributes;
@@ -128,7 +152,7 @@ int sp_child_spawn(const char *executable, char *const argv[], char *const envp[
     pthread_mutex_lock(&child_mutex);
     int slot = -1;
     for (int i = 0; i < SP_CHILDREN; ++i)
-        if (children[i] == 0) {
+        if (atomic_load(&children[i]) == 0) {
             slot = i;
             break;
         }
@@ -137,9 +161,11 @@ int sp_child_spawn(const char *executable, char *const argv[], char *const envp[
     if (result == 0)
         result = posix_spawn(pid, executable, &actions, &attributes, argv, envp);
     if (result == 0) {
-        children[slot] = (sig_atomic_t)*pid;
-        if (cancellation != 0)
-            kill(-*pid, cancellation);
+        waiting[slot] = 0;
+        atomic_store(&children[slot], (int)*pid);
+        int number = atomic_load(&cancellation);
+        if (number != 0)
+            kill(-*pid, number);
     }
     pthread_mutex_unlock(&child_mutex);
     posix_spawn_file_actions_destroy(&actions);
@@ -148,34 +174,69 @@ int sp_child_spawn(const char *executable, char *const argv[], char *const envp[
 #undef SP_ACTION
 }
 int sp_child_wait(pid_t pid) {
-    int status = 0;
-    pid_t result;
-    do {
-        result = waitpid(pid, &status, 0);
-    } while (result == -1 && errno == EINTR);
-    /* A helper must not leave descendants holding its output pipes open. */
-    kill(-pid, SIGKILL);
+    if (pid <= 0)
+        return 125;
     pthread_mutex_lock(&child_mutex);
+    int slot = -1;
     for (int i = 0; i < SP_CHILDREN; ++i)
-        if (children[i] == pid)
-            children[i] = 0;
+        if (atomic_load(&children[i]) == pid && !waiting[i]) {
+            slot = i;
+            waiting[i] = 1;
+            break;
+        }
     pthread_mutex_unlock(&child_mutex);
-    if (cancellation != 0)
-        return 128 + cancellation;
+    if (slot < 0)
+        return 125;
+
+    /* Keep the exited child waitable until all group signals have completed. */
+    siginfo_t information = {0};
+    int observed;
+    do {
+        observed = waitid(P_PID, (id_t)pid, &information, WEXITED | WNOWAIT);
+    } while (observed == -1 && errno == EINTR);
+    if (observed == 0)
+        kill(-pid, SIGKILL);
+
+    pthread_mutex_lock(&child_mutex);
+    /* Negative entries reserve their slot but are invisible to signal readers. */
+    atomic_store(&children[slot], -(int)pid);
+    pthread_mutex_unlock(&child_mutex);
+    while (atomic_load(&signal_readers) != 0) {
+        struct timespec interval = {.tv_sec = 0, .tv_nsec = 1000000};
+        nanosleep(&interval, NULL);
+    }
+
+    int status = 0;
+    pid_t result = -1;
+    if (observed == 0) {
+        do {
+            result = waitpid(pid, &status, 0);
+        } while (result == -1 && errno == EINTR);
+    }
+    pthread_mutex_lock(&child_mutex);
+    atomic_store(&children[slot], 0);
+    waiting[slot] = 0;
+    pthread_mutex_unlock(&child_mutex);
+    int number = atomic_load(&cancellation);
+    if (number != 0)
+        return 128 + number;
     if (result == -1)
         return 125;
     return WIFSIGNALED(status) ? 128 + WTERMSIG(status) : WEXITSTATUS(status);
 }
 void sp_child_terminate(pid_t pid) {
-    kill(-pid, SIGTERM);
+    if (!signal_child(pid, SIGTERM))
+        return;
     struct timespec start, now;
     clock_gettime(CLOCK_MONOTONIC, &start);
     for (;;) {
+        if (!registered_child(pid))
+            return;
         if (kill(pid, 0) != 0 && errno == ESRCH)
             return;
         clock_gettime(CLOCK_MONOTONIC, &now);
         if (elapsed(start, now) >= 0.25) {
-            kill(-pid, SIGKILL);
+            (void)signal_child(pid, SIGKILL);
             return;
         }
         struct timespec interval = {.tv_sec = 0, .tv_nsec = 10000000};

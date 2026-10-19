@@ -4,17 +4,18 @@ extension NativeSources {
     func install(_ input: NativeSpec) throws -> NativeSpec {
         var spec = input
         if spec.local {
-            try prepare(spec)
+            try prepareLocal(spec)
             return spec
         }
         let destination = project.appendingPathComponent("Pods/" + spec.name)
         let receipt = project.appendingPathComponent("Pods/Target Support Files/" + spec.name + "/source-state.json")
         if installationOptions["incremental_installation"] as? Bool == true, !cleanInstall, !shouldUpdate(spec.name),
             let previous = try? readObject(receipt), previous["identity"] as? String == (try sourceIdentity(spec)),
-            previous["fingerprint"] as? String == (try FileFingerprint.tree(destination, requireContainedLinks: true))
+            previous["fingerprint"] as? String == (try FileFingerprint.tree(destination, requireContainedLinks: true)),
+            let checkout = try NativeSourceState.checkout(previous, pin: pinnedCheckouts[spec.name])
         {
             spec.directory = destination
-            spec.checkout = previous["checkout"] as? [String: String] ?? [:]
+            spec.checkout = checkout
             return spec
         }
         if FileManager.default.fileExists(atPath: destination.path) {
@@ -32,13 +33,13 @@ extension NativeSources {
                     try prefetchedSources[spec.name]
                     ?? checkout(
                         git, selector: pinnedSelector(spec.name, source: source), fresh: shouldUpdate(spec.name),
-                        submodules: source["submodules"] as? Bool == true)
+                        submodules: source["submodules"] as? Bool == true, pod: spec.name)
                 try FileManager.default.copyItem(at: directory, to: destination)
                 spec.checkout = try checkoutIdentity(spec.name, source: source, directory: directory)
-            } else if let http = source["http"] as? String {
+            } else if source["http"] != nil {
                 let archive =
                     try prefetchedSources[spec.name]
-                    ?? download(http, pod: spec.name, headers: source["headers"] as? [String: String] ?? [:])
+                    ?? downloadArchive(source, pod: spec.name)
                 try NativeArchive.extract(archive, source: source, destination: destination, pod: spec.name)
             } else if source["svn"] != nil || source["hg"] != nil {
                 let directory = try sourceSnapshot(source, pod: spec.name)

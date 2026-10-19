@@ -140,7 +140,7 @@ final class NativeCompatibilityTests: XCTestCase {
         ]
         XCTAssertEqual(try lock.changedRoots(direct), [])
     }
-    func testReferenceLockGraphDeduplicatesIdenticalDependencyStrings() throws {
+    func testTargetedUpdateRetainsEveryParentOfIdenticalDependencyStrings() throws {
         let path = try directory().appendingPathComponent("Podfile.lock")
         try Data(
             "PODS:\n  - A (1.0):\n    - Shared\n  - B (1.0):\n    - Shared\n  - Shared (1.0)\nDEPENDENCIES:\n  - A\n  - B\n"
@@ -148,8 +148,9 @@ final class NativeCompatibilityTests: XCTestCase {
         ).write(to: path)
         let lock = try NativeLock(path)
         XCTAssertEqual(lock.dependencies["B"], ["Shared"])
-        XCTAssertEqual(lock.unlocked(["A"]), ["A", "Shared"])
+        XCTAssertEqual(lock.unlocked(["A"]), ["A"])
         XCTAssertEqual(lock.unlocked(["B"]), ["B"])
+        XCTAssertEqual(lock.unlocked(["A", "B"]), ["A", "B", "Shared"])
     }
     func testLockedRepositoryDoesNotSwitchWhenEarlierSourceGainsTheVersion() throws {
         let root = try directory()
@@ -162,7 +163,7 @@ final class NativeCompatibilityTests: XCTestCase {
         }
         let sources = try NativeSources(
             project: root, cache: root.appendingPathComponent("cache"), sources: [first.path, second.path], dsl: nil,
-            offline: false, refresh: false, hardened: true)
+            offline: false, refreshRepositories: false, hardened: true)
         sources.lockedRepositories = ["Kit": second.path]
         let found = try sources.candidates(NativeDependency(["name": "Kit"]))
         XCTAssertEqual(found.count, 1)
@@ -172,7 +173,7 @@ final class NativeCompatibilityTests: XCTestCase {
         let root = try directory()
         let files = ["Public.h", "Private.hpp", "Project.hxx"].map { root.appendingPathComponent($0) }
         for file in files { try Data().write(to: file) }
-        for publicValue: Any? in [nil, [String]()] {
+        for publicValue: Any? in [nil, [String](), "Missing/*.h", ["Missing.h", "Absent/*.hpp"]] {
             var attributes: [String: Any] = [
                 "private_header_files": "Private.hpp", "project_header_files": "Project.hxx",
             ]
@@ -195,7 +196,7 @@ final class NativeCompatibilityTests: XCTestCase {
         let child = root.appendingPathComponent("Child.xcconfig")
         try Data("FLAGS = base\nSDKROOT = macosx\n".utf8).write(to: child)
         try Data(
-            "#include \"Child.xcconfig\"\n#include? \"Absent.xcconfig\"\nFLAGS += more\nMINIMUM[config=Debug][sdk=macosx*] = 13.0\nMINIMUM[config=Release] = 14.0\n"
+            "#include \"Child.xcconfig\"\n#include? \"Absent.xcconfig\"\nFLAGS = $(inherited) more\nMINIMUM[config=Debug][sdk=macosx*] = 13.0\nMINIMUM[config=Release] = 14.0\n"
                 .utf8
         ).write(to: base)
         var inputs = Set<String>()

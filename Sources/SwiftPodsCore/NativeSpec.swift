@@ -9,33 +9,24 @@ struct NativeSpec {
     var directory: URL?
     var local: Bool
     var checkout: [String: String] = [:]
+    var catalogFile: URL?
     var moduleName: String {
-        let value = data["module_name"] as? String ?? data["header_dir"] as? String ?? name
-        var normalized = value.replacingOccurrences(of: "[^A-Za-z0-9_]", with: "_", options: .regularExpression)
-        if normalized.first?.isNumber == true { normalized = "_" + normalized }
-        return normalized
+        if let explicit = data["module_name"] as? String { return explicit }
+        return NativeModuleIdentifier.normalize(data["header_dir"] as? String ?? name)
     }
     init(
         data: [String: Any], repository: String = "", directory: URL? = nil, local: Bool = false,
         checksum: String? = nil
     ) throws {
         try NativeSpecSchema.validate(data)
-        guard let name = data["name"] as? String, !name.isEmpty, !name.contains("/"),
-            name.range(of: #"\A[A-Za-z0-9_+.-]+\z"#, options: .regularExpression) != nil,
-            name != ".", name != "..", let version = data["version"] as? String
+        guard let name = data["name"] as? String, NativePodName.isValid(name),
+            let version = data["version"] as? String
         else {
             throw Diagnostic("SP-SPEC-SCHEMA", stage: "resolve", "Podspec requires a valid root name and version")
         }
         self.data = data
         self.name = name
         self.version = try PodVersion(version)
-        if let source = data["source"] as? [String: Any] { try NativeSourceOptions.validate(source, file: name) }
-        if let required = data["cocoapods_version"] as? String,
-            try !PodRequirement([required]).accepts(PodVersion("1.17.0"))
-        {
-            throw Diagnostic(
-                "SP-SPEC-PROFILE", stage: "resolve", "Specification requires a newer compatibility profile", file: name)
-        }
         if let module = data["module_name"] as? String,
             module.range(of: #"\A[A-Za-z_][A-Za-z0-9_]*\z"#, options: .regularExpression) == nil
         {
@@ -50,7 +41,21 @@ struct NativeSpec {
         try supplementaryAttributes(fullname, platform: platform)
     }
 
+    /// Catalog entries are data; compatibility applies to the selected graph.
+    func validateProfile() throws {
+        if let required = data["cocoapods_version"] as? String,
+            try !PodRequirement([required]).accepts(PodVersion("1.17.0"))
+        {
+            throw Diagnostic(
+                "SP-SPEC-PROFILE", stage: "resolve", "Specification requires a newer compatibility profile", file: name)
+        }
+    }
+
     static func merge(_ parent: [String: Any], _ child: [String: Any]) -> [String: Any] {
+        mergeValues(NativeSpecValues.attributes(parent), NativeSpecValues.attributes(child))
+    }
+
+    private static func mergeValues(_ parent: [String: Any], _ child: [String: Any]) -> [String: Any] {
         var merged = parent
         for (key, value) in child {
             if ["platforms", "info_plist"].contains(key), let a = parent[key] as? [String: Any],
@@ -73,7 +78,7 @@ struct NativeSpec {
                 }
                 merged[key] = dependencies
             } else if let a = parent[key] as? [String: Any], let b = value as? [String: Any] {
-                merged[key] = merge(a, b)
+                merged[key] = mergeValues(a, b)
             } else if NativeAttributeContract.arrays.contains(key), let before = parent[key] {
                 merged[key] = nativeStrings(before) + nativeStrings(value)
             } else {

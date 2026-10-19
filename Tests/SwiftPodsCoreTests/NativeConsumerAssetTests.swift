@@ -22,7 +22,7 @@ final class NativeConsumerAssetTests: XCTestCase {
             "bundle", ["isa": "PBXFileReference", "path": "Debug.bundle", "explicitFileType": "wrapper.cfbundle"])
         engine.products = [product]
         engine.productPlatforms[product] = "osx"
-        engine.resourceRoots["Debug.bundle"] = "Debug"
+        engine.resourceBundleRoots[product] = "Debug"
         XCTAssertEqual(
             try engine.consumerAssetExclusions(eligible: ["Always", "Debug"], enabled: ["Always"], platform: "osx"),
             ["$(BUILT_PRODUCTS_DIR)/Debug.bundle", conditional.path].sorted())
@@ -47,13 +47,13 @@ final class NativeConsumerAssetTests: XCTestCase {
             ])
         engine.products = [product]
         engine.productPlatforms[product] = "osx"
-        engine.resourceRoots["Kit.bundle"] = "Kit"
-        engine.copyResourceBundles(roots: ["Kit"], platform: "osx", target: target, user: user)
+        engine.resourceBundleRoots[product] = "Kit"
+        try engine.copyResourceBundles(roots: ["Kit"], platform: "osx", target: target, user: user)
         let phase = NativePBX.identifier("swiftpods:resources:" + target)
         XCTAssertEqual(user.objects[phase]?["isa"] as? String, "PBXCopyFilesBuildPhase")
         XCTAssertEqual(user.objects[phase]?["dstSubfolderSpec"] as? String, "7")
         XCTAssertEqual((user.objects[phase]?["files"] as? [String])?.count, 1)
-        engine.copyResourceBundles(roots: [], platform: "osx", target: target, user: user)
+        try engine.copyResourceBundles(roots: [], platform: "osx", target: target, user: user)
         XCTAssertNil(user.objects[phase])
         XCTAssertEqual(user.objects[target]?["buildPhases"] as? [String], [custom])
     }
@@ -74,6 +74,131 @@ final class NativeConsumerAssetTests: XCTestCase {
             try write()
             XCTAssertThrowsError(try ExecutionPolicy.hardenedManifest(path))
         }
+    }
+
+    func testBundleProductsKeepOwnershipWhenDeclaredNamesMatch() throws {
+        let root = try engine().project
+        try Data("payload".utf8).write(to: root.appendingPathComponent("payload.txt"))
+        let targets: [[String: Any]] = [
+            ["name": "First", "platform": ["name": "osx"], "dependencies": [["name": "KitA"]]],
+            ["name": "Second", "platform": ["name": "osx"], "dependencies": [["name": "KitB"]]],
+        ]
+        let names = ["KitA", "KitB"]
+        let specs = try Dictionary(
+            uniqueKeysWithValues: names.map { name in
+                (
+                    name,
+                    try NativeSpec(
+                        data: ["name": name, "version": "1.0", "resource_bundles": ["Shared": "payload.txt"]],
+                        directory: root)
+                )
+            })
+        let requests = try names.map { try NativeDependency(["name": $0], platform: "osx", deployment: "13.0") }
+        let generated = try NativeXcode(
+            project: root, manifest: ["targets": targets],
+            resolution: NativeResolution(specs: specs, requests: requests),
+            integrateUserProjects: false)
+        try generated.generate()
+        let bundles = generated.products.filter {
+            generated.graph.objects[$0]?["explicitFileType"] as? String == "wrapper.cfbundle"
+        }
+        XCTAssertEqual(bundles.count, 2)
+        XCTAssertEqual(Set(bundles.compactMap { generated.resourceBundleRoots[$0] }), Set(names))
+        XCTAssertEqual(Set(bundles.map { generated.productBuildPath($0) }).count, 2)
+        for (index, name) in names.enumerated() {
+            generated.selectConsumer(targets[index])
+            let matching = bundles.filter { generated.matchesProduct($0, roots: [name], platform: "osx") }
+            XCTAssertEqual(matching.count, 1)
+            XCTAssertEqual(generated.resourceBundleRoots[try XCTUnwrap(matching.first)], name)
+            XCTAssertEqual(
+                try generated.consumerAssetExclusions(eligible: [name], enabled: [], platform: "osx"),
+                matching.map { generated.productBuildPath($0) })
+        }
+        let user = try NativePBX(root.appendingPathComponent("Demo.xcodeproj/project.pbxproj"))
+        let target = user.add("consumer", ["isa": "PBXNativeTarget", "buildPhases": []])
+        generated.activeVariants = [:]
+        XCTAssertThrowsError(
+            try generated.copyResourceBundles(roots: Set(names), platform: "osx", target: target, user: user))
+        XCTAssertNoThrow(
+            try generated.copyResourceBundles(
+                roots: Set(names), platform: "osx", target: target, user: user,
+                configurations: [["KitA"], ["KitB"]]))
+    }
+
+    func testSharedBundleUsesDistinctBuildFilesForEachConsumer() throws {
+        let engine = try engine()
+        let user = try NativePBX(engine.project.appendingPathComponent("Demo.xcodeproj/project.pbxproj"))
+        let product = engine.graph.add(
+            "bundle", ["isa": "PBXFileReference", "path": "Shared.bundle", "explicitFileType": "wrapper.cfbundle"])
+        engine.products = [product]
+        engine.productPlatforms[product] = "osx"
+        engine.resourceBundleRoots[product] = "Kit"
+        var builds: [String] = []
+        for name in ["First", "Second"] {
+            let target = user.add(name, ["isa": "PBXNativeTarget", "buildPhases": []])
+            try engine.copyResourceBundles(roots: ["Kit"], platform: "osx", target: target, user: user)
+            let phase = try XCTUnwrap((user.objects[target]?["buildPhases"] as? [String])?.first)
+            builds += user.objects[phase]?["files"] as? [String] ?? []
+        }
+        XCTAssertEqual(builds.count, 2)
+        XCTAssertEqual(Set(builds).count, 2)
+        XCTAssertEqual(Set(builds.compactMap { user.objects[$0]?["fileRef"] as? String }).count, 1)
+    }
+
+    func testMappedFrameworkHeadersKeepPublicPrivateAndProjectVisibility() throws {
+        let root = try engine().project
+        for path in ["Headers/Public/Common.h", "Headers/Private/Common.h", "Headers/Flat.h", "Headers/Project.h"] {
+            let url = root.appendingPathComponent(path)
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data("// header\n".utf8).write(to: url)
+        }
+        let spec = try NativeSpec(
+            data: [
+                "name": "Kit", "version": "1.0", "source_files": "Headers/**/*.h", "header_mappings_dir": "Headers",
+                "public_header_files": "Headers/Public/*.h",
+                "private_header_files": ["Headers/Private/*.h", "Headers/Flat.h"],
+                "project_header_files": "Headers/Project.h",
+            ], directory: root)
+        let request = try NativeDependency(["name": "Kit"], platform: "osx", deployment: "13.0")
+        let generated = try NativeXcode(
+            project: root,
+            manifest: [
+                "targets": [
+                    [
+                        "name": "Demo", "platform": ["name": "osx"], "frameworks": "static",
+                        "dependencies": [["name": "Kit"]],
+                    ]
+                ]
+            ],
+            resolution: NativeResolution(specs: ["Kit": spec], requests: [request]), integrateUserProjects: false)
+        try generated.generate()
+        let library = try XCTUnwrap(generated.libraryTargets["Kit:osx"])
+        let phases = generated.graph.objects[library]?["buildPhases"] as? [String] ?? []
+        let copies = phases.compactMap { generated.graph.objects[$0] }.filter {
+            $0["isa"] as? String == "PBXCopyFilesBuildPhase"
+        }
+        XCTAssertEqual(
+            Set(copies.compactMap { $0["dstPath"] as? String }),
+            [
+                "$(PUBLIC_HEADERS_FOLDER_PATH)/Public", "$(PRIVATE_HEADERS_FOLDER_PATH)/Private",
+            ])
+        let headers = phases.compactMap { generated.graph.objects[$0] }.filter {
+            $0["isa"] as? String == "PBXHeadersBuildPhase"
+        }
+        .flatMap { $0["files"] as? [String] ?? [] }
+        let retained = Dictionary(
+            uniqueKeysWithValues: headers.compactMap { id -> (String, [String])? in
+                guard let reference = generated.graph.objects[id]?["fileRef"] as? String,
+                    let path = generated.graph.objects[reference]?["path"] as? String
+                else { return nil }
+                let attributes =
+                    (generated.graph.objects[id]?["settings"] as? [String: Any])?["ATTRIBUTES"] as? [String] ?? []
+                return (URL(fileURLWithPath: path).lastPathComponent, attributes)
+            })
+        XCTAssertEqual(retained["Flat.h"], ["Private"])
+        XCTAssertEqual(retained["Project.h"], [])
+        XCTAssertNil(retained["Common.h"])
     }
     func testDynamicLibraryOwnsItsBundlesWhileStaticLibraryCopiesToConsumer() throws {
         let engine = try engine()
@@ -102,12 +227,14 @@ final class NativeConsumerAssetTests: XCTestCase {
             let resources = phases.filter { generated.graph.objects[$0]?["isa"] as? String == "PBXResourcesBuildPhase" }
                 .flatMap { generated.graph.objects[$0]?["files"] as? [String] ?? [] }
             XCTAssertEqual(
-                resources.contains { generated.graph.objects[$0]?["fileRef"] as? String == bundle },
+                resources.contains {
+                    generated.graph.objects[$0]?["fileRef"] as? String == generated.buildReference(bundle)
+                },
                 linkage == "dynamic")
             XCTAssertEqual(generated.frameworkResourceBundles.contains(bundle), linkage == "dynamic")
             let user = try NativePBX(root.appendingPathComponent("Demo.xcodeproj/project.pbxproj"))
             let target = user.add("consumer", ["isa": "PBXNativeTarget", "buildPhases": []])
-            generated.copyResourceBundles(roots: ["Kit"], platform: "osx", target: target, user: user)
+            try generated.copyResourceBundles(roots: ["Kit"], platform: "osx", target: target, user: user)
             XCTAssertEqual((user.objects[target]?["buildPhases"] as? [String] ?? []).isEmpty, linkage == "dynamic")
         }
     }

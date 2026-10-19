@@ -7,12 +7,16 @@ final class NativeDSL {
     var callback: (([String: Any]) throws -> [String: Any])?
     private let process: NativeChildProcess
     private let adapterPath: String
+    private let sdkContext: NativeSDKContext
     private let input: FileHandle
     private let output: FileHandle
     private var pending = Data()
     private let relay = DispatchGroup()
-    init(bundle: RuntimeBundle, environment: [String: String], directory: URL, overrides: [String: String] = [:]) throws
-    {
+    init(
+        bundle: RuntimeBundle, environment: [String: String], directory: URL, overrides: [String: String] = [:],
+        sdkContext: NativeSDKContext? = nil
+    ) throws {
+        self.sdkContext = sdkContext ?? NativeSDKContext(environment: environment.merging(overrides) { _, new in new })
         let ruby = try ExternalRuby.locate(manifest: bundle.manifest, environment: environment, bundleRoot: bundle.root)
         let stdin = Pipe()
         let stdout = Pipe()
@@ -71,7 +75,7 @@ final class NativeDSL {
     func request(_ operation: String, _ arguments: [String: Any] = [:]) throws -> Any {
         var object = arguments
         object["operation"] = operation
-        var data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+        var data = try NativeJSON.data(object, pretty: false)
         data.append(10)
         try input.write(contentsOf: data)
         while true {
@@ -88,7 +92,7 @@ final class NativeDSL {
             let end = pending.firstIndex(of: 10)!
             let line = pending.prefix(upTo: end)
             pending.removeSubrange(...end)
-            guard let reply = try JSONSerialization.jsonObject(with: Data(line)) as? [String: Any] else {
+            guard let reply = try NativeJSON.decode(Data(line)) as? [String: Any] else {
                 throw Diagnostic("SP-DSL-PROTOCOL", stage: "dsl", "Invalid response from Ruby DSL adapter")
             }
             if reply["callback"] != nil {
@@ -97,9 +101,9 @@ final class NativeDSL {
                     if ["file_accessor", "build_settings"].contains(reply["callback"] as? String ?? "") {
                         let value =
                             try reply["callback"] as? String == "file_accessor"
-                            ? NativeFileAccessor.response(reply) : NativeBuildSettings.response(reply)
-                        var data = try JSONSerialization.data(
-                            withJSONObject: ["ok": true, "value": value], options: [.sortedKeys])
+                            ? NativeFileAccessor.response(reply)
+                            : NativeBuildSettings.response(reply, sdkContext: sdkContext)
+                        var data = try NativeJSON.data(["ok": true, "value": value], pretty: false)
                         data.append(10)
                         try input.write(contentsOf: data)
                         continue
@@ -110,7 +114,7 @@ final class NativeDSL {
                     }
                     response = ["ok": true, "value": try callback(reply)]
                 } catch { response = ["ok": false, "message": String(describing: error)] }
-                var data = try JSONSerialization.data(withJSONObject: response, options: [.sortedKeys])
+                var data = try NativeJSON.data(response, pretty: false)
                 data.append(10)
                 try input.write(contentsOf: data)
                 continue

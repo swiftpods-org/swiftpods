@@ -6,19 +6,27 @@ final class NativePBX {
     var root: [String: Any] = [:]
     let url: URL
     private var original: String
+    var normalizedConfigurationPaths: [String: String] = [:]
     var randomIdentifiers = false
     private var identifiers: [String: String] = [:]
+    var sourceRoot: URL {
+        let directory = url.deletingLastPathComponent().deletingLastPathComponent()
+        let path = objects[root["rootObject"] as? String ?? ""]?["projectDirPath"] as? String ?? ""
+        return URL(fileURLWithPath: path.isEmpty ? "." : path, relativeTo: directory).standardizedFileURL
+    }
     init(_ url: URL, existing: Bool = false) throws {
         self.url = url
         original = try FileFingerprint.tree(url)
         if existing {
+            let decoded = try PropertyListSerialization.propertyList(from: Data(contentsOf: url), format: nil)
+            try NativeDictionaryKeys.validate(decoded, file: url.path, stage: "integrate")
             guard
-                let value = try PropertyListSerialization.propertyList(from: Data(contentsOf: url), format: nil)
-                    as? [String: Any],
+                let value = decoded as? [String: Any],
                 let objects = value["objects"] as? [String: [String: Any]]
             else { throw Diagnostic("SP-XCODE-PROJECT", stage: "integrate", "Invalid Xcode project", file: url.path) }
             root = value
             self.objects = objects
+            try NativePBXPaths.validateGraph(objects, file: url.path)
         }
     }
     @discardableResult func add(_ key: String, _ object: [String: Any]) -> String {
@@ -30,8 +38,16 @@ final class NativePBX {
         objects[id] = object
         return id
     }
+    func isGeneratedConfigurationReference(_ id: String) -> Bool {
+        guard objects[id]?["isa"] as? String == "PBXFileReference",
+            let path = objects[id]?["path"] as? String
+        else { return false }
+        return id == Self.identifier("swiftpods:xcconfig:" + path)
+            || normalizedConfigurationPaths[id] == path
+    }
     static func identifier(_ key: String) -> String { String(digest(Data(key.utf8)).prefix(24)).uppercased() }
     func save() throws {
+        try NativePBXPaths.validateGraph(objects, file: url.path)
         guard try FileFingerprint.tree(url) == original else {
             throw Diagnostic(
                 "SP-XCODE-CONFLICT", stage: "integrate", "Project changed during installation", file: url.path)
@@ -58,7 +74,7 @@ final class NativePBX {
             }
             return "(\n\(entries.joined(separator: "\n"))\n\(indentation))"
         }
-        return quote(String(describing: value))
+        return quote(NativeScalarString.string(value))
     }
     private static func quote(_ value: String) -> String {
         "\""

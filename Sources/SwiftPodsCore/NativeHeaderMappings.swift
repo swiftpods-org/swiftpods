@@ -1,13 +1,22 @@
 import Foundation
 
 extension NativeXcode {
-    func mapFrameworkHeaders(_ headers: Set<URL>, attributes: [String: Any], root: URL, target: String, label: String)
+    enum HeaderVisibility: String {
+        case publicHeaders = "Public"
+        case privateHeaders = "Private"
+    }
+
+    func mapFrameworkHeaders(
+        _ headers: Set<URL>, paths: [URL: String], target: String, label: String,
+        visibility: HeaderVisibility
+    )
         throws
     {
+        let visibility = visibility.rawValue
         var groups: [String: [URL]] = [:]
         var destinations = Set<String>()
         for header in headers.sorted(by: { $0.path < $1.path }) {
-            let path = try NativeFileRules.headerPath(header, attributes: attributes, root: root)
+            let path = paths[header] ?? header.lastPathComponent
             guard destinations.insert(path).inserted else {
                 throw Diagnostic(
                     "SP-SPEC-HEADER-COLLISION", stage: "integrate", "Multiple framework headers map to " + path,
@@ -24,16 +33,20 @@ extension NativeXcode {
             graph.objects[phase]?["files"] = retained
         }
         for (directory, paths) in groups.sorted(by: { $0.key < $1.key }) {
-            let files = paths.map { buildFile(file($0.path), target: label + ":headers:" + directory) }
+            let files = paths.map {
+                buildFile(file($0.path), target: label + ":headers:" + visibility + ":" + directory)
+            }
             let id = graph.add(
-                "header-mapping:" + label + ":" + directory,
+                "header-mapping:" + label + ":" + visibility + ":" + directory,
                 [
-                    "isa": "PBXCopyFilesBuildPhase", "name": "Copy Headers " + directory,
+                    "isa": "PBXCopyFilesBuildPhase", "name": "Copy " + visibility + " Headers " + directory,
                     "buildActionMask": "2147483647", "runOnlyForDeploymentPostprocessing": "0", "files": files,
-                    "dstSubfolderSpec": "16", "dstPath": "$(PUBLIC_HEADERS_FOLDER_PATH)/" + directory,
+                    "dstSubfolderSpec": "16",
+                    "dstPath": "$(" + visibility.uppercased() + "_HEADERS_FOLDER_PATH)/" + directory,
                 ])
             phases.insert(id, at: 0)
         }
         graph.objects[target]?["buildPhases"] = phases
     }
+
 }

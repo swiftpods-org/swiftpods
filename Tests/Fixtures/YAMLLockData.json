@@ -1,0 +1,808 @@
+{
+  "schema_version": 1,
+  "reference": "Selected Ruby YAML.safe_load, the parser used by CocoaPods and the DSL adapter",
+  "cases": [
+    {
+      "name": "single-comment",
+      "yaml": "VALUE: 'kept' # comment\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": "kept"
+      }
+    },
+    {
+      "name": "double-comment",
+      "yaml": "VALUE: \"kept\" # comment\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": "kept"
+      }
+    },
+    {
+      "name": "flow-comment",
+      "yaml": "VALUE: [first, second] # comment\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": [
+          "first",
+          "second"
+        ]
+      }
+    },
+    {
+      "name": "mapping-comment",
+      "yaml": "VALUE: {field: kept} # comment\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": {
+          "field": "kept"
+        }
+      }
+    },
+    {
+      "name": "apostrophe-flow",
+      "yaml": "VALUE: [Bob's, next]\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": [
+          "Bob's",
+          "next"
+        ]
+      }
+    },
+    {
+      "name": "embedded-quote-flow",
+      "yaml": "VALUE: [a\"b, next]\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": [
+          "a\"b",
+          "next"
+        ]
+      }
+    },
+    {
+      "name": "json-map",
+      "yaml": "VALUE: {\"field\":\"kept\"}\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": {
+          "field": "kept"
+        }
+      }
+    },
+    {
+      "name": "quoted-map",
+      "yaml": "VALUE: {'field':kept}\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": {
+          "field": "kept"
+        }
+      }
+    },
+    {
+      "name": "trailing-sequence",
+      "yaml": "VALUE: [one,]\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": [
+          "one"
+        ]
+      }
+    },
+    {
+      "name": "trailing-mapping",
+      "yaml": "VALUE: {field: kept,}\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": {
+          "field": "kept"
+        }
+      }
+    },
+    {
+      "name": "implicit-null-map",
+      "yaml": "VALUE: {field, other}\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": {
+          "field": null,
+          "other": null
+        }
+      }
+    },
+    {
+      "name": "plain-map-colon",
+      "yaml": "VALUE: {field:kept}\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": {
+          "field:kept": null
+        }
+      }
+    },
+    {
+      "name": "sequence-pair",
+      "yaml": "VALUE: [field: kept, other: next]\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": [
+          {
+            "field": "kept"
+          },
+          {
+            "other": "next"
+          }
+        ]
+      }
+    },
+    {
+      "name": "empty-literal",
+      "yaml": "VALUE: |\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": ""
+      }
+    },
+    {
+      "name": "empty-folded",
+      "yaml": "VALUE: >-\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": ""
+      }
+    },
+    {
+      "name": "bool-yes",
+      "yaml": "VALUE: yes\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": true
+      }
+    },
+    {
+      "name": "bool-no",
+      "yaml": "VALUE: no\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": false
+      }
+    },
+    {
+      "name": "bool-on",
+      "yaml": "VALUE: On\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": true
+      }
+    },
+    {
+      "name": "bool-off",
+      "yaml": "VALUE: OFF\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": false
+      }
+    },
+    {
+      "name": "integer",
+      "yaml": "VALUE: 42\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": 42
+      }
+    },
+    {
+      "name": "negative-integer",
+      "yaml": "VALUE: -9\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": -9
+      }
+    },
+    {
+      "name": "large-integer",
+      "yaml": "VALUE: 9223372036854775807\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": 9223372036854775807
+      }
+    },
+    {
+      "name": "float",
+      "yaml": "VALUE: 1.5\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": 1.5
+      }
+    },
+    {
+      "name": "integral-float",
+      "yaml": "VALUE: 1.0\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": 1.0
+      }
+    },
+    {
+      "name": "exponent",
+      "yaml": "VALUE: 1.5e+20\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": 1.5e+20
+      }
+    },
+    {
+      "name": "octal",
+      "yaml": "VALUE: 012\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": 10
+      }
+    },
+    {
+      "name": "hex",
+      "yaml": "VALUE: 0xFF\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": 255
+      }
+    },
+    {
+      "name": "binary",
+      "yaml": "VALUE: 0b1010\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": 10
+      }
+    },
+    {
+      "name": "separator-int",
+      "yaml": "VALUE: 1_000\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": 1000
+      }
+    },
+    {
+      "name": "bad-quote",
+      "yaml": "VALUE: 'first'junk'\n",
+      "valid": false,
+      "reference_valid": false,
+      "expected": null
+    },
+    {
+      "name": "bad-flow",
+      "yaml": "VALUE: [first], last]\n",
+      "valid": false,
+      "reference_valid": false,
+      "expected": null
+    },
+    {
+      "name": "bad-pair",
+      "yaml": "VALUE: {field: first], other: kept}\n",
+      "valid": false,
+      "reference_valid": false,
+      "expected": null
+    },
+    {
+      "name": "bad-nested",
+      "yaml": "VALUE: [[one}, two]\n",
+      "valid": false,
+      "reference_valid": false,
+      "expected": null
+    },
+    {
+      "name": "ls-quoted",
+      "yaml": "VALUE: \"first\u2028last\"\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": "first\u2028last"
+      }
+    },
+    {
+      "name": "nel-quoted",
+      "yaml": "VALUE: \"first\u0085last\"\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": "first last"
+      }
+    },
+    {
+      "name": "block-plain-bracket",
+      "yaml": "VALUE: first[second\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": "first[second"
+      }
+    },
+    {
+      "name": "null-child-comment",
+      "yaml": "VALUE: # comment\n  field: kept\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": {
+          "field": "kept"
+        }
+      }
+    },
+    {
+      "name": "multi-document",
+      "yaml": "VALUE: first\n---\nOTHER: second\n",
+      "valid": false,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": "first"
+      }
+    },
+    {
+      "name": "trailing-document",
+      "yaml": "VALUE: first\n...\nOTHER: second\n",
+      "valid": false,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": "first"
+      }
+    },
+    {
+      "name": "syntax-line",
+      "yaml": "GOOD: kept\nBAD: [unterminated\nTAIL: kept\n",
+      "valid": false,
+      "reference_valid": false,
+      "expected": null
+    },
+    {
+      "name": "nested-flow",
+      "yaml": "VALUE: [one, {field: [two, three]}, ]\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": [
+          "one",
+          {
+            "field": [
+              "two",
+              "three"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "quoted-trailing",
+      "yaml": "VALUE: ['one',]\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": [
+          "one"
+        ]
+      }
+    },
+    {
+      "name": "empty-flow-value",
+      "yaml": "VALUE: {a:,}\n",
+      "valid": false,
+      "reference_valid": false,
+      "expected": null
+    },
+    {
+      "name": "numeric-flow-value",
+      "yaml": "VALUE: {'a':1}\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": {
+          "a": 1
+        }
+      }
+    },
+    {
+      "name": "plain-colon-map",
+      "yaml": "VALUE: {a:1}\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": {
+          "a:1": null
+        }
+      }
+    },
+    {
+      "name": "bad-empty-sequence",
+      "yaml": "VALUE: [,]\n",
+      "valid": false,
+      "reference_valid": false,
+      "expected": null
+    },
+    {
+      "name": "bad-empty-mapping",
+      "yaml": "VALUE: {,}\n",
+      "valid": false,
+      "reference_valid": false,
+      "expected": null
+    },
+    {
+      "name": "bad-map-value",
+      "yaml": "VALUE: 'first': 'last'\n",
+      "valid": false,
+      "reference_valid": false,
+      "expected": null
+    },
+    {
+      "name": "literal-blank",
+      "yaml": "VALUE: |\n\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": ""
+      }
+    },
+    {
+      "name": "literal-blank-keep",
+      "yaml": "VALUE: |+\n\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": "\n"
+      }
+    },
+    {
+      "name": "folded-blank",
+      "yaml": "VALUE: >\n\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": ""
+      }
+    },
+    {
+      "name": "folded-blank-keep",
+      "yaml": "VALUE: >+\n\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": "\n"
+      }
+    },
+    {
+      "name": "folded-indented",
+      "yaml": "VALUE: >\n  a\n    indented\n  b\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": "a\n  indented\nb\n"
+      }
+    },
+    {
+      "name": "folded-two-blanks",
+      "yaml": "VALUE: >\n  a\n\n\n  b\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": "a\n\nb\n"
+      }
+    },
+    {
+      "name": "folded-leading",
+      "yaml": "VALUE: >+\n\n  a\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": "\na\n"
+      }
+    },
+    {
+      "name": "literal-spaces",
+      "yaml": "VALUE: |\n  a\n   \n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": "a\n \n"
+      }
+    },
+    {
+      "name": "explicit-folded",
+      "yaml": "VALUE: >2-\n    four\n  two\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": "  four\ntwo"
+      }
+    },
+    {
+      "name": "literal-no-eof-newline",
+      "yaml": "VALUE: |\n  first",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": "first"
+      }
+    },
+    {
+      "name": "sequence-literal",
+      "yaml": "VALUE:\n- |2\n    a\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": [
+          "  a\n"
+        ]
+      }
+    },
+    {
+      "name": "sequence-mapping-literal",
+      "yaml": "VALUE:\n- field: |2\n    a\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": [
+          {
+            "field": "a\n"
+          }
+        ]
+      }
+    },
+    {
+      "name": "plain-folded",
+      "yaml": "VALUE: first\n  last\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": "first last"
+      }
+    },
+    {
+      "name": "plain-folded-blank",
+      "yaml": "VALUE: first\n\n  last\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": "first\nlast"
+      }
+    },
+    {
+      "name": "plain-comment-continuation",
+      "yaml": "VALUE: first\n  # comment\n  last\n",
+      "valid": false,
+      "reference_valid": false,
+      "expected": null
+    },
+    {
+      "name": "double-escaped-line",
+      "yaml": "VALUE: \"first\\\n  last\"\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": "firstlast"
+      }
+    },
+    {
+      "name": "flow-escaped-line",
+      "yaml": "VALUE: [\"first\\\n  last\"]\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": [
+          "firstlast"
+        ]
+      }
+    },
+    {
+      "name": "flow-comment-line",
+      "yaml": "VALUE: [first, # comment\n  second]\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": [
+          "first",
+          "second"
+        ]
+      }
+    },
+    {
+      "name": "quoted-escapes",
+      "yaml": "VALUE: \"\\0\\a\\b\\t\\n\\v\\f\\r\\e\\ \\\"\\/\\\\\\N\\_\\L\\P\"\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": "\u0000\u0007\b\t\n\u000b\f\r\u001b \"/\\\u0085\u00a0\u2028\u2029"
+      }
+    },
+    {
+      "name": "emoji-surrogate",
+      "yaml": "VALUE: \"\\uD83D\\uDE00\"\n",
+      "valid": false,
+      "reference_valid": false,
+      "expected": null
+    },
+    {
+      "name": "bad-hex-sign",
+      "yaml": "VALUE: \"\\u+123\"\n",
+      "valid": false,
+      "reference_valid": false,
+      "expected": null
+    },
+    {
+      "name": "int-min",
+      "yaml": "VALUE: -9223372036854775808\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": -9223372036854775808
+      }
+    },
+    {
+      "name": "int-uint",
+      "yaml": "VALUE: 18446744073709551615\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": 18446744073709551615
+      }
+    },
+    {
+      "name": "int-decimal",
+      "yaml": "VALUE: 18446744073709551616\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": 18446744073709551616
+      }
+    },
+    {
+      "name": "float-leading",
+      "yaml": "VALUE: .25\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": 0.25
+      }
+    },
+    {
+      "name": "float-trailing",
+      "yaml": "VALUE: 12.\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": 12.0
+      }
+    },
+    {
+      "name": "float-exponent",
+      "yaml": "VALUE: 1.e+2\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": 100.0
+      }
+    },
+    {
+      "name": "plain-exponent",
+      "yaml": "VALUE: 1e3\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": "1e3"
+      }
+    },
+    {
+      "name": "plain-invalid-octal",
+      "yaml": "VALUE: 08\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": "08"
+      }
+    },
+    {
+      "name": "comma-integer",
+      "yaml": "VALUE: 1,000\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": 1000
+      }
+    },
+    {
+      "name": "sexagesimal",
+      "yaml": "VALUE: 1:23\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": 4980
+      }
+    },
+    {
+      "name": "sexagesimal-three",
+      "yaml": "VALUE: 1:23:45\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": 5025
+      }
+    },
+    {
+      "name": "sexagesimal-float",
+      "yaml": "VALUE: 1:23.5\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": 5010.0
+      }
+    },
+    {
+      "name": "nbsp",
+      "yaml": "VALUE: \u00a0kept\u00a0\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "VALUE": "\u00a0kept\u00a0"
+      }
+    },
+    {
+      "name": "block-bracket-key",
+      "yaml": "some[key: value\n",
+      "valid": true,
+      "reference_valid": true,
+      "expected": {
+        "some[key": "value"
+      }
+    },
+    {
+      "name": "quoted-comment-nbsp",
+      "yaml": "VALUE: 'kept'\u00a0# comment\n",
+      "valid": false,
+      "reference_valid": false,
+      "expected": null
+    },
+    {
+      "name": "raw-nul",
+      "yaml": "VALUE: 'before\u0000after'\n",
+      "valid": false,
+      "reference_valid": false,
+      "expected": null
+    },
+    {
+      "name": "raw-bell",
+      "yaml": "VALUE: 'before\u0007after'\n",
+      "valid": false,
+      "reference_valid": false,
+      "expected": null
+    }
+  ]
+}

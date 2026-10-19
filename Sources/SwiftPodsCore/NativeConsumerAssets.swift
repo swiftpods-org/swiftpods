@@ -9,6 +9,8 @@ extension NativeXcode {
             var paths = Set(
                 try NativeResources.expandedPaths(roots.flatMap { staticResources[variantKey($0, platform)] ?? [] })
                     .map(\.path))
+            let onDemand = try onDemandResources(roots: roots, platform: platform)
+            paths.formUnion(try NativeResources.expandedPaths(Array(onDemand.files.keys)).map(\.path))
             for sdk in roots.flatMap({ vendorSDKs[variantKey($0, platform)] ?? [] }) {
                 paths.insert(sdk.url.path)
                 // Xcode links the processed product but its copy phase can
@@ -20,9 +22,7 @@ extension NativeXcode {
             }
             for product in products where matchesProduct(product, roots: roots, platform: platform) {
                 guard !frameworkResourceBundles.contains(product) else { continue }
-                guard graph.objects[product]?["explicitFileType"] as? String == "wrapper.cfbundle",
-                    let name = graph.objects[product]?["path"] as? String,
-                    roots.contains(resourceRoots[name] ?? "")
+                guard graph.objects[product]?["explicitFileType"] as? String == "wrapper.cfbundle"
                 else { continue }
                 paths.insert(productBuildPath(product))
             }
@@ -31,19 +31,34 @@ extension NativeXcode {
         return try assets(eligible).subtracting(assets(enabled)).sorted()
     }
 
-    func copyResourceBundles(roots: Set<String>, platform: String, target: String, user: NativePBX) {
+    func copyResourceBundles(
+        roots: Set<String>, platform: String, target: String, user: NativePBX,
+        configurations: [Set<String>] = []
+    ) throws {
         let key = "swiftpods:resources:" + target
         var phases = user.objects[target]?["buildPhases"] as? [String] ?? []
         phases.removeAll { $0 == NativePBX.identifier(key) }
         user.objects.removeValue(forKey: NativePBX.identifier(key))
         var files: [String] = []
+        var destinations: [String: Set<String>] = [:]
         for product in products where matchesProduct(product, roots: roots, platform: platform) {
             guard !frameworkResourceBundles.contains(product) else { continue }
-            guard let value = graph.objects[product], value["explicitFileType"] as? String == "wrapper.cfbundle",
-                roots.contains(resourceRoots[value["path"] as? String ?? ""] ?? "")
+            guard let value = graph.objects[product], value["explicitFileType"] as? String == "wrapper.cfbundle"
             else { continue }
+            let name = value["path"] as? String ?? ""
+            let owner = resourceBundleRoots[product] ?? ""
+            let previous = destinations[name, default: []]
+            let enabled = configurations.isEmpty ? [roots] : configurations
+            guard !enabled.contains(where: { $0.contains(owner) && !$0.isDisjoint(with: previous) }) else {
+                throw Diagnostic(
+                    "SP-XCODE-RESOURCE", stage: "integrate",
+                    "Multiple dependencies copy the resource bundle " + name + " into the same target", file: target)
+            }
+            destinations[name, default: []].insert(owner)
             let reference = user.add("swiftpods:product:" + product, consumerProduct(product))
-            files.append(user.add("swiftpods:build:" + product, ["isa": "PBXBuildFile", "fileRef": reference]))
+            files.append(
+                user.add(
+                    "swiftpods:bundle-build:" + target + ":" + product, ["isa": "PBXBuildFile", "fileRef": reference]))
         }
         if !files.isEmpty {
             phases.append(

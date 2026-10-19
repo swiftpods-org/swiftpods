@@ -25,7 +25,7 @@ enum NativeFileAccessor {
         let bundles = try (attributes["resource_bundles"] as? [String: Any] ?? [:]).mapValues { patterns in
             strings(try NativeFileSelection.paths(patterns, attributes: attributes, root: root))
         }
-        let odr = try NativeOnDemandResources(attributes: attributes, root: root)
+        let odr = try NativeOnDemandResources(attributes: attributes, root: root, expandLocalizedDirectories: false)
         var result: Any
         switch operation {
         case "source_files": result = strings(sources)

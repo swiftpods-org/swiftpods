@@ -5,6 +5,7 @@ import ProcessSupport
 final class NativeCommandSession {
     let bundle: RuntimeBundle
     let environment: [String: String]
+    let sdkContext: NativeSDKContext
     let machine: Bool
     let overrides: [String: String]
     let silent: Bool
@@ -17,6 +18,7 @@ final class NativeCommandSession {
     ) {
         self.bundle = bundle
         self.environment = environment
+        sdkContext = NativeSDKContext(environment: environment.merging(overrides) { _, new in new })
         self.machine = machine
         self.overrides = overrides
         silent = arguments.contains("--silent")
@@ -28,9 +30,9 @@ final class NativeCommandSession {
 
     func recordWrite(_ url: URL) { events.append(["kind": "managed_write", "path": url.path]) }
 
-    func run(arguments: [String]) -> HostResult {
+    func run(arguments: [String], project: URL? = nil) -> HostResult {
         do {
-            let request = try NativeCommandRequest(arguments)
+            let request = try NativeCommandRequest(arguments, project: project)
             let action = request.action
             let args = request.arguments
             let project = request.project
@@ -74,7 +76,7 @@ final class NativeCommandSession {
             } else if action == "init" {
                 guard args.isEmpty else { throw Diagnostic("SP-CLI-ARGUMENT", stage: "cli", "Unknown init option") }
                 let podfile = project.appendingPathComponent("Podfile")
-                guard !FileManager.default.fileExists(atPath: podfile.path) else {
+                guard NativePodfilePath.find(in: project) == nil else {
                     throw Diagnostic("SP-INIT-EXISTS", stage: "init", "Podfile already exists")
                 }
                 let projects = try FileManager.default.contentsOfDirectory(at: project, includingPropertiesForKeys: nil)
@@ -88,13 +90,14 @@ final class NativeCommandSession {
                 }.sorted()
                 let analyzed = try NativeManifest.analyze(
                     ["targets": targets.map { ["name": $0, "project": projects[0].lastPathComponent] }],
-                    project: project, integrate: true)
+                    project: project, integrate: true, sdkContext: sdkContext)
                 let content =
-                    "project " + NativeLock.quote(projects[0].lastPathComponent) + "\n\n"
+                    "project " + NativeRubyString.quote(projects[0].lastPathComponent) + "\n\n"
                     + (analyzed["targets"] as? [[String: Any]] ?? []).map { target in
                         let platform = target["platform"] as! [String: String]
-                        return "target " + NativeLock.quote(target["name"] as! String) + " do\n  platform :" + platform[
-                            "name"]! + ", " + NativeLock.quote(platform["deployment_target"]!) + "\nend\n"
+                        return "target " + NativeRubyString.quote(target["name"] as! String) + " do\n  platform :"
+                            + platform[
+                                "name"]! + ", " + NativeRubyString.quote(platform["deployment_target"]!) + "\nend\n"
                     }.joined(separator: "\n")
                 try Data(content.utf8).writeIfChanged(to: podfile, options: .atomic)
                 writeEvent(podfile)

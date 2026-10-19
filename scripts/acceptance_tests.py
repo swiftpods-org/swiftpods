@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import runpy
+import signal
 import subprocess
 import sys
 import tempfile
@@ -48,8 +49,9 @@ class EvidenceTests(unittest.TestCase):
             "source_revision": {"commit": "fixed", "dirty": False},
             "test_count": 1,
             "verified_cases": ["method"],
+            "bundle_digest": "bundle",
         }
-        self.names = ["native-units.json", "fixture.json"]
+        self.names = ["native-units.json", "fixture.json", "native-distribution.json"]
         self.revision = self.report["source_revision"]
         for name in self.names:
             self.write(name, self.report)
@@ -153,6 +155,175 @@ class EvidenceTests(unittest.TestCase):
             installer.select_asset(
                 manifest, "1.0.0", architecture="arm64", macos="12.9.9"
             )
+
+    def testInstallerRejectsMissingReplacedAndRedirectedLaunchers(self):
+        prefix = self.root / "installed"
+        binary = prefix / "libexec/bin/swiftpods"
+        binary.parent.mkdir(parents=True)
+        binary.write_text("#!/bin/sh\nexit 0\n")
+        binary.chmod(0o755)
+        launcher = prefix / "bin/swiftpods"
+        launcher.parent.mkdir()
+        with self.assertRaisesRegex(RuntimeError, "launcher"):
+            installer.verify_launcher(prefix)
+        launcher.symlink_to("../libexec/bin/swiftpods")
+        installer.verify_launcher(prefix)
+        launcher.unlink()
+        launcher.write_text("unowned file")
+        with self.assertRaisesRegex(RuntimeError, "launcher"):
+            installer.verify_launcher(prefix)
+        launcher.unlink()
+        launcher.symlink_to(self.binary)
+        with self.assertRaisesRegex(RuntimeError, "launcher"):
+            installer.verify_launcher(prefix)
+
+    def testInstallerArchiveRootCannotCollideWithItsPayloadStaging(self):
+        for name in ["prefix", "archive", "SwiftPods"]:
+            with self.subTest(root=name):
+                archive = self.root / (name + ".zip")
+                metadata = {
+                    "swiftpods_version": "0.1.0-dev",
+                    "runtime": {"mode": "external"},
+                    "build_host": {"architecture": "fixture"},
+                    "minimum_macos": "13.0",
+                }
+                with zipfile.ZipFile(archive, "w") as payload:
+                    payload.writestr(name + "/compatibility.json", json.dumps(metadata))
+                    binary = zipfile.ZipInfo(name + "/bin/swiftpods")
+                    binary.external_attr = 0o100755 << 16
+                    payload.writestr(binary, "#!/bin/sh\nexit 0\n")
+                asset = {
+                    "architecture": "fixture",
+                    "minimum_macos": "13.0",
+                    "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+                }
+                manifest = self.root / (name + ".json")
+                manifest.write_text(
+                    json.dumps(
+                        {"schema_version": 1, "version": "0.1.0-dev", "assets": [asset]}
+                    )
+                )
+                prefix = self.root / (name + "-installed")
+                argv = [
+                    "install.py",
+                    "--version",
+                    "0.1.0-dev",
+                    "--manifest",
+                    str(manifest),
+                    "--manifest-sha256",
+                    hashlib.sha256(manifest.read_bytes()).hexdigest(),
+                    "--archive",
+                    str(archive),
+                    "--prefix",
+                    str(prefix),
+                ]
+                with (
+                    patch("sys.argv", argv),
+                    patch.object(installer, "select_asset", return_value=asset),
+                    patch.object(installer, "verify_distribution"),
+                ):
+                    installer.main()
+                installer.verify_launcher(prefix)
+                self.assertTrue((prefix / ".installation.json").is_file())
+                self.assertFalse((prefix / "libexec/.installation.json").exists())
+
+    def testSigtermUnwindsTheRunnerAndStopsItsChild(self):
+        state = self.root / "sigterm-child.json"
+        child = "import json,os,signal,sys,time;signal.signal(signal.SIGINT,signal.SIG_IGN);json.dump({'pid':os.getpid()},open(sys.argv[1],'w'));time.sleep(60)"
+        driver = "import sys;from pathlib import Path;sys.path.insert(0,sys.argv[1]);from processes import run_logged;run_logged([sys.executable,'-c',sys.argv[3],sys.argv[4]],Path(sys.argv[2]),Path(sys.argv[2])/'child.log',cancellation_grace=0.1)"
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                driver,
+                str(Path(reporting.__file__).parent),
+                str(self.root),
+                child,
+                str(state),
+            ]
+        )
+
+        def cleanup():
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+            if state.exists():
+                try:
+                    os.killpg(json.loads(state.read_text())["pid"], signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+        self.addCleanup(cleanup)
+        deadline = time.monotonic() + 5
+        while not state.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(state.is_file())
+        process.send_signal(signal.SIGTERM)
+        self.assertEqual(process.wait(timeout=5), 128 + signal.SIGTERM)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(json.loads(state.read_text())["pid"], 0)
+
+    def testEvidenceIndexCannotClaimAnUntestedPayload(self):
+        with patch.object(
+            evidence_tools, "required_reports", return_value=set(self.names)
+        ):
+            path, metadata = self.evidence_archive()
+            with zipfile.ZipFile(path) as archive:
+                files = {name: archive.read(name) for name in archive.namelist()}
+            index = json.loads(files["index.json"])
+            index["bundles"][0]["bundle_digest"] = "untested-payload"
+            metadata["bundle_digest"] = "untested-payload"
+            files["index.json"] = json.dumps(index).encode()
+            with zipfile.ZipFile(path, "w") as archive:
+                for name, data in files.items():
+                    archive.writestr(name, data)
+            with self.assertRaisesRegex(RuntimeError, "package index"):
+                evidence_tools.validate(path, metadata, "manifest")
+
+    def testEvidenceExportChecksPayloadBytesAgainstTheManifest(self):
+        bundle = self.root / "payload"
+        bundle.mkdir()
+        adapter = bundle / "adapter.rb"
+        adapter.write_text("puts 'tested'\n")
+        files = {"adapter.rb": {"sha256": evidence_tools.digest(adapter.read_bytes())}}
+        metadata = {
+            "files": files,
+            "bundle_digest": evidence_tools.digest(
+                json.dumps(files, sort_keys=True).encode()
+            ),
+        }
+        evidence_tools.verify_payload(bundle, metadata)
+        adapter.write_text("raise 'changed after tests'\n")
+        with self.assertRaisesRegex(RuntimeError, "payload changed"):
+            evidence_tools.verify_payload(bundle, metadata)
+
+    def testEvidenceExportRejectsARepackagedAdapter(self):
+        bundle = self.root / "Bundle"
+        binary = bundle / "bin/swiftpods"
+        binary.parent.mkdir(parents=True)
+        binary.write_bytes(self.binary.read_bytes())
+        self.report["executable"]["path"] = str(binary)
+        for name in self.names:
+            self.write(name, self.report)
+        manifest = {
+            "bundle_digest": "changed-adapter",
+            "files": {"bin/swiftpods": {"sha256": self.report["executable"]["sha256"]}},
+        }
+        (bundle / "compatibility.json").write_text(json.dumps(manifest))
+        report = dict(self.report, **acceptance.collect(self.names))
+        report.update(full=True, apple_integration_omitted=False, stages=[])
+        self.write("check.json", report)
+        with (
+            patch.object(evidence_tools, "ROOT", self.root),
+            patch.object(evidence_tools, "source_digest", return_value="source"),
+            patch.object(evidence_tools, "contract_digest", return_value="contract"),
+            patch.object(evidence_tools, "source_revision", return_value=self.revision),
+            patch.object(
+                evidence_tools, "required_reports", return_value=set(self.names)
+            ),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "package identity changed"):
+                evidence_tools.export(self.root / "repackaged.zip")
 
     def testBundleArgumentSpellingsSelectPackagedBinaryAndReport(self):
         bundle = self.root / "packaged release"
@@ -280,6 +451,23 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(errors, ["Verification cancelled"])
         with self.assertRaises(ProcessLookupError):
             os.kill(json.loads(state.read_text())["pid"], 0)
+
+    def testNativeRegressionScriptsAreRegisteredAndReportsAreUnique(self):
+        registry = json.loads((ROOT / "Profiles/contract.json").read_text())
+        suites = registry["suites"]
+        self.assertEqual(len(suites), len({suite["id"] for suite in suites}))
+        self.assertEqual(len(suites), len({suite["report"] for suite in suites}))
+        for suite in suites:
+            self.assertTrue((ROOT / suite["script"]).is_file(), suite["script"])
+        # Package runners require artifacts/arguments supplied by release checks.
+        package_only = {"native_distribution_tests.py", "native_homebrew_tests.py"}
+        discovered = {
+            "scripts/" + path.name
+            for path in (ROOT / "scripts").glob("native_*_tests.py")
+            if path.name not in package_only
+        }
+        registered = {suite["script"] for suite in suites if not suite["reference"]}
+        self.assertFalse(discovered - registered, sorted(discovered - registered))
 
     def testStandardAcceptanceRunsRubyRegressionsBeforeFixtures(self):
         registry = dict(

@@ -67,18 +67,18 @@ extension NativeXcode {
                 spec, request: request, label: label, kind: kind, attributes: attributes, host: host)
             supplementaryTargets[variant.key, default: [:]][request.name] = id
             if kind == .app { apps[variantKey(request.name, request.platform)] = (id, label) }
-            try writeSupplementaryScheme(
+            try writeScheme(
                 id: id, label: label, kind: kind, host: host, options: attributes["scheme"] as? [String: Any] ?? [:])
         }
     }
 
-    private func supplementaryLabel(_ spec: NativeSpec, request: NativeDependency, kind: NativeSpecKind) throws
+    func supplementaryLabel(_ spec: NativeSpec, request: NativeDependency, kind: NativeSpecKind) throws
         -> String
     {
         let infix =
             kind == .test ? "-" + (try spec.testType(request.name, platform: request.platform)).label + "-" : "-"
         return libraryLabel(request.root, request.platform) + infix
-            + request.name.split(separator: "/").dropFirst().joined(separator: "-")
+            + NativePodName.components(request.name).dropFirst().joined(separator: "-")
     }
 
     private func supplementaryTarget(
@@ -114,21 +114,22 @@ extension NativeXcode {
         var module = label.replacingOccurrences(of: "[^A-Za-z0-9_]", with: "_", options: .regularExpression)
         if module.first?.isNumber == true { module = "_" + module }
         settings["PRODUCT_MODULE_NAME"] = module
-        settings["PRODUCT_BUNDLE_IDENTIFIER"] = "org.swiftpods." + label.replacingOccurrences(of: "_", with: "-")
+        settings["PRODUCT_BUNDLE_IDENTIFIER"] = "org.swiftpods.$(PRODUCT_NAME:rfc1034identifier)"
         settings["DEFINES_MODULE"] = "NO"
-        settings["PODS_ROOT"] = project.appendingPathComponent("Pods").path
-        settings["PODS_TARGET_SRCROOT"] = directory.path
+        settings["PODS_ROOT"] = NativeBuildSetting.literal(project.appendingPathComponent("Pods").path)
+        settings["PODS_TARGET_SRCROOT"] = NativeBuildSetting.literal(directory.path)
         settings["SWIFT_VERSION"] =
             variantPlan?.variants[variantKey(request.root, request.platform)]?.swiftVersion ?? "5.0"
         if let arc = attributes["requires_arc"] as? Bool { settings["CLANG_ENABLE_OBJC_ARC"] = arc ? "YES" : "NO" }
         if attributes["compiler_flags"] != nil {
+            let flags = nativeStrings(settings["OTHER_CFLAGS"])
             settings["OTHER_CFLAGS"] =
-                "$(inherited) " + nativeStrings(attributes["compiler_flags"]).joined(separator: " ")
+                (flags.isEmpty ? ["$(inherited)"] : flags) + nativeStrings(attributes["compiler_flags"])
         }
         let sources = try generatedSource.map { [$0] } ?? NativeFileSelection.sourceFiles(attributes, root: directory)
         let rules = try NativeFileRules(attributes, root: directory, files: sources)
         try compileSettings(attributes, root: directory, label: label, settings: &settings)
-        let sourceFiles = sources.filter { NativeFileSelection.sources.contains($0.pathExtension) }.map {
+        let sourceFiles = sources.filter { NativeFileSelection.compilableSources.contains($0.pathExtension) }.map {
             buildFile(file($0.path), target: label, settings: rules.sourceSettings($0))
         }
         var libraryRequests = variantPlan?.variants[variantKey(request.root, request.platform)]?.actualRequests ?? []
@@ -200,15 +201,23 @@ extension NativeXcode {
             }
         ).sorted()
         let searchPaths: [String: [String]] = [
-            "HEADER_SEARCH_PATHS": [directory.path] + headerSettings(roots, platform: request.platform)
-                + headerDirectories + sdks.filter { !$0.isXCFramework }.compactMap { $0.slices.first?.headers?.path },
+            "HEADER_SEARCH_PATHS": [NativeBuildSetting.literal(directory.path)]
+                + headerSettings(roots, platform: request.platform)
+                + headerDirectories.map(NativeBuildSetting.literal)
+                + sdks.filter { !$0.isXCFramework }.compactMap {
+                    $0.slices.first?.headers.map { NativeBuildSetting.literal($0.path) }
+                },
             "FRAMEWORK_SEARCH_PATHS": ["$(BUILT_PRODUCTS_DIR)"]
                 + librarySearchDirectories(roots, platform: request.platform)
                 + (kind == .test ? ["$(PLATFORM_DIR)/Developer/Library/Frameworks"] : [])
-                + sdks.filter { !$0.isXCFramework && $0.isFramework }.map { $0.url.deletingLastPathComponent().path },
+                + sdks.filter { !$0.isXCFramework && $0.isFramework }.map {
+                    NativeBuildSetting.literal($0.url.deletingLastPathComponent().path)
+                },
             "LIBRARY_SEARCH_PATHS": ["$(BUILT_PRODUCTS_DIR)"]
                 + librarySearchDirectories(roots, platform: request.platform)
-                + sdks.filter { !$0.isXCFramework && !$0.isFramework }.map { $0.url.deletingLastPathComponent().path },
+                + sdks.filter { !$0.isXCFramework && !$0.isFramework }.map {
+                    NativeBuildSetting.literal($0.url.deletingLastPathComponent().path)
+                },
             "SWIFT_INCLUDE_PATHS": ["$(BUILT_PRODUCTS_DIR)"]
                 + librarySearchDirectories(roots, platform: request.platform),
         ]
@@ -218,10 +227,14 @@ extension NativeXcode {
             for path in paths.map(NativeBuildSetting.path) where !values.contains(path) { values.append(path) }
             settings[key] = values
         }
+        applyCustomModuleMaps(roots, platform: request.platform, settings: &settings)
         settings["OTHER_LDFLAGS"] =
             ["$(inherited)"] + nativeStrings(settings["OTHER_LDFLAGS"])
             + NativeBuildSettings.libraryFlags(
                 nativeStrings(attributes["libraries"]), sources: sources, settings: settings, linkingWithClang: true)
+        settings["OTHER_LDFLAGS"] =
+            nativeStrings(settings["OTHER_LDFLAGS"])
+            + (try consumerLinkerFlags(roots, platform: request.platform, sources: sources, settings: settings))
         let mac = request.platform == "osx"
         settings["LD_RUNPATH_SEARCH_PATHS"] =
             [
@@ -259,23 +272,33 @@ extension NativeXcode {
         try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0).writeIfChanged(
             to: info, options: .atomic)
         settings["GENERATE_INFOPLIST_FILE"] = "NO"
-        settings["INFOPLIST_FILE"] = info.path
-        var resources = try supplementaryResources(attributes["resources"], root: directory, owner: label)
+        settings["INFOPLIST_FILE"] = NativeBuildSetting.literal(info.path)
         var onDemand = NativeOnDemandResources()
         if kind == .app {
             onDemand = try onDemandResources(roots: roots, platform: request.platform)
             onDemand.merge(try NativeOnDemandResources(attributes: attributes, root: directory))
             settings.merge(onDemand.buildSettings) { _, new in new }
-            resources += try NativeResources.references(
-                onDemand.files.keys.sorted(by: { $0.path < $1.path }), owner: label, graph: graph)
         }
-        resources += try NativeResources.references(
-            roots.sorted().flatMap { staticResources[variantKey($0, request.platform)] ?? [] },
-            owner: label + "-libraries", graph: graph)
+        var resources = try NativeResources.references(
+            NativeFileSelection.resourcePaths(attributes["resources"], attributes: attributes, root: directory)
+                + Array(onDemand.files.keys)
+                + roots.sorted().flatMap { staticResources[variantKey($0, request.platform)] ?? [] },
+            owner: label, graph: graph, ungrouped: Set(onDemand.files.keys))
         let libraryBundles = products.filter { product in
             guard !frameworkResourceBundles.contains(product) else { return false }
             guard graph.objects[product]?["explicitFileType"] as? String == "wrapper.cfbundle" else { return false }
             return matchesProduct(product, roots: roots, platform: request.platform)
+        }
+        // Only products copied into this consumer share a destination. Other
+        // supplementary targets have independent bundle output directories.
+        var bundleDestinations = Set<String>()
+        for product in libraryBundles {
+            let name = graph.objects[product]?["path"] as? String ?? ""
+            guard bundleDestinations.insert(name).inserted else {
+                throw Diagnostic(
+                    "SP-XCODE-RESOURCE", stage: "integrate", "Resource bundle product name is already used",
+                    file: name)
+            }
         }
         resources += libraryBundles.map(buildReference)
         dependencies += libraryBundles.compactMap { product in
@@ -288,38 +311,32 @@ extension NativeXcode {
                 throw Diagnostic(
                     "SP-XCODE-RESOURCE", stage: "integrate", "Invalid resource bundle name", file: request.name)
             }
-            guard
-                !targetIDs.contains(where: { id in
-                    guard let product = graph.objects[id]?["productReference"] as? String else { return false }
-                    return graph.objects[product]?["path"] as? String == bundle + ".bundle"
-                        && productVariants[product] == currentVariant
-                })
-            else {
+            guard bundleDestinations.insert(bundle + ".bundle").inserted else {
                 throw Diagnostic(
                     "SP-XCODE-RESOURCE", stage: "integrate", "Resource bundle product name is already used",
                     file: bundle)
             }
-            let bundleLabel = libraryLabel(request.root, request.platform) + "-" + bundle
+            let bundleIdentity = try resourceBundleIdentity(bundle, variant: currentVariant ?? "", owner: request.name)
+            let bundleLabel = resourceBundleLabels[bundleIdentity] ?? label + "-" + bundle
             let refs = try NativeResources.references(
-                NativeFileSelection.paths(patterns, attributes: attributes, root: directory), owner: bundleLabel,
+                NativeFileSelection.resourcePaths(patterns, attributes: attributes, root: directory),
+                owner: bundleLabel,
                 graph: graph)
             let product = graph.add(
-                "product:" + bundleLabel,
+                "resource-bundle-product:" + bundleIdentity,
                 [
                     "isa": "PBXFileReference", "explicitFileType": "wrapper.cfbundle", "path": bundle + ".bundle",
                     "sourceTree": "BUILT_PRODUCTS_DIR",
                 ])
             var bundleSettings = baseSettings(platform: request.platform, deployment: request.deployment)
             bundleSettings["PRODUCT_NAME"] = bundle
-            bundleSettings["PRODUCT_BUNDLE_IDENTIFIER"] = "org.swiftpods." + bundle
-            if variantPlan?.variants[currentVariant ?? ""]?.scoped == true {
-                bundleSettings["CONFIGURATION_BUILD_DIR"] =
-                    "$(BUILD_DIR)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)/" + bundleLabel
-                productBuildPaths[product] = bundleLabel + "/" + bundle + ".bundle"
-            }
+            bundleSettings["PRODUCT_BUNDLE_IDENTIFIER"] = "org.swiftpods.$(PRODUCT_NAME:rfc1034identifier)"
+            bundleSettings["CONFIGURATION_BUILD_DIR"] =
+                "$(BUILD_DIR)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)/" + bundleLabel
+            productBuildPaths[product] = bundleLabel + "/" + bundle + ".bundle"
             productVariants[product] = currentVariant
             let target = graph.add(
-                "target:" + bundleLabel,
+                "resource-bundle-target:" + bundleIdentity,
                 [
                     "isa": "PBXNativeTarget", "name": bundleLabel, "productName": bundle, "productReference": product,
                     "productType": "com.apple.product-type.bundle",
@@ -393,16 +410,29 @@ extension NativeXcode {
         try NativeResources.references(nativeGlob(patterns, root: root), owner: owner, graph: graph)
     }
 
-    private func writeSupplementaryScheme(
+    func writeScheme(
         id: String, label: String, kind: NativeSpecKind, host: (id: String, name: String)?, options: [String: Any]
     ) throws {
         func xml(_ value: String) -> String {
             value.replacingOccurrences(of: "&", with: "&amp;").replacingOccurrences(of: "\"", with: "&quot;")
                 .replacingOccurrences(of: "<", with: "&lt;").replacingOccurrences(of: ">", with: "&gt;")
                 .replacingOccurrences(of: "'", with: "&apos;")
+                .replacingOccurrences(of: "\t", with: "&#9;").replacingOccurrences(of: "\n", with: "&#10;")
+                .replacingOccurrences(of: "\r", with: "&#13;")
         }
         func reference(_ id: String, _ name: String, app: Bool) -> String {
-            "<BuildableReference BuildableIdentifier=\"primary\" BlueprintIdentifier=\"\(id)\" BuildableName=\"\(xml(name + (app ? ".app" : ".xctest")))\" BlueprintName=\"\(xml(name))\" ReferencedContainer=\"container:\(xml(multipleProjects ? targetOwners[id].map { projectForPod($0).lastPathComponent } ?? "Pods.xcodeproj" : "Pods.xcodeproj"))\"/>"
+            let product = graph.objects[id]?["productReference"] as? String ?? ""
+            let filename = graph.objects[product]?["path"] as? String ?? name + (app ? ".app" : ".xctest")
+            let project =
+                multipleProjects
+                ? targetOwners[id].map { projectForPod($0).lastPathComponent } ?? "Pods.xcodeproj"
+                : "Pods.xcodeproj"
+            let location = "container:" + project
+            // Xcode must recognize the prefix even when the filename starts
+            // with a combining mark that joins its colon as a Swift Character.
+            let container = location.hasPrefix("container:") ? location : "container:./" + project
+            return
+                "<BuildableReference BuildableIdentifier=\"primary\" BlueprintIdentifier=\"\(id)\" BuildableName=\"\(xml(filename))\" BlueprintName=\"\(xml(name))\" ReferencedContainer=\"\(xml(container))\"/>"
         }
         let configurations = options["build_configurations"] as? [String: String] ?? [:]
         for name in configurations.values where configurationTypes[name] == nil {
@@ -431,7 +461,7 @@ extension NativeXcode {
         let macro = host.map { "<MacroExpansion>" + reference($0.id, $0.name, app: true) + "</MacroExpansion>" } ?? ""
         let text = """
             <?xml version="1.0" encoding="UTF-8"?>
-            <!-- SwiftPods supplementary scheme -->
+            <!-- Generated by SwiftPods. -->
             <Scheme LastUpgradeVersion="2700" version="1.3">
               <BuildAction parallelizeBuildables="YES" buildImplicitDependencies="YES"><BuildActionEntries><BuildActionEntry buildForTesting="YES" buildForRunning="YES" buildForProfiling="YES" buildForArchiving="YES" buildForAnalyzing="YES">\(ref)</BuildActionEntry></BuildActionEntries></BuildAction>
               <TestAction buildConfiguration="\(xml(configurations["Test"] ?? "Debug"))" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.IDEFoundation.Launcher.LLDB" shouldUseLaunchSchemeArgsEnv="NO" codeCoverageEnabled="\(options["code_coverage"] as? Bool == true ? "YES" : "NO")">\(testables)\(macro)\(args)\(env)</TestAction>

@@ -1,6 +1,32 @@
 import Foundation
 
 extension NativeXcode {
+    func validatePackageOwnership() throws {
+        let records = integrationSettings["_swift_packages"] as? [String: [String: Any]] ?? [:]
+        for (path, user) in userProjects {
+            if let record = records[path] { try NativeSwiftPackageIntegrator.validate(user, record: record) }
+        }
+    }
+
+    /// Called after a successful hook, whose input ownership was validated before
+    /// handing control to Ruby. Include explicit project.save callbacks as well.
+    func recordPackageHookChanges() throws -> URL? {
+        guard var records = integrationSettings["_swift_packages"] as? [String: [String: Any]] else { return nil }
+        let before = try jsonData(records)
+        for (path, user) in userProjects {
+            guard let owned = records[path]?["objects"] as? [String: [String: Any]] else { continue }
+            // Refresh only objects already owned; hook-created user objects stay user-owned.
+            records[path]?["objects"] = Dictionary(
+                uniqueKeysWithValues: owned.keys.compactMap { id in
+                    user.objects[id].map { (id, $0) }
+                })
+        }
+        guard try jsonData(records) != before else { return nil }
+        integrationSettings["_swift_packages"] = records
+        try jsonData(integrationSettings).writeIfChanged(to: integrationSettingsURL, options: .atomic)
+        return integrationSettingsURL
+    }
+
     var hookProject: [String: Any] { hookDescription() }
     func applyHook(_ value: [String: Any]) throws {
         if value["generated"] as? Bool == false { return }

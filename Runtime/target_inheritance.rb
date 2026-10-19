@@ -53,12 +53,11 @@ module SwiftPods
       dependencies += parent_dependencies if mode == "complete" && same_platform
       copy(dependencies).each do |dependency|
         next if dependency["options"].key?("configurations")
+        next if mode == "none"
         rule = parent_dependencies.find do |candidate|
           candidate["name"] == dependency["name"] && candidate["options"].key?("configurations")
         end
-        if mode == "none"
-          dependency["options"]["configurations"] = []
-        elsif rule
+        if rule
           dependency["options"]["configurations"] = rule["options"]["configurations"]
         end
       end

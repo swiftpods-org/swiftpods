@@ -39,6 +39,22 @@ def checked_bytes(location, expected, local=False):
     return data
 
 
+def verify_launcher(prefix):
+    launcher = prefix / "bin/swiftpods"
+    expected = prefix / "libexec/bin/swiftpods"
+    if (
+        (prefix / "bin").is_symlink()
+        or not launcher.is_symlink()
+        or os.readlink(launcher) != "../libexec/bin/swiftpods"
+        or launcher.resolve() != expected.resolve()
+        or not expected.is_file()
+        or not os.access(expected, os.X_OK)
+    ):
+        raise RuntimeError(
+            "Installation launcher is missing or changed: " + str(launcher)
+        )
+
+
 def select_asset(manifest, version, architecture=None, macos=None):
     if manifest.get("schema_version") != 1 or manifest.get("version") != version:
         raise RuntimeError("Release manifest schema/version mismatch")
@@ -179,6 +195,7 @@ def main():
                 "Destination exists and is not this exact release: " + str(prefix)
             )
         verify_distribution(prefix / "libexec", args.version)
+        verify_launcher(prefix)
         print(prefix / "bin/swiftpods")
         return
     data = checked_bytes(
@@ -187,7 +204,9 @@ def main():
     prefix.parent.mkdir(parents=True, exist_ok=True)
     staging = Path(tempfile.mkdtemp(prefix=".swiftpods-install-", dir=prefix.parent))
     try:
-        root = extract_archive(data, staging)
+        extracted = staging / "archive"
+        extracted.mkdir()
+        root = extract_archive(data, extracted)
         metadata = json.loads((root / "compatibility.json").read_text())
         if (
             metadata["swiftpods_version"] != args.version

@@ -4,14 +4,17 @@ import Foundation
 enum NativeProjectInventory {
     static func path(_ relative: String, root: URL) throws -> URL {
         guard
-            relative.range(
+            !relative.utf8.contains(0),
+            // NSString regex ranges preserve separators before combining marks.
+            (relative as NSString).range(
                 of: #"\A[^/\r\n]+\.xcodeproj/(?:project\.pbxproj|xcshareddata/xcschemes/[^/\r\n]+\.xcscheme)\z"#,
-                options: .regularExpression) != nil
+                options: .regularExpression
+            ).location != NSNotFound
         else {
             throw Diagnostic("SP-XCODE-INVENTORY", stage: "integrate", "Invalid generated project file", file: relative)
         }
         let path = root.appendingPathComponent(relative).standardizedFileURL
-        guard path.resolvingSymlinksInPath().path.hasPrefix(root.resolvingSymlinksInPath().path + "/") else {
+        guard NativePath.isDescendant(path.resolvingSymlinksInPath(), of: root.resolvingSymlinksInPath()) else {
             throw Diagnostic(
                 "SP-XCODE-INVENTORY", stage: "integrate", "Generated project file escapes Pods", file: relative)
         }
@@ -40,7 +43,7 @@ enum NativeProjectInventory {
             }
             try FileManager.default.removeItem(at: file)
             var directory = file.deletingLastPathComponent()
-            while directory != root && directory.path.hasPrefix(root.path + "/"),
+            while NativePath.isDescendant(directory, of: root),
                 (try FileManager.default.contentsOfDirectory(atPath: directory.path)).isEmpty
             {
                 try FileManager.default.removeItem(at: directory)
@@ -56,11 +59,11 @@ extension NativeXcode {
         let projects = [podsProject] + generatedProjects.keys.sorted().compactMap { generatedProjects[$0] }
         var files: [String: String] = [:]
         for file in Set(projects.map(\.url)).union(managedSchemes) {
-            guard file.path.hasPrefix(root.path + "/") else {
+            guard let components = NativePath.relativeComponents(of: file, to: root), !components.isEmpty else {
                 throw Diagnostic(
                     "SP-XCODE-INVENTORY", stage: "integrate", "Project file is outside Pods", file: file.path)
             }
-            let relative = String(file.path.dropFirst(root.path.count + 1))
+            let relative = components.joined(separator: "/")
             _ = try NativeProjectInventory.path(relative, root: root)
             files[relative] = try FileFingerprint.file(file)
         }

@@ -62,7 +62,7 @@ public final class ProjectState {
     }
     public func registerProject(_ file: URL) throws {
         let canonical = file.standardizedFileURL.resolvingSymlinksInPath()
-        guard !canonical.path.hasPrefix(directory.resolvingSymlinksInPath().path + "/") else { return }
+        guard !NativePath.isDescendant(canonical, of: directory.resolvingSymlinksInPath()) else { return }
         guard validExternal(canonical.path) else {
             throw Diagnostic("SP-STATE-PATH", stage: "prepare", "Invalid external project", file: canonical.path)
         }
@@ -92,8 +92,8 @@ public final class ProjectState {
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
     }
 
-    public func begin(command: [String], profile: String) throws {
-        includePodfile = command.first == "init"
+    public func begin(command: [String], profile: String, operation: String? = nil) throws {
+        includePodfile = (operation ?? command.first) == "init"
         var state: [String: Any] = [
             "schema_version": 1, "fingerprint_version": 2, "producer": "SwiftPods", "status": "running",
             "command": command, "profile": profile, "started_at": ISO8601DateFormatter().string(from: Date()),
@@ -146,7 +146,7 @@ public final class ProjectState {
                 report["recorded_at"] = ISO8601DateFormatter().string(from: Date())
                 let manifest =
                     (report["input_manifest"] as? String).map { URL(fileURLWithPath: $0) }
-                    ?? directory.appendingPathComponent("Podfile")
+                    ?? NativePodfilePath.find(in: directory) ?? directory.appendingPathComponent("Podfile")
                 if let data = try? Data(contentsOf: manifest) { report["podfile_digest"] = digest(data) }
                 if let data = try? Data(contentsOf: directory.appendingPathComponent("Podfile.lock")) {
                     report["lock_digest"] = digest(data)
@@ -188,8 +188,12 @@ public final class ProjectState {
     }
 
     public func recover() throws -> [String: Any] {
+        let stateURL = directory.appendingPathComponent(".swiftpods/state.json")
+        guard exists(stateURL) else {
+            throw Diagnostic("SP-RECOVER-NOT-NEEDED", stage: "recovery", "No interrupted installation is recorded")
+        }
         try acquire(recovery: true)
-        var state = try readObject(directory.appendingPathComponent(".swiftpods/state.json"))
+        var state = try readObject(stateURL)
         guard state["status"] as? String == "recovery_required" || state["status"] as? String == "running" else {
             throw Diagnostic("SP-RECOVER-NOT-NEEDED", stage: "recovery", "No interrupted installation is recorded")
         }
@@ -207,8 +211,9 @@ public final class ProjectState {
                     : (!relative.split(separator: "/").contains(where: { $0 == ".." || $0 == "." })
                         && (!relative.hasPrefix(".swiftpods")
                             || [".swiftpods/installation.json", ".swiftpods/spm.json"].contains(relative))
-                        && managedURL(relative).resolvingSymlinksInPath().path.hasPrefix(
-                            directory.resolvingSymlinksInPath().path + "/")),
+                        && NativePath.isDescendant(
+                            managedURL(relative).resolvingSymlinksInPath(),
+                            of: directory.resolvingSymlinksInPath())),
                 let after = entry["after_digest"] as? String
             else {
                 throw Diagnostic(
@@ -299,7 +304,7 @@ public final class ProjectState {
             while let relative = enumerator.nextObject() as? String {
                 let url = managedURL(relative)
                 let type = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.type] as? FileAttributeType
-                if url.lastPathComponent.hasPrefix(".")
+                if url.lastPathComponent.utf8.first == 46
                     || ["Pods", "node_modules", "DerivedData"].contains(url.lastPathComponent)
                     || type == .typeSymbolicLink
                 {
@@ -355,7 +360,7 @@ public final class ProjectState {
         var stale = false
         let manifest =
             (report["input_manifest"] as? String).map { URL(fileURLWithPath: $0) }
-            ?? directory.appendingPathComponent("Podfile")
+            ?? NativePodfilePath.find(in: directory) ?? directory.appendingPathComponent("Podfile")
         for (file, key) in [
             (manifest, "podfile_digest"), (directory.appendingPathComponent("Podfile.lock"), "lock_digest"),
         ] {

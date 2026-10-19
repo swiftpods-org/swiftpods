@@ -7,7 +7,9 @@ struct NativePodspecCache {
     private var root: URL { cache.appendingPathComponent("podspecs") }
 
     func project(_ content: Data) throws -> URL {
-        guard let object = (try? JSONSerialization.jsonObject(with: content)) as? [String: Any],
+        let decoded = try? JSONSerialization.jsonObject(with: content)
+        if let decoded { try NativeDictionaryKeys.validate(decoded) }
+        guard let object = decoded as? [String: Any],
             object["name"] is String
         else {
             throw Diagnostic("SP-SPEC-SCHEMA", stage: "resolve", "JSON podspec requires an object with a name")

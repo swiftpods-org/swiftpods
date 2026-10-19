@@ -7,23 +7,34 @@ extension NativeCommandSession {
         let args = request.arguments
         let project = request.project
         func writeEvent(_ url: URL) { recordWrite(url) }
-        let allowed = Set([
-            "--deployment", "--repo-update", "--clean-install", "--verbose", "--silent", "--no-ansi", "--ansi",
+        var allowed = Set([
+            "--deployment", "--repo-update", "--no-repo-update", "--clean-install", "--verbose", "--silent",
+            "--no-ansi", "--ansi",
             "--no-integrate",
         ])
-        let options = args.filter { $0.hasPrefix("-") }
-        guard options.allSatisfy(allowed.contains), action == "update" || args.allSatisfy({ $0.hasPrefix("-") })
+        if action == "outdated" { allowed.insert("--ignore-prerelease") }
+        let options = args.filter { CommandOptions.hasOptionPrefix($0) }
+        guard options.allSatisfy(allowed.contains),
+            action == "update" || args.allSatisfy({ CommandOptions.hasOptionPrefix($0) })
         else {
             throw Diagnostic(
                 "SP-CLI-ARGUMENT", stage: "cli",
                 "Unsupported native engine option: \(args.joined(separator: " "))")
         }
+        guard !(options.contains("--repo-update") && options.contains("--no-repo-update")) else {
+            throw Diagnostic("SP-CLI-ARGUMENT", stage: "cli", "Choose --repo-update or --no-repo-update")
+        }
         let hardened = environment["SWIFTPODS_HARDENED_MANIFEST"] != nil
         let dsl: NativeDSL? =
             hardened
             ? nil
-            : try NativeDSL(bundle: bundle, environment: environment, directory: project, overrides: overrides)
-        let manifestPath = project.appendingPathComponent(hardened ? "Podfile.json" : "Podfile")
+            : try NativeDSL(
+                bundle: bundle, environment: environment, directory: project, overrides: overrides,
+                sdkContext: sdkContext)
+        let manifestPath =
+            hardened
+            ? project.appendingPathComponent("Podfile.json")
+            : NativePodfilePath.find(in: project) ?? project.appendingPathComponent("Podfile")
         let projectAccess = NativeProjectAccess(root: project)
         dsl?.callback = { request in
             let result = try projectAccess.callback(request, writable: true)
@@ -58,10 +69,13 @@ extension NativeCommandSession {
         }
         let declaredOptions = manifest["options"] as? [String: Any] ?? [:]
         try NativeInstallationOptions.validate(declaredOptions)
+        let projectDeclarations = manifest
         manifest = try NativeManifest.analyze(
             manifest, project: project,
             integrate: !options.contains("--no-integrate")
-                && declaredOptions["integrate_targets"] as? Bool != false)
+                && declaredOptions["integrate_targets"] as? Bool != false, sdkContext: sdkContext)
+        let projectBindings = NativeIntegrationLocation.projectBindings(
+            projectDeclarations, analyzed: manifest, root: project)
         if let dsl { manifest = try dsl.object("analyzed_podfile", ["targets": manifest["targets"] ?? []]) }
         guard let targets = manifest["targets"] as? [[String: Any]], !targets.isEmpty else {
             throw Diagnostic("SP-DSL-TARGET", stage: "resolve", "Podfile needs at least one concrete target")
@@ -88,31 +102,42 @@ extension NativeCommandSession {
         let lockURL = project.appendingPathComponent("Podfile.lock")
         let lock = try NativeLock(lockURL)
         let checksum = NativeLock.sha1(try Data(contentsOf: manifestPath))
-        var contractManifest = manifest
-        contractManifest["targets"] = (manifest["targets"] as? [[String: Any]] ?? []).map {
-            $0.filter { $0.key != "_id" }
-        }
+        let contractManifest = NativeIntegrationLocation.contractManifest(
+            manifest, bindings: projectBindings, root: project)
         let manifestChecksum = digest(try jsonData(contractManifest))
+        var acceptedLegacyChecksum: String?
         if options.contains("--deployment"), let previous = lock.manifestChecksum, previous != manifestChecksum {
-            throw Diagnostic(
-                "SP-DEPLOYMENT-LOCK", stage: "resolve",
-                "Evaluated Podfile declarations differ from Podfile.lock")
+            let receipt = project.appendingPathComponent("Pods/Target Support Files/SwiftPods-Integration.json")
+            let ownership = FileManager.default.fileExists(atPath: receipt.path) ? try readObject(receipt) : [:]
+            let recorded = (ownership["_manifest_checksum_aliases"] as? [String: String])?[previous] == manifestChecksum
+            guard
+                try recorded
+                    || NativeManifest.legacyProjectChecksums(
+                        contractManifest, project: project, ownership: ownership
+                    ).contains(previous)
+            else {
+                throw Diagnostic(
+                    "SP-DEPLOYMENT-LOCK", stage: "resolve",
+                    "Evaluated Podfile declarations differ from Podfile.lock")
+            }
+            acceptedLegacyChecksum = previous
         }
         if options.contains("--deployment"), lock.checksum != checksum {
             throw Diagnostic(
                 "SP-DEPLOYMENT-LOCK", stage: "resolve",
                 "Podfile differs from Podfile.lock or lockfile is missing")
         }
-        let cache = URL(fileURLWithPath: bundle.environment(from: environment)["SWIFTPODS_CACHE_ROOT"]!)
+        let cache = URL(fileURLWithPath: bundle.cacheRootPath(from: environment))
         let declaredSources = nativeStrings(manifest["sources"])
         let defaults = try NativeRepositories(cache: cache).records().compactMap { $0["url"] as? String }
         let catalog = try NativeSources(
             project: project, cache: cache,
             sources: declaredSources.isEmpty ? defaults + ["https://cdn.cocoapods.org/"] : declaredSources,
             dsl: dsl, offline: environment["SWIFTPODS_OFFLINE"] == "1",
-            refresh: options.contains("--repo-update"), hardened: hardened)
+            refreshRepositories: options.contains("--repo-update")
+                || (action != "install" && !options.contains("--no-repo-update")), hardened: hardened)
         let requestedUpdates = Set(
-            args.filter { !$0.hasPrefix("-") }.map { String($0.split(separator: "/").first ?? "") })
+            args.filter { !CommandOptions.hasOptionPrefix($0) }.map { NativePodName.root($0) })
         if action == "update",
             let unknown = requestedUpdates.subtracting(Set(lock.versions.keys).union(direct.map(\.root)))
                 .sorted().first
@@ -162,18 +187,15 @@ extension NativeCommandSession {
             ])
         }
         if action == "outdated" {
-            let changes = resolved.specs.values.filter { lock.versions[$0.name] != $0.version.description }
-                .sorted { $0.name < $1.name }.map {
-                    [
-                        "name": $0.name, "installed": lock.versions[$0.name] ?? "absent",
-                        "available": $0.version.description,
-                    ]
-                }
+            let changes = try NativeOutdated.pods(
+                lock: lock, resolution: resolved, catalog: catalog,
+                ignorePrerelease: options.contains("--ignore-prerelease"))
             events.append(["kind": "outdated", "pods": changes])
             if !machine && !silent {
                 if changes.isEmpty { print("All dependencies are up to date.") }
                 for change in changes {
-                    print("\(change["name"]!): \(change["installed"]!) -> \(change["available"]!)")
+                    let latest = change["latest"] == change["available"] ? "" : " (latest version \(change["latest"]!))"
+                    print("\(change["name"]!): \(change["installed"]!) -> \(change["available"]!)" + latest)
                 }
             }
             events.append(["kind": "completed", "status": 0])
@@ -229,7 +251,13 @@ extension NativeCommandSession {
         let xcode: NativeXcode? = try NativeXcode(
             project: project, manifest: manifest, resolution: resolution,
             integrateUserProjects: !options.contains("--no-integrate")
-                && installationOptions["integrate_targets"] as? Bool != false)
+                && installationOptions["integrate_targets"] as? Bool != false,
+            projectBindings: projectBindings)
+        if let previous = acceptedLegacyChecksum, let xcode {
+            var aliases = xcode.integrationSettings["_manifest_checksum_aliases"] as? [String: String] ?? [:]
+            aliases[previous] = manifestChecksum
+            xcode.integrationSettings["_manifest_checksum_aliases"] = aliases
+        }
         let hookVariants =
             try xcode?.variantPlan ?? NativeVariantPlan(manifest: manifest, resolution: resolution)
         let hooks = NativeHookRunner(
@@ -264,9 +292,10 @@ extension NativeCommandSession {
         let text =
             try options.contains("--deployment")
             ? String(contentsOf: lockURL, encoding: .utf8)
-            : NativeLock.make(
-                resolution, direct: direct, checksum: checksum, referenceVersion: referenceVersion,
-                manifestChecksum: manifestChecksum, previous: lock.raw)
+            : lock.preservingFormatting(
+                NativeLock.make(
+                    resolution, direct: direct, checksum: checksum, referenceVersion: referenceVersion,
+                    manifestChecksum: manifestChecksum, previous: lock.raw))
         try Data(text.utf8).writeIfChanged(to: lockURL, options: .atomic)
         try Data(text.utf8).writeIfChanged(
             to: project.appendingPathComponent("Pods/Manifest.lock"), options: .atomic)
@@ -276,6 +305,7 @@ extension NativeCommandSession {
             let spec = installed[request.root]!
             return [
                 "name": request.name, "version": spec.version.description, "module_name": spec.moduleName,
+                "platform": ["name": request.platform, "deployment_target": request.deployment],
                 "dependencies": ((try? spec.dependencies(for: request)) ?? []).map {
                     ["name": $0.name, "requirement": $0.requirements.joined(separator: ", ")]
                 },
@@ -296,15 +326,19 @@ extension NativeCommandSession {
         }
         events.append([
             "kind": "installation", "engine": "swift", "input_manifest": manifestPath.path, "specs": specs,
-            "targets": targets.map { target -> [String: Any] in
+            "targets": try targets.map { target -> [String: Any] in
                 [
                     "name": target["name"] ?? "", "platform": target["platform"] ?? [:],
-                    "dependencies": (target["dependencies"] as? [[String: Any]] ?? []).map {
-                        [
-                            "name": $0["name"] ?? "",
-                            "requirement": nativeStrings($0["requirements"]).joined(separator: ", "),
-                        ]
-                    },
+                    "dependencies": try
+                        ((target["dependencies"] as? [[String: Any]] ?? [])
+                        + (target["search_dependencies"] as? [[String: Any]] ?? [])).flatMap {
+                            try NativeDependency($0).expandedSelections()
+                        }.map {
+                            [
+                                "name": $0.name,
+                                "requirement": $0.requirements.joined(separator: ", "),
+                            ]
+                        },
                 ]
             }, "inputs": inputs, "plugins": manifest["plugins"] ?? [:],
         ])

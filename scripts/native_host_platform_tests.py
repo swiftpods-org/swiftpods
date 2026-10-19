@@ -1,23 +1,95 @@
 #!/usr/bin/env python3
-"""Build supplementary app/unit/UI host products for additional Apple SDKs."""
+"""Build supplementary hosts and execute locally available Catalyst tests."""
 
 import argparse
 import json
+import os
 import platform
+import signal
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
 from bootstrap import ROOT, environment
 from native_supplementary_tests import install
 from reporting import execute
-from vendor_fixture import run
+from vendor_fixture import fixture_build_arguments, fixture_derived_data, run
 
 DESTINATIONS = {
     "tvos": ("tvos", "17.0", "appletvsimulator", "tvOS Simulator"),
     "visionos": ("visionos", "1.0", "xrsimulator", "visionOS Simulator"),
     "catalyst": ("ios", "17.0", "macosx", "macOS,variant=Mac Catalyst"),
 }
+
+
+def report_name():
+    arguments = sys.argv[1:]
+    if "--" in arguments:
+        arguments = arguments[: arguments.index("--")]
+    execution = any(
+        value == "--execute-ui" or value.startswith("--execute-ui=")
+        for value in arguments
+    )
+    return "native-host-executions.json" if execution else "native-host-platforms.json"
+
+
+def execute_catalyst(work, scheme, configuration, swift, env):
+    parent = work / "Executed"
+    parent.mkdir(exist_ok=True)
+    log = work / (scheme + "-" + configuration + "-execution.log")
+    arguments = [
+        "xcodebuild",
+        "-project",
+        "Pods/Pods.xcodeproj",
+        "-scheme",
+        scheme,
+        "-configuration",
+        configuration,
+        "-destination",
+        "platform=macOS,variant=Mac Catalyst,arch=" + platform.machine(),
+        *fixture_build_arguments(parent),
+        "-parallel-testing-enabled",
+        "NO",
+        "CODE_SIGNING_ALLOWED=YES",
+        "CODE_SIGN_IDENTITY=-",
+        # Ad-hoc hosted tests cannot satisfy hardened runtime library validation.
+        "ENABLE_HARDENED_RUNTIME=NO",
+        "GCC_TREAT_WARNINGS_AS_ERRORS=YES",
+        "SWIFT_TREAT_WARNINGS_AS_ERRORS=YES",
+        "ARCHS=" + platform.machine(),
+        "ONLY_ACTIVE_ARCH=YES",
+        "TOOLCHAIN_DIR=" + str(swift.parents[2]),
+        "TOOLCHAINS=com.apple.dt.toolchain.XcodeDefault",
+        "test",
+    ]
+    try:
+        text = run(arguments, work, log, env, timeout=180)
+    finally:
+        # LaunchServices can detach a test host from xcodebuild's process group.
+        directory = fixture_derived_data(parent)
+        prefixes = [str(directory) + "/", str(directory.resolve()) + "/"]
+        processes = subprocess.check_output(["ps", "-axo", "pid=,command="], text=True)
+        for line in processes.splitlines():
+            fields = line.strip().split(maxsplit=1)
+            if len(fields) == 2 and any(
+                fields[1].startswith(prefix) for prefix in prefixes
+            ):
+                try:
+                    os.kill(int(fields[0]), signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+    test = "testHostLaunch" if "-UI-" in scheme else "testLibraryAndResource"
+    assert test in text and "** TEST SUCCEEDED **" in text, log
+    return {
+        "platform": "ios",
+        "sdk": "maccatalyst",
+        "configuration": configuration,
+        "scheme": scheme,
+        "architecture": platform.machine(),
+        "test": test,
+        "log": str(log),
+    }
 
 
 def create(work, name, linkage):
@@ -46,7 +118,38 @@ def create(work, name, linkage):
 @end
 """)
     (module / "App/main.m").write_text(
-        "#import <UIKit/UIKit.h>\nint main(int argc, char **argv) { @autoreleasepool { return UIApplicationMain(argc, argv, nil, nil); } }\n"
+        """#import <UIKit/UIKit.h>
+#import <HostMatrixKit/HostMatrixKit.h>
+@interface HostMatrixScene : UIResponder <UIWindowSceneDelegate>
+@property (nonatomic, strong) UIWindow *window;
+@end
+@implementation HostMatrixScene
+- (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)options {
+    self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
+    UIViewController *controller = [UIViewController new];
+    controller.view.backgroundColor = UIColor.whiteColor;
+    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(24, 80, 200, 44)];
+    label.textColor = UIColor.blackColor;
+    label.text = [NSString stringWithFormat:@"%d", host_matrix_value()];
+    label.accessibilityIdentifier = @"library-value";
+    [controller.view addSubview:label];
+    self.window.rootViewController = controller;
+    [self.window makeKeyAndVisible];
+}
+@end
+@interface HostMatrixDelegate : UIResponder <UIApplicationDelegate>
+@end
+@implementation HostMatrixDelegate
+- (UISceneConfiguration *)application:(UIApplication *)application configurationForConnectingSceneSession:(UISceneSession *)session options:(UISceneConnectionOptions *)options {
+    UISceneConfiguration *configuration = [[UISceneConfiguration alloc] initWithName:@"Main" sessionRole:session.role];
+    configuration.delegateClass = HostMatrixScene.class;
+    return configuration;
+}
+@end
+int main(int argc, char **argv) {
+    @autoreleasepool { return UIApplicationMain(argc, argv, nil, NSStringFromClass(HostMatrixDelegate.class)); }
+}
+"""
     )
     tests = [
         {"name": label, "source_files": "Tests/*.m", "resources": "Tests/own.txt"}
@@ -87,7 +190,17 @@ def create(work, name, linkage):
         "platforms": {platform_name: minimum},
         "testspecs": tests,
         "appspecs": [
-            {"name": "Example", "source_files": "App/main.m", "frameworks": ["UIKit"]}
+            {
+                "name": "Example",
+                "source_files": "App/main.m",
+                "frameworks": ["UIKit"],
+                "info_plist": {
+                    "UIApplicationSceneManifest": {
+                        "UIApplicationSupportsMultipleScenes": False,
+                        "UISceneConfigurations": {},
+                    }
+                },
+            }
         ],
     }
     (module / "HostMatrixKit.podspec.json").write_text(json.dumps(spec))
@@ -117,7 +230,23 @@ def main():
     parser.add_argument(
         "--configuration", choices=["Debug", "Release"], action="append"
     )
+    parser.add_argument(
+        "--execute-ui",
+        action="store_true",
+        help="Also execute Catalyst UI runners; requires macOS developer mode",
+    )
     args = parser.parse_args()
+    platforms = list(dict.fromkeys(args.platform or DESTINATIONS))
+    linkages = list(dict.fromkeys(args.linkage or ["library", "static", "dynamic"]))
+    configurations = list(dict.fromkeys(args.configuration or ["Debug", "Release"]))
+    if args.execute_ui:
+        if "catalyst" not in platforms:
+            parser.error("--execute-ui requires Catalyst in the selected platforms")
+        status = subprocess.check_output(["DevToolsSecurity", "-status"], text=True)
+        if "disabled" in status.lower():
+            raise RuntimeError(
+                "Catalyst UI execution requires macOS developer mode: sudo DevToolsSecurity -enable"
+            )
     parent = Path(
         tempfile.mkdtemp(prefix="native-host-platforms-", dir=ROOT / ".build")
     )
@@ -128,13 +257,14 @@ def main():
         subprocess.check_output(["xcrun", "--find", "swiftc"], text=True).strip()
     )
     builds = []
-    for name in args.platform or list(DESTINATIONS):
+    executions = []
+    for name in platforms:
         platform_name, minimum, sdk, destination = DESTINATIONS[name]
-        for linkage in args.linkage or ["library", "static", "dynamic"]:
+        for linkage in linkages:
             work = parent / (name + "-" + linkage)
             create(work, name, linkage)
             install(work, env, "--no-integrate")
-            for configuration in args.configuration or ["Debug", "Release"]:
+            for configuration in configurations:
                 for scheme in [
                     "HostMatrixKit-Example",
                     "HostMatrixKit-Unit-Standalone",
@@ -193,28 +323,49 @@ def main():
                             "log": str(log),
                         }
                     )
+                    if name == "catalyst" and (
+                        "-Unit-" in scheme or (args.execute_ui and "-UI-" in scheme)
+                    ):
+                        execution = execute_catalyst(
+                            work, scheme, configuration, swift, env
+                        )
+                        execution["linkage"] = linkage
+                        executions.append(execution)
     report = {
         "status": "passed",
         "engine": "swift",
         "fixture": str(parent),
         "builds": builds,
-        "executions": [],
+        "executions": executions,
         "verified": [
-            "real app, standalone/generated/named unit targets and generated/named UI runners build for the explicitly listed SDK configurations"
+            "real app, standalone/generated/named unit targets and generated/named UI runners build for the explicitly listed SDK configurations",
         ],
         "unverified": [
-            "execution on these destinations",
+            "tvOS and visionOS execution",
             "device SDK supplementary builds and signing",
             "watchOS supplementary targets",
-            "macOS UI interaction",
+            "native macOS AppKit UI interaction",
             "complete supplementary host matrix",
         ],
     }
-    (ROOT / "test-results/native-host-platforms.json").write_text(
+    if executions:
+        report["verified"].append(
+            "Catalyst standalone/generated/named unit targets execute and verify their library "
+            "and bundle resources in the explicitly selected configurations"
+        )
+    if args.execute_ui:
+        report["verified"].append(
+            "Catalyst named/generated UI runners execute in the explicitly selected configurations"
+        )
+    else:
+        report["unverified"].append(
+            "Catalyst UI execution requires --execute-ui and macOS developer mode"
+        )
+    (ROOT / "test-results" / report_name()).write_text(
         json.dumps(report, indent=2) + "\n"
     )
     print(json.dumps(report, indent=2))
 
 
 if __name__ == "__main__":
-    execute(main, "native-host-platforms.json")
+    execute(main, report_name())

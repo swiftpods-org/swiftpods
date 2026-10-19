@@ -50,13 +50,14 @@ struct NativeScriptPhase {
                     "SP-SCRIPT-SCHEMA", stage: "integrate", "\(key) must be an array of paths for script phase \(name)")
             }
             let entries = value[key] as? [String] ?? []
-            guard entries.allSatisfy({ !$0.contains("\0") && !$0.contains("\n") && !$0.contains("\r") }) else {
+            guard entries.allSatisfy({ !$0.utf8.contains(where: { $0 == 0 || $0 == 10 || $0 == 13 }) }) else {
                 throw Diagnostic("SP-SCRIPT-SCHEMA", stage: "integrate", "Invalid path for script phase \(name)")
             }
             object[field] = entries
         }
         if let flag = value["show_env_vars_in_log"], !(flag is NSNull) {
-            guard let text = flag as? String, ["0", "1"].contains(text) else {
+            let text = flag as? String ?? NativeScalarString.boolean(flag).map { $0 ? "1" : "0" }
+            guard let text, ["0", "1"].contains(text) else {
                 throw Diagnostic(
                     "SP-SCRIPT-SCHEMA", stage: "integrate",
                     "show_env_vars_in_log must be '0' or '1' for script phase \(name)")
@@ -91,14 +92,23 @@ struct NativeScriptPhase {
             let id = graph.add(key(phase.name), phase.object)
             if !order.contains(id) { order.append(id) }
             guard phase.position != "any" else { continue }
-            let type = phase.position.hasSuffix("headers") ? "PBXHeadersBuildPhase" : "PBXSourcesBuildPhase"
-            guard let anchor = order.firstIndex(where: { graph.objects[$0]?["isa"] as? String == type }),
+            let headers = phase.position.hasSuffix("headers")
+            func isAnchor(_ id: String) -> Bool {
+                let object = graph.objects[id] ?? [:]
+                if !headers { return object["isa"] as? String == "PBXSourcesBuildPhase" }
+                return object["isa"] as? String == "PBXHeadersBuildPhase"
+                    || (object["isa"] as? String == "PBXCopyFilesBuildPhase"
+                        && ((object["dstPath"] as? String)?.contains("_HEADERS_FOLDER_PATH)") == true))
+            }
+            let before = phase.position.hasPrefix("before_")
+            let anchors = order.indices.filter { isAnchor(order[$0]) }
+            guard let anchor = before ? anchors.first : anchors.last,
                 let index = order.firstIndex(of: id)
             else { continue }
-            let before = phase.position.hasPrefix("before_")
             if (before && index > anchor) || (!before && index < anchor) {
                 order.remove(at: index)
-                order.insert(id, at: anchor)
+                let anchors = order.indices.filter { isAnchor(order[$0]) }
+                order.insert(id, at: before ? anchors.first! : anchors.last! + 1)
             }
         }
         graph.objects[target]?["buildPhases"] = order

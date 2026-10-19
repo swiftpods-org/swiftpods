@@ -171,7 +171,9 @@ def main():
         targets["NoneChild"]["search_dependencies"][0]["name"] == "OuterKit"
         and targets["NoneChild"]["dependencies"][0]["name"] == "OwnKit"
     )
-    assert targets["NoneChild"]["dependencies"][0]["options"]["configurations"] == []
+    assert (
+        targets["NoneChild"]["dependencies"][0]["options"].get("configurations") is None
+    )
     # Actual plugin registration, source-provider callback, options, whitelist and lifecycle.
     work.joinpath("batchplugin.rb").write_text(f"""require 'cocoapods/hooks_manager'
 require 'cocoapods/installer/pre_install_hooks_context'
