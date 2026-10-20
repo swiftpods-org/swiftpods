@@ -17,9 +17,28 @@ runs:
       with:
         ruby-version: ${{ steps.profile.outputs.ruby-version }}
         bundler: none
+    - id: vcs
+      uses: mamba-org/setup-micromamba@add3a49764cedee8ee24e82dfde87f5bc2914462 # v2
+      with:
+        environment-name: swiftpods-vcs
+        environment-file: ''
+        create-args: >-
+          --channel conda-forge --strict-channel-priority
+          subversion=1.14.5 mercurial=7.1.2
+        init-shell: none
+        generate-run-shell: false
+        micromamba-root-path: ${{ runner.temp }}/swiftpods-vcs
+        post-cleanup: all
     - shell: bash
+      env:
+        VCS_ENVIRONMENT: ${{ steps.vcs.outputs.environment-path }}
       run: |
         echo "SWIFTPODS_RUBY=$(ruby -rrbconfig -e 'print RbConfig.ruby')" >> "$GITHUB_ENV"
-        for tool in cmake svn hg; do
-          command -v "$tool"
+        command -v cmake
+        vcs_bin="$RUNNER_TEMP/swiftpods-vcs-bin"
+        mkdir -p "$vcs_bin"
+        for tool in svn svnadmin hg; do
+          test -x "$VCS_ENVIRONMENT/bin/$tool"
+          ln -s "$VCS_ENVIRONMENT/bin/$tool" "$vcs_bin/$tool"
         done
+        echo "$vcs_bin" >> "$GITHUB_PATH"
