@@ -215,6 +215,88 @@ class ReleaseTests(unittest.TestCase):
             publish_release.publish(self.directory, self.args.version, self.commit)
         self.assertEqual(run.call_count, 1)
 
+    def test_replacement_requires_the_exact_previous_tag_object(self):
+        with (
+            patch.object(publish_release.subprocess, "check_output") as read,
+            patch.object(publish_release.subprocess, "run") as run,
+            self.assertRaisesRegex(RuntimeError, "exact previous tag object"),
+        ):
+            publish_release.replace_release("v0.1.0", self.commit, "latest")
+        read.assert_not_called()
+        run.assert_not_called()
+
+    def test_replacement_does_not_delete_a_retargeted_release(self):
+        with (
+            patch.object(
+                publish_release.subprocess,
+                "check_output",
+                return_value=json.dumps({"object": {"sha": "b" * 40}}),
+            ),
+            patch.object(publish_release.subprocess, "run") as run,
+            self.assertRaisesRegex(RuntimeError, "Remote tag changed"),
+        ):
+            publish_release.replace_release("v0.1.0", self.commit, "a" * 40)
+        run.assert_not_called()
+
+    def test_immutable_release_is_never_deleted(self):
+        with (
+            patch.object(
+                publish_release.subprocess,
+                "check_output",
+                side_effect=[
+                    json.dumps({"object": {"sha": "a" * 40}}),
+                    json.dumps({"immutable": True}),
+                ],
+            ),
+            patch.object(publish_release.subprocess, "run") as run,
+            self.assertRaisesRegex(RuntimeError, "immutable release"),
+        ):
+            publish_release.replace_release("v0.1.0", self.commit, "a" * 40)
+        run.assert_not_called()
+
+    def test_invalid_replacement_assets_leave_the_existing_release_intact(self):
+        manifest = self.prepare()
+        (self.directory / manifest["assets"][0]["filename"]).write_bytes(b"tampered")
+        with (
+            patch.object(publish_release.subprocess, "check_output") as read,
+            patch.object(publish_release.subprocess, "run") as run,
+            self.assertRaisesRegex(RuntimeError, "asset changed"),
+        ):
+            publish_release.publish(
+                self.directory, self.args.version, self.commit, "a" * 40
+            )
+        read.assert_not_called()
+        run.assert_not_called()
+
+    def test_explicit_replacement_updates_only_the_selected_tag_then_uploads_a_draft(
+        self,
+    ):
+        self.prepare()
+        with (
+            patch.object(
+                publish_release.subprocess,
+                "check_output",
+                side_effect=[
+                    json.dumps({"object": {"sha": "a" * 40}}),
+                    json.dumps({"immutable": False}),
+                    self.commit,
+                ],
+            ),
+            patch.object(publish_release.subprocess, "run") as run,
+        ):
+            publish_release.publish(
+                self.directory, self.args.version, self.commit, "a" * 40
+            )
+        delete, retag, create, publish = [call.args[0] for call in run.call_args_list]
+        self.assertEqual(delete[:4], ["gh", "release", "delete", "v0.1.0"])
+        self.assertNotIn("--cleanup-tag", delete)
+        self.assertIn("repos/swiftpods-org/swiftpods/git/refs/tags/v0.1.0", retag)
+        self.assertIn("sha=" + self.commit, retag)
+        self.assertIn("force=true", retag)
+        self.assertEqual(create[:4], ["gh", "release", "create", "v0.1.0"])
+        self.assertIn("--draft", create)
+        self.assertIn("--draft=false", publish)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -7,6 +7,10 @@ on:
       version:
         description: Existing tag version without v
         required: true
+      replace_existing:
+        description: Replace this release and tag with the selected source ref after building
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
@@ -18,6 +22,7 @@ jobs:
     outputs:
       version: ${{ steps.resolve.outputs.version }}
       commit: ${{ steps.resolve.outputs.commit }}
+      replace-tag-object: ${{ steps.resolve.outputs.replace-tag-object }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -27,18 +32,24 @@ jobs:
         name: Resolve and validate the release tag
         env:
           REQUESTED_VERSION: ${{ inputs.version }}
+          REPLACE_EXISTING: ${{ inputs.replace_existing }}
         run: |
           python3 - <<'PY'
           import json, os, re, subprocess
           version = os.environ['GITHUB_REF_NAME'][1:] if os.environ['GITHUB_EVENT_NAME'] == 'push' else os.environ['REQUESTED_VERSION']
           if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?', version):
               raise RuntimeError('Invalid release version')
-          commit = subprocess.check_output(['git', 'rev-parse', '--verify', 'refs/tags/v' + version + '^{commit}'], text=True).strip()
+          tag = 'refs/tags/v' + version
+          replace = os.environ['GITHUB_EVENT_NAME'] == 'workflow_dispatch' and os.environ['REPLACE_EXISTING'] == 'true'
+          tag_object = subprocess.check_output(['git', 'rev-parse', '--verify', tag], text=True).strip() if replace else ''
+          source = os.environ['GITHUB_SHA'] if replace else tag + '^{commit}'
+          commit = subprocess.check_output(['git', 'rev-parse', '--verify', source], text=True).strip()
           baseline = json.loads(subprocess.check_output(['git', 'show', commit + ':Profiles/baseline.json']))
           if baseline['swiftpods_version'] != version:
               raise RuntimeError('Tag must match Profiles/baseline.json')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write('version=' + version + '\ncommit=' + commit + '\n')
+              output.write('replace-tag-object=' + tag_object + '\n')
           PY
   plugin:
     needs: metadata
@@ -149,4 +160,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
           RELEASE_COMMIT: ${{ needs.metadata.outputs.commit }}
-        run: python3 scripts/publish_release.py dist/release --version "$RELEASE_VERSION" --commit "$RELEASE_COMMIT" --publish
+          REPLACE_TAG_OBJECT: ${{ needs.metadata.outputs.replace-tag-object }}
+        run: |
+          options=()
+          if [[ -n "$REPLACE_TAG_OBJECT" ]]; then
+            options+=(--replace-tag-object "$REPLACE_TAG_OBJECT")
+          fi
+          python3 scripts/publish_release.py dist/release --version "$RELEASE_VERSION" --commit "$RELEASE_COMMIT" --publish "${options[@]}"

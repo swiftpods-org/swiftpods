@@ -290,16 +290,17 @@ class RubyAdapterRegressions
   end
 
   def test_version_and_requirement_serialization_preserve_spelling_and_behavior
+    yaml_loader = YAML.respond_to?(:unsafe_load) ? :unsafe_load : :load
     ["1.2.3", "1.2.3+build.7", "1.2.3-alpha-beta", "1.2.3-alpha.0", "1.2.3-1"].each do |spelling|
       version = Pod::Version.new(spelling)
       requirement = Pod::Requirement.new("= " + spelling)
-      [Marshal.load(Marshal.dump(version)), YAML.unsafe_load(YAML.dump(version))].each do |restored|
+      [Marshal.load(Marshal.dump(version)), YAML.public_send(yaml_loader, YAML.dump(version))].each do |restored|
         assert(restored.to_s == spelling && restored.version == spelling, "Version spelling was lost after serialization")
         assert(restored.prerelease? == version.prerelease? && restored == version, "Restored version behavior changed")
         assert([version, restored.freeze].uniq.length == 1, "Restored version hash changed")
         assert(requirement.satisfied_by?(restored), "Restored version failed its exact requirement")
       end
-      [Marshal.load(Marshal.dump(requirement)), YAML.unsafe_load(YAML.dump(requirement))].each do |restored|
+      [Marshal.load(Marshal.dump(requirement)), YAML.public_send(yaml_loader, YAML.dump(requirement))].each do |restored|
         assert(restored.to_s == requirement.to_s && restored.satisfied_by?(version), "Nested requirement serialization changed")
       end
     end
@@ -601,12 +602,12 @@ class RubyAdapterRegressions
 
   def run
     tests = public_methods(false).grep(/^test_/).sort
-    failures = tests.filter_map do |test|
+    failures = tests.map do |test|
       public_send(test)
       nil
-    rescue StandardError => error
+    rescue StandardError, ScriptError => error
       "#{test}: #{error.class}: #{error.message}"
-    end
+    end.compact
     failures.each { |message| warn message }
     abort "#{failures.length}/#{tests.length} Ruby adapter regressions failed" unless failures.empty?
     puts "#{tests.length} Ruby adapter regressions passed"

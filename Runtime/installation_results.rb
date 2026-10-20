@@ -27,13 +27,15 @@ class Pod::Installer
         end
 
         def test_specs_by_native_target
-          target.test_specs.filter_map do |spec|
+          target.test_specs.map do |spec|
             value = native_target_for_spec(spec)
             [value, spec] if value
-          end.to_h
+          end.compact.to_h
         end
 
-        def app_specs_by_native_target = app_native_targets.to_h { |spec, value| [value, spec] }
+        def app_specs_by_native_target
+          app_native_targets.to_h { |spec, value| [value, spec] }
+        end
 
         def non_library_specs_by_native_target
           test_specs_by_native_target.merge(app_specs_by_native_target)

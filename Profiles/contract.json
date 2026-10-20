@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "profile": "swift-native-external-ruby-3.4",
+  "profile": "swift-native-external-ruby",
   "reference_version": "1.17.0",
   "suites": [
     {

@@ -4,7 +4,9 @@ module Pod
   class Version < Gem::Version
     PATTERN = /\A[0-9]+(?:[.-][0-9A-Za-z-]++)*(?:\+[0-9A-Za-z.-]+)?\z/
 
-    def self.correct?(value) = PATTERN.match?(value.to_s.strip)
+    def self.correct?(value)
+      PATTERN.match?(value.to_s.strip)
+    end
 
     def initialize(value)
       @original_version = value.to_s.strip.freeze
@@ -13,8 +15,13 @@ module Pod
       super(@original_version.split("+", 2).first)
     end
 
-    def to_s = @original_version
-    def prerelease? = !comparison_parts.last.nil?
+    def to_s
+      @original_version
+    end
+
+    def prerelease?
+      !comparison_parts.last.nil?
+    end
 
     # Keep the same release/prerelease ordering as the native resolver. Gem's
     # normalization drops significant prerelease zeros and reverses mixed tokens.
@@ -38,11 +45,25 @@ module Pod
       prerelease.length <=> other_prerelease.length
     end
 
-    def hash = comparison_parts.hash
-    def eql?(other) = other.is_a?(Version) && self == other
-    def marshal_dump = [to_s]
-    def encode_with(coder) = coder.add("version", to_s)
-    def yaml_initialize(_tag, values) = initialize(values.fetch("version"))
+    def hash
+      comparison_parts.hash
+    end
+
+    def eql?(other)
+      other.is_a?(Version) && self == other
+    end
+
+    def marshal_dump
+      [to_s]
+    end
+
+    def encode_with(coder)
+      coder.add("version", to_s)
+    end
+
+    def yaml_initialize(_tag, values)
+      initialize(values.fetch("version"))
+    end
 
     def freeze
       comparison_parts
@@ -93,7 +114,9 @@ module Pod
       end
     end
 
-    def to_s = [self.class.string_name(name), deployment_target].compact.join(" ")
+    def to_s
+      [self.class.string_name(name), deployment_target].compact.join(" ")
+    end
 
     def self.string_name(name)
       { ios: "iOS", osx: "macOS", tvos: "tvOS", watchos: "watchOS", visionos: "visionOS" }.fetch(name.to_sym)
@@ -104,9 +127,13 @@ module Pod
       other.is_a?(Platform) && name == other.name && deployment_target == other.deployment_target
     end
 
-    def eql?(other) = other.is_a?(Platform) && self == other
+    def eql?(other)
+      other.is_a?(Platform) && self == other
+    end
 
-    def hash = [name, deployment_target].hash
+    def hash
+      [name, deployment_target].hash
+    end
 
     def supports?(other)
       other = Platform.new(other)
@@ -127,24 +154,66 @@ module Pod
       @packaging = packaging
     end
 
-    def self.static_library = new
-    def self.static_framework = new(packaging: :framework)
-    def self.dynamic_framework = new(linkage: :dynamic, packaging: :framework)
-    def self.dynamic_library = new(linkage: :dynamic)
+    def self.static_library
+      new
+    end
 
-    def static? = linkage == :static
-    def dynamic? = linkage == :dynamic
-    def framework? = packaging == :framework
-    def library? = packaging == :library
-    def static_library? = static? && library?
-    def static_framework? = static? && framework?
-    def dynamic_framework? = dynamic? && framework?
-    def dynamic_library? = dynamic? && library?
-    def to_hash = { linkage: linkage, packaging: packaging }
-    def ==(other) = other.is_a?(BuildType) && to_hash == other.to_hash
+    def self.static_framework
+      new(packaging: :framework)
+    end
+
+    def self.dynamic_framework
+      new(linkage: :dynamic, packaging: :framework)
+    end
+
+    def self.dynamic_library
+      new(linkage: :dynamic)
+    end
+
+    def static?
+      linkage == :static
+    end
+
+    def dynamic?
+      linkage == :dynamic
+    end
+
+    def framework?
+      packaging == :framework
+    end
+
+    def library?
+      packaging == :library
+    end
+
+    def static_library?
+      static? && library?
+    end
+
+    def static_framework?
+      static? && framework?
+    end
+
+    def dynamic_framework?
+      dynamic? && framework?
+    end
+
+    def dynamic_library?
+      dynamic? && library?
+    end
+
+    def to_hash
+      { linkage: linkage, packaging: packaging }
+    end
+
+    def ==(other)
+      other.is_a?(BuildType) && to_hash == other.to_hash
+    end
 
     alias eql? ==
 
-    def hash = to_hash.hash
+    def hash
+      to_hash.hash
+    end
   end
 end

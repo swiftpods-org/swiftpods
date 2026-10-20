@@ -15,9 +15,17 @@ module Pod
         "incremental_installation" => false, "skip_pods_project_generation" => false,
         "parallel_pod_downloads" => false, "parallel_pod_download_thread_pool_size" => 40,
       }.freeze
-      def self.defaults = DEFAULTS
-      def self.all_options = DEFAULTS.keys
-      def self.from_podfile(podfile) = new(podfile.data.fetch("options", {}))
+      def self.defaults
+        DEFAULTS
+      end
+
+      def self.all_options
+        DEFAULTS.keys
+      end
+
+      def self.from_podfile(podfile)
+        new(podfile.data.fetch("options", {}))
+      end
 
       def initialize(options = {})
         options = options.transform_keys(&:to_s)
@@ -36,11 +44,15 @@ module Pod
         include_defaults ? @values.dup : @values.reject { |key, value| DEFAULTS[key] == value }
       end
 
-      def ==(other) = other.is_a?(self.class) && to_h == other.to_h
+      def ==(other)
+        other.is_a?(self.class) && to_h == other.to_h
+      end
 
       alias eql? ==
 
-      def hash = to_h.hash
+      def hash
+        to_h.hash
+      end
     end
   end
 end

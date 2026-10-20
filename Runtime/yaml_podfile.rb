@@ -103,7 +103,7 @@ module SwiftPods
           end
         end
       end
-      whitelists = yaml_scopes.filter_map { |scope| scope["configuration_pod_whitelist"] }
+      whitelists = yaml_scopes.map { |scope| scope["configuration_pod_whitelist"] }.select { |value| value }
       whitelists.each do |whitelist|
         raise Unsupported, "Invalid YAML configuration whitelist" unless whitelist.is_a?(Hash)
       end

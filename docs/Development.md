@@ -1,15 +1,15 @@
 # Build from source
 
 You can build SwiftPods locally from its public source repository. You need
-macOS, Xcode with its command-line tools selected, Python 3 and Homebrew.
+macOS, Xcode with its command-line tools selected, Python 3 and Ruby 2.6 or newer.
 
-Install Ruby, then clone and build SwiftPods:
+Use an existing Ruby installation, then clone and build SwiftPods:
 
 ```sh
-brew install ruby@3.4
+ruby --version
 git clone https://github.com/swiftpods-org/swiftpods.git
 cd swiftpods
-export SWIFTPODS_RUBY="$(brew --prefix ruby@3.4)/bin/ruby"
+export SWIFTPODS_RUBY="$(ruby -rrbconfig -e 'print RbConfig.ruby')"
 python3 scripts/bootstrap.py
 swift build -c release -Xswiftc -warnings-as-errors -Xcc -Wall -Xcc -Wextra -Xcc -Werror
 ```
@@ -26,5 +26,6 @@ The executable locates the adapter in that checkout. Set `SWIFTPODS_RUBY` in
 other terminal sessions when selecting the same Ruby installation.
 
 You can now run `swiftpods install` from your Xcode project directory.
+If Ruby is unavailable, install it separately, for example with `brew install ruby`.
 See [Getting started](../README.md#getting-started) for a Podfile example, or
 [Installation and CI](Release.md) to install a published build.

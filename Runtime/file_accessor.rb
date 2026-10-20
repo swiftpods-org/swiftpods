@@ -23,10 +23,21 @@ module Pod
       @spec_consumer = consumer
     end
 
-    def root = Pathname(path_list.root)
-    def spec = spec_consumer.spec
-    def platform_name = spec_consumer.platform_name
-    def inspect = "<#{self.class} spec=#{spec.name} platform=#{platform_name} root=#{root}>"
+    def root
+      Pathname(path_list.root)
+    end
+
+    def spec
+      spec_consumer.spec
+    end
+
+    def platform_name
+      spec_consumer.platform_name
+    end
+
+    def inspect
+      "<#{self.class} spec=#{spec.name} platform=#{platform_name} root=#{root}>"
+    end
 
     def query(operation, include_frameworks = false)
       attributes = ATTRIBUTES.to_h { |name| [name, spec_consumer.public_send(name)] }
@@ -58,7 +69,9 @@ module Pod
       end
     end
 
-    def developer_files = [*specs, prefix_header, module_map, license, readme, *docs].compact.uniq
+    def developer_files
+      [*specs, prefix_header, module_map, license, readme, *docs].compact.uniq
+    end
 
     def self.all_files(accessors)
       accessors.flat_map do |accessor|
@@ -69,10 +82,12 @@ module Pod
         ]
       end.compact.uniq
     end
+
     def self.vendored_frameworks_headers_dir(framework)
       directory = Pathname(framework) + "Headers"
       directory.directory? ? directory.realpath : directory
     end
+
     def self.vendored_frameworks_headers(framework)
       framework = Pathname(framework).expand_path
       response = SwiftPods.callback("file_accessor", {

@@ -137,10 +137,15 @@ def main():
 
     run([sys.executable, "scripts/bootstrap.py"])
     run([sys.executable, "scripts/unit_tests.py"], "native-units.json")
+    run([sys.executable, "scripts/ruby_runtime_tests.py"])
     ruby, _ = select_ruby(json.loads((ROOT / "Profiles/baseline.json").read_text()))
     run(
         [ruby, "scripts/ruby_adapter_tests.rb"],
         env=clean_environment(os.environ),
+    )
+    run(
+        [sys.executable, "scripts/ruby_compatibility_tests.py", "--ruby", ruby],
+        "ruby-compatibility.json",
     )
     if args.full:
         run(

@@ -10,7 +10,9 @@ module SwiftPods
       @values.each_key { |name| define_singleton_method(name) { @values.fetch(name) } }
     end
 
-    def to_h = @values.dup
+    def to_h
+      @values.dup
+    end
   end
 
   module EngineIsolation
@@ -37,7 +39,8 @@ module SwiftPods
   end
 end
 
-Kernel.prepend(SwiftPods::EngineIsolation)
+# Ruby 2.6 does not propagate a later Kernel prepend to existing includers.
+Object.prepend(SwiftPods::EngineIsolation)
 require "bundler/setup" if ENV["SWIFTPODS_PROFILE_GEMFILE"]
 # Bundler's setup API does not populate the executable marker set by `bundle
 # exec`. Both enter the same verified imported gem environment here.

@@ -11,15 +11,41 @@ module Pod
           @metadata = metadata
         end
 
-        def container = metadata["container"] && Object.const_get(metadata["container"])
-        def types = metadata["types"].map { |name| Object.const_get(name) }
-        def supported_types = [*types, container].compact
-        def root_only? = metadata["root_only"]
-        def multi_platform? = metadata["multi_platform"]
-        def inherited? = metadata["inherited"]
-        def default_value = metadata["default"]
-        def writer_name = name.to_s + "="
-        def writer_singular_form = metadata["singular"] && metadata["singular"] + "="
+        def container
+          metadata["container"] && Object.const_get(metadata["container"])
+        end
+
+        def types
+          metadata["types"].map { |name| Object.const_get(name) }
+        end
+
+        def supported_types
+          [*types, container].compact
+        end
+
+        def root_only?
+          metadata["root_only"]
+        end
+
+        def multi_platform?
+          metadata["multi_platform"]
+        end
+
+        def inherited?
+          metadata["inherited"]
+        end
+
+        def default_value
+          metadata["default"]
+        end
+
+        def writer_name
+          name.to_s + "="
+        end
+
+        def writer_singular_form
+          metadata["singular"] && metadata["singular"] + "="
+        end
       end
 
       CONTRACT = JSON.parse(File.read(File.join(__dir__, "attributes.json"))).freeze
@@ -28,10 +54,14 @@ module Pod
       end
     end
 
-    ALIASES = DSL::CONTRACT.filter_map { |name, metadata| [metadata["singular"], name] if metadata["singular"] }.to_h.freeze
+    ALIASES = DSL::CONTRACT.each_with_object({}) do |(name, metadata), aliases|
+      aliases[metadata["singular"]] = name if metadata["singular"]
+    end.freeze
     attr_accessor :defined_in_file
 
-    def attributes_hash = data
+    def attributes_hash
+      data
+    end
 
     def store_attribute(name, value, platform = nil)
       name = name.to_s
@@ -50,6 +80,7 @@ module Pod
     def self.convert_keys_to_string(value, recursive: true)
       value.to_h { |key, item| [key.to_s, recursive && item.is_a?(Hash) ? convert_keys_to_string(item) : item] }
     end
+
     def self.convert_keys_to_symbol(value, recursive: true)
       value.to_h { |key, item| [key.to_sym, recursive && item.is_a?(Hash) ? convert_keys_to_symbol(item) : item] }
     end
@@ -63,9 +94,13 @@ module Pod
       (Array(root.data["swift_versions"]) + Array(root.data["swift_version"])).map { |value| Version.new(value) }.uniq.sort
     end
 
-    def swift_version = swift_versions.last
+    def swift_version
+      swift_versions.last
+    end
 
-    def test_type = (data["test_type"] || ("unit" if test_specification?))&.to_sym
+    def test_type
+      (data["test_type"] || ("unit" if test_specification?))&.to_sym
+    end
 
     def authors
       values = root.data["authors"] || root.data["author"]
@@ -93,12 +128,29 @@ module Pod
       value.is_a?(Hash) ? Specification.convert_keys_to_symbol(value) : value
     end
 
-    def base_name = data["name"]
-    def requires_arc = data["requires_arc"]
-    def screenshots = Array(root.data["screenshots"])
-    def static_framework = root.data["static_framework"]
-    def deprecated = root.data["deprecated"]
-    def deprecated? = deprecated || !root.data["deprecated_in_favor_of"].nil?
+    def base_name
+      data["name"]
+    end
+
+    def requires_arc
+      data["requires_arc"]
+    end
+
+    def screenshots
+      Array(root.data["screenshots"])
+    end
+
+    def static_framework
+      root.data["static_framework"]
+    end
+
+    def deprecated
+      root.data["deprecated"]
+    end
+
+    def deprecated?
+      deprecated || !root.data["deprecated_in_favor_of"].nil?
+    end
 
     def prepare_command
       value = root.data["prepare_command"]
@@ -107,7 +159,9 @@ module Pod
       value.gsub(/^ {0,#{indentation}}/, "").chomp
     end
 
-    def cocoapods_version = Requirement.new(root.data["cocoapods_version"] || ">= 0")
+    def cocoapods_version
+      Requirement.new(root.data["cocoapods_version"] || ">= 0")
+    end
 
     def available_platforms
       names = platform_requirements.keys
@@ -133,9 +187,17 @@ module Pod
       available_platforms.any? { |supported| value.supports?(supported) }
     end
 
-    def spec_type = test_specification? ? :test : app_specification? ? :app : :library
-    def non_library_specification? = !library_specification?
-    def checksum = root.defined_in_file && Digest::SHA1.file(root.defined_in_file).hexdigest
+    def spec_type
+      test_specification? ? :test : app_specification? ? :app : :library
+    end
+
+    def non_library_specification?
+      !library_specification?
+    end
+
+    def checksum
+      root.defined_in_file && Digest::SHA1.file(root.defined_in_file).hexdigest
+    end
 
     def dependencies(platform = nil)
       platforms = platform ? [platform] : available_platforms
@@ -171,8 +233,13 @@ module Pod
       value
     end
 
-    def to_json(*arguments) = JSON.dump(to_hash, *arguments) + "\n"
-    def to_pretty_json(*arguments) = JSON.pretty_generate(to_hash, *arguments) + "\n"
+    def to_json(*arguments)
+      JSON.dump(to_hash, *arguments) + "\n"
+    end
+
+    def to_pretty_json(*arguments)
+      JSON.pretty_generate(to_hash, *arguments) + "\n"
+    end
 
     def method_missing(method, *arguments)
       key = method.to_s
@@ -238,11 +305,17 @@ module Pod
         define_method(name) { spec.root.public_send(name) }
       end
 
-      def test_type = effective(spec, DSL.attributes.fetch(:test_type)) || (:unit if spec.test_specification?)
+      def test_type
+        effective(spec, DSL.attributes.fetch(:test_type)) || (:unit if spec.test_specification?)
+      end
 
-      def pod_target_xcconfig = effective_xcconfig(:pod_target_xcconfig)
+      def pod_target_xcconfig
+        effective_xcconfig(:pod_target_xcconfig)
+      end
 
-      def user_target_xcconfig = effective_xcconfig(:user_target_xcconfig)
+      def user_target_xcconfig
+        effective_xcconfig(:user_target_xcconfig)
+      end
 
       def effective_xcconfig(name)
         legacy = effective(spec, DSL.attributes.fetch(:xcconfig))

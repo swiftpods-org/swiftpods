@@ -1,7 +1,9 @@
 # frozen_string_literal: true
 
 class Pod::Installer
-  def installation_options = @installation_options ||= podfile.installation_options
+  def installation_options
+    @installation_options ||= podfile.installation_options
+  end
 
   def analysis_result
     @analysis_result ||= SwiftPods::Record.new(pod_targets: pod_targets, targets: aggregate_targets, specifications: sandbox.specifications.values)
@@ -46,18 +48,37 @@ class Pod::Installer
     end
   end
 
-  def user_projects = (@user_projects || {}).values
+  def user_projects
+    (@user_projects || {}).values
+  end
 end
 
 require_relative "installation_results"
 
 class Pod::Sandbox
-  def development_pods = @development_pods || {}
-  def local?(name) = development_pods.key?(name.split("/").first)
-  def manifest_path = root + "Manifest.lock"
-  def manifest = manifest_path.file? ? Pod::Lockfile.from_file(manifest_path) : nil
-  def specifications_root = root + "Local Podspecs"
-  def specification_path(name) = specifications_root + (name.split("/").first + ".podspec.json")
+  def development_pods
+    @development_pods || {}
+  end
+
+  def local?(name)
+    development_pods.key?(name.split("/").first)
+  end
+
+  def manifest_path
+    root + "Manifest.lock"
+  end
+
+  def manifest
+    manifest_path.file? ? Pod::Lockfile.from_file(manifest_path) : nil
+  end
+
+  def specifications_root
+    root + "Local Podspecs"
+  end
+
+  def specification_path(name)
+    specifications_root + (name.split("/").first + ".podspec.json")
+  end
 end
 
 class Pod::Lockfile
@@ -71,9 +92,17 @@ class Pod::Lockfile
     new(YAML.safe_load(File.read(path), permitted_classes: [Symbol], aliases: false))
   end
 
-  def to_hash = internal_data
-  def podfile_checksum = internal_data["PODFILE CHECKSUM"]
-  def pod_names = versions.keys
+  def to_hash
+    internal_data
+  end
+
+  def podfile_checksum
+    internal_data["PODFILE CHECKSUM"]
+  end
+
+  def pod_names
+    versions.keys
+  end
 
   def versions
     internal_data.fetch("PODS", []).to_h do |entry|

@@ -16,8 +16,8 @@ brew upgrade swiftpods
 ```
 
 SwiftPods ships its native executable and its own Ruby DSL adapter. Ruby is
-installed separately. The supported interpreter is CRuby >= 3.4.11, < 3.5.0,
-with ABI 3.4.0 and the distribution architecture. No installation engine gems
+installed separately. The supported interpreter is CRuby >= 2.6, without an
+upper version bound, matching the distribution architecture. No installation engine gems
 or native gem extensions are included in the distribution.
 
 ## Pinned installation and CI
@@ -43,5 +43,5 @@ from the same release, together with the pinned manifest SHA-256.
 The root `action.yml` wraps this installer for GitHub Actions. Use
 `swiftpods-org/swiftpods@COMMIT_SHA`, replacing COMMIT_SHA with the selected
 commit. Supply `version` and `manifest-sha256`.
-Supply `ruby-path` for a preinstalled compatible interpreter; otherwise the
-action installs Homebrew `ruby@3.4`. Pinning SwiftPods does not pin that Ruby patch.
+The action uses an installed compatible Ruby. Supply `ruby-path` to select an
+interpreter explicitly. Pinning SwiftPods does not pin that Ruby patch.

@@ -16,8 +16,13 @@ module Pod
       Pathname(@directories[name] || (@root + name).to_s)
     end
 
-    def specification(name) = @specifications[name.split("/", 2).first]
-    def public_headers = @public_headers ||= SwiftPods::Record.new(:root => @root + "Headers/Public")
+    def specification(name)
+      @specifications[name.split("/", 2).first]
+    end
+
+    def public_headers
+      @public_headers ||= SwiftPods::Record.new(:root => @root + "Headers/Public")
+    end
   end
 
   class Installer
@@ -64,9 +69,11 @@ module Pod
     def self.message(*)
       yield if block_given?
     end
+
     def self.puts(text)
       $stderr.puts(text)
     end
+
     def self.warn(text)
       $stderr.puts(text)
     end
@@ -82,13 +89,33 @@ module SwiftPods
       update(value)
     end
 
-    def [](key) = super(key.to_s)
-    def fetch(key, *arguments, &block) = super(key.to_s, *arguments, &block)
-    def key?(key) = super(key.to_s)
-    def dig(key, *rest) = super(key.to_s, *rest)
-    def delete(key, &block) = super(key.to_s, &block)
-    def values_at(*keys) = super(*keys.map(&:to_s))
-    def with_indifferent_access = self
+    def [](key)
+      super(key.to_s)
+    end
+
+    def fetch(key, *arguments, &block)
+      super(key.to_s, *arguments, &block)
+    end
+
+    def key?(key)
+      super(key.to_s)
+    end
+
+    def dig(key, *rest)
+      super(key.to_s, *rest)
+    end
+
+    def delete(key, &block)
+      super(key.to_s, &block)
+    end
+
+    def values_at(*keys)
+      super(*keys.map(&:to_s))
+    end
+
+    def with_indifferent_access
+      self
+    end
 
     alias include? key?
     alias has_key? key?
@@ -144,8 +171,13 @@ module Pod
       @repo = Pathname(path)
     end
 
-    def url = repo.to_s
-    def name = repo.basename.to_s
+    def url
+      repo.to_s
+    end
+
+    def name
+      repo.basename.to_s
+    end
   end
 
   class Installer
@@ -162,7 +194,9 @@ module Pod
         @umbrella_targets = targets
       end
 
-      def generated_projects = [pods_project, *pod_target_subprojects].compact
+      def generated_projects
+        [pods_project, *pod_target_subprojects].compact
+      end
     end
 
     class PostInstallHooksContext < BaseInstallHooksContext

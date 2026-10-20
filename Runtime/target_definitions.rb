@@ -16,21 +16,49 @@ module SwiftPods
       self
     end
 
-    def root? = parent.equal?(podfile)
-    def root = root? ? self : parent.root
-    def recursive_children = (children + children.map(&:recursive_children)).flatten
-    def name = data.fetch("name")
-    def label = data["label"] || "Pods-" + name
-    def to_s = label
+    def root?
+      parent.equal?(podfile)
+    end
+
+    def root
+      root? ? self : parent.root
+    end
+
+    def recursive_children
+      (children + children.map(&:recursive_children)).flatten
+    end
+
+    def name
+      data.fetch("name")
+    end
+
+    def label
+      data["label"] || "Pods-" + name
+    end
+
+    def to_s
+      label
+    end
 
     def platform
       data["platform"] && Pod::Platform.new(data["platform"]["name"], data["platform"]["deployment_target"])
     end
 
-    def abstract? = data["abstract"] == true
-    def uses_frameworks? = !!data["frameworks"]
-    def user_project_path = data["project"]
-    def build_configurations = data["configurations"]&.transform_values(&:to_sym)
+    def abstract?
+      data["abstract"] == true
+    end
+
+    def uses_frameworks?
+      !!data["frameworks"]
+    end
+
+    def user_project_path
+      data["project"]
+    end
+
+    def build_configurations
+      data["configurations"]&.transform_values(&:to_sym)
+    end
 
     def script_phases
       data.fetch("script_phases", []).map do |phase|
@@ -58,7 +86,9 @@ module SwiftPods
 
     private :dependency_with_option
 
-    def swift_version = data["swift_version"]
+    def swift_version
+      data["swift_version"]
+    end
 
     def swift_version_requirements
       data.key?("own_swift_version_requirements") ? data["own_swift_version_requirements"] : data["swift_version_requirements"]
@@ -68,21 +98,33 @@ module SwiftPods
       !data["swift_version_requirements"] || Pod::Requirement.new(*data["swift_version_requirements"]).satisfied_by?(Pod::Version.new(value))
     end
 
-    def dependencies = data.fetch("dependencies", []).map { |entry| Pod::Dependency.from_manifest(entry) }
+    def dependencies
+      data.fetch("dependencies", []).map { |entry| Pod::Dependency.from_manifest(entry) }
+    end
   end
 
   class Podfile
     TargetDefinition = SwiftPods::TargetDefinition
 
-    def sources = data["sources"]
-    def plugins = data["plugins"]
+    def sources
+      data["sources"]
+    end
+
+    def plugins
+      data["plugins"]
+    end
 
     def workspace_path
       data["workspace"] && (data["workspace"].end_with?(".xcworkspace") ? data["workspace"] : data["workspace"] + ".xcworkspace")
     end
 
-    def generate_bridge_support? = data["generate_bridge_support"]
-    def set_arc_compatibility_flag? = data["set_arc_compatibility_flag"]
+    def generate_bridge_support?
+      data["generate_bridge_support"]
+    end
+
+    def set_arc_compatibility_flag?
+      data["set_arc_compatibility_flag"]
+    end
 
     %w[pre_install pre_integrate post_install post_integrate].each { |name|
       define_method(name + "!") { |installer|
@@ -117,8 +159,16 @@ module SwiftPods
       [root, *root.recursive_children]
     end
 
-    def root_target_definitions = [target_definition_list.first]
-    def target_definitions = target_definition_list.to_h { |definition| [definition.name, definition] }
-    def installation_options = Pod::Installer::InstallationOptions.from_podfile(self)
+    def root_target_definitions
+      [target_definition_list.first]
+    end
+
+    def target_definitions
+      target_definition_list.to_h { |definition| [definition.name, definition] }
+    end
+
+    def installation_options
+      Pod::Installer::InstallationOptions.from_podfile(self)
+    end
   end
 end

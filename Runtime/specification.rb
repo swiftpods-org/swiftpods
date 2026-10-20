@@ -28,10 +28,21 @@ module Pod
       Pod.instance_variable_set(:@last_spec, self) unless parent
     end
 
-    def name = @parent ? @parent.name + "/" + @data["name"].to_s : @data["name"].to_s
-    def to_s = name
-    def root = @parent ? @parent.root : self
-    def parent = @parent
+    def name
+      @parent ? @parent.name + "/" + @data["name"].to_s : @data["name"].to_s
+    end
+
+    def to_s
+      name
+    end
+
+    def root
+      @parent ? @parent.root : self
+    end
+
+    def parent
+      @parent
+    end
 
     def self.from_hash(data)
       new.tap { |spec| spec.data.merge!(data) }
@@ -80,13 +91,33 @@ module Pod
       child
     end
 
-    def root? = parent.nil?
-    def version = root.data["version"] && Version.new(root.data["version"])
-    def library_specification? = !test_specification? && !app_specification?
-    def test_specification? = @spec_kind == :test
-    def app_specification? = @spec_kind == :app
-    def test_specs = children("testspecs")
-    def app_specs = children("appspecs")
+    def root?
+      parent.nil?
+    end
+
+    def version
+      root.data["version"] && Version.new(root.data["version"])
+    end
+
+    def library_specification?
+      !test_specification? && !app_specification?
+    end
+
+    def test_specification?
+      @spec_kind == :test
+    end
+
+    def app_specification?
+      @spec_kind == :app
+    end
+
+    def test_specs
+      children("testspecs")
+    end
+
+    def app_specs
+      children("appspecs")
+    end
 
     def recursive_subspecs(_include_non_library_specifications = false)
       subspecs.flat_map { |spec| [spec, *spec.recursive_subspecs] }

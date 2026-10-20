@@ -41,19 +41,33 @@ module Pod
     end
 
     def resolve_target(id)
-      @installer.generated_projects.filter_map { |project| project.object(id) if id && project.graph.fetch("objects", {}).key?(id) }.first
+      project = @installer.generated_projects.find { |entry| id && entry.graph.fetch("objects", {}).key?(id) }
+      project.object(id) if project
     end
 
-    def resolve_targets(ids) = ids.filter_map { |id| resolve_target(id) }
-    def library_specs = specs.select(&:library_specification?)
-    def test_specs = specs.select(&:test_specification?)
-    def app_specs = specs.select(&:app_specification?)
+    def resolve_targets(ids)
+      ids.map { |id| resolve_target(id) }.compact
+    end
+
+    def library_specs
+      specs.select(&:library_specification?)
+    end
+
+    def test_specs
+      specs.select(&:test_specification?)
+    end
+
+    def app_specs
+      specs.select(&:app_specification?)
+    end
 
     def test_target_label(spec)
       label + "-" + (spec.test_type == :ui ? "UI" : "Unit") + "-" + spec.name.split("/").drop(1).join("-")
     end
 
-    def app_target_label(spec) = label + "-" + spec.name.split("/").drop(1).join("-")
+    def app_target_label(spec)
+      label + "-" + spec.name.split("/").drop(1).join("-")
+    end
 
     def installation_result
       return @installation_result if @installation_result
@@ -70,34 +84,69 @@ module Pod
       )
     end
 
-    def build_type = @build_type
-    def label = name
+    def build_type
+      @build_type
+    end
+
+    def label
+      name
+    end
 
     def file_accessors
       specs.map { |spec| FileAccessor.new(sandbox.pod_dir(pod_name), spec.consumer(platform)) }
     end
 
-    def build_as_framework? = build_type.framework?
-    def build_as_library? = build_type.library?
-    def build_as_static? = build_type.static?
-    def build_as_dynamic? = build_type.dynamic?
-    def build_as_static_framework? = build_type.static_framework?
-    def build_as_static_library? = build_type.static_library?
-    def build_as_dynamic_framework? = build_type.dynamic_framework?
+    def build_as_framework?
+      build_type.framework?
+    end
+
+    def build_as_library?
+      build_type.library?
+    end
+
+    def build_as_static?
+      build_type.static?
+    end
+
+    def build_as_dynamic?
+      build_type.dynamic?
+    end
+
+    def build_as_static_framework?
+      build_type.static_framework?
+    end
+
+    def build_as_static_library?
+      build_type.static_library?
+    end
+
+    def build_as_dynamic_framework?
+      build_type.dynamic_framework?
+    end
 
     def uses_swift?
       file_accessors.any? { |accessor| accessor.source_files.any? { |path| path.extname == ".swift" } }
     end
 
-    def should_build? = file_accessors.any? { |accessor| !accessor.source_files.empty? }
-    def product_module_name = root_spec.module_name
+    def should_build?
+      file_accessors.any? { |accessor| !accessor.source_files.empty? }
+    end
+
+    def product_module_name
+      root_spec.module_name
+    end
 
     def product_name
       build_as_framework? ? product_module_name + ".framework" : "lib" + label + ".a"
     end
 
-    def support_files_dir = sandbox.root + "Target Support Files" + label
-    def prefix_header_path = support_files_dir + (label + "-prefix.pch")
+    def support_files_dir
+      sandbox.root + "Target Support Files" + label
+    end
+
+    def prefix_header_path
+      support_files_dir + (label + "-prefix.pch")
+    end
 
     def module_map_path
       config = native_target&.build_configurations&.first
@@ -129,17 +178,26 @@ module Pod
       self
     end
 
-    def name = target_definition.label
+    def name
+      target_definition.label
+    end
 
     alias label name
 
-    def platform = target_definition.platform
+    def platform
+      target_definition.platform
+    end
 
     def user_target_uuids
       user_project ? user_project.native_targets.select { |target| target.name == target_definition.name }.map(&:uuid) : []
     end
 
-    def user_targets = user_target_uuids.map { |uuid| user_project.object(uuid) }
-    def requires_frameworks? = pod_targets.any?(&:build_as_framework?)
+    def user_targets
+      user_target_uuids.map { |uuid| user_project.object(uuid) }
+    end
+
+    def requires_frameworks?
+      pod_targets.any?(&:build_as_framework?)
+    end
   end
 end

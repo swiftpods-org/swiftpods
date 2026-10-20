@@ -69,9 +69,48 @@ def validate(directory, version, commit):
     return paths, manifest_sha256
 
 
-def publish(directory, version, commit):
+def replace_release(tag, commit, expected_tag_object):
+    if not re.fullmatch(r"[0-9a-f]{40}", expected_tag_object):
+        raise RuntimeError("Replacement requires the exact previous tag object")
+    reference = json.loads(
+        subprocess.check_output(
+            ["gh", "api", f"repos/{REPOSITORY}/git/ref/tags/{tag}"], text=True
+        )
+    )
+    if reference["object"]["sha"] != expected_tag_object:
+        raise RuntimeError("Remote tag changed before release replacement")
+    existing = json.loads(
+        subprocess.check_output(
+            ["gh", "api", f"repos/{REPOSITORY}/releases/tags/{tag}"], text=True
+        )
+    )
+    if existing.get("immutable"):
+        raise RuntimeError("An immutable release cannot be replaced")
+    subprocess.run(
+        ["gh", "release", "delete", tag, "--repo", REPOSITORY, "--yes"],
+        check=True,
+    )
+    subprocess.run(
+        [
+            "gh",
+            "api",
+            "--method",
+            "PATCH",
+            f"repos/{REPOSITORY}/git/refs/tags/{tag}",
+            "-f",
+            "sha=" + commit,
+            "-F",
+            "force=true",
+        ],
+        check=True,
+    )
+
+
+def publish(directory, version, commit, replace_tag_object=None):
     paths, checksum = validate(directory, version, commit)
     tag = "v" + version
+    if replace_tag_object is not None:
+        replace_release(tag, commit, replace_tag_object)
     remote = subprocess.check_output(
         ["gh", "api", f"repos/{REPOSITORY}/commits/{tag}", "--jq", ".sha"], text=True
     ).strip()
@@ -89,7 +128,7 @@ def publish(directory, version, commit):
             + "/docs/Release.md) for setup.\n\n"
             "`release.json` SHA-256: `" + checksum + "`\n"
         )
-        # Keep an incomplete upload hidden; never replace an existing release.
+        # Keep an incomplete upload hidden. Replacement requires explicit opt-in above.
         subprocess.run(
             [
                 "gh",
@@ -124,9 +163,14 @@ def main():
     parser.add_argument("--version", required=True)
     parser.add_argument("--commit", required=True)
     parser.add_argument("--publish", action="store_true")
+    parser.add_argument("--replace-tag-object")
     args = parser.parse_args()
+    if args.replace_tag_object is not None and not args.publish:
+        parser.error("--replace-tag-object requires --publish")
     if args.publish:
-        checksum = publish(args.directory, args.version, args.commit)
+        checksum = publish(
+            args.directory, args.version, args.commit, args.replace_tag_object
+        )
     else:
         _, checksum = validate(args.directory, args.version, args.commit)
     if os.environ.get("GITHUB_OUTPUT"):

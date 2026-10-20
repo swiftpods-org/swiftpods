@@ -68,30 +68,61 @@ module Xcodeproj
         end
     end
 
-    def objects = @graph["objects"].keys.map { |id| object(id) }
-    def root_object = object(@graph["rootObject"])
+    def objects
+      @graph["objects"].keys.map { |id| object(id) }
+    end
+
+    def root_object
+      object(@graph["rootObject"])
+    end
+
     def source_root
       value = root_object.project_dir_path.to_s
       Pathname(File.expand_path(value.empty? ? "." : value, path.dirname))
     end
-    def main_group = root_object.main_group
-    def targets = root_object.targets
-    def native_targets = targets.select { |target| target.isa == "PBXNativeTarget" }
-    def build_configurations = root_object.build_configuration_list.build_configurations
-    def files = objects.select { |entry| entry.isa == "PBXFileReference" }
-    def objects_by_uuid = @graph["objects"].keys.to_h { |id| [id, object(id)] }
-    def products_group = root_object.product_ref_group
+
+    def main_group
+      root_object.main_group
+    end
+
+    def targets
+      root_object.targets
+    end
+
+    def native_targets
+      targets.select { |target| target.isa == "PBXNativeTarget" }
+    end
+
+    def build_configurations
+      root_object.build_configuration_list.build_configurations
+    end
+
+    def files
+      objects.select { |entry| entry.isa == "PBXFileReference" }
+    end
+
+    def objects_by_uuid
+      @graph["objects"].keys.to_h { |id| [id, object(id)] }
+    end
+
+    def products_group
+      root_object.product_ref_group
+    end
 
     def frameworks_group
       main_group.groups.find { |group| group.display_name == "Frameworks" } || main_group.new_group("Frameworks")
     end
 
-    def add_build_configuration(name, type) = root_object.add_build_configuration(name, type)
+    def add_build_configuration(name, type)
+      root_object.add_build_configuration(name, type)
+    end
 
     def mark_dirty!
     end
 
-    def dirty? = true
+    def dirty?
+      true
+    end
 
     def reference_for_path(value)
       expected = File.expand_path(value.to_s)
@@ -122,9 +153,17 @@ module Xcodeproj
       object(id)
     end
 
-    def new(klass) = new_object(klass.respond_to?(:name) ? klass.name.split("::").last : klass.to_s)
-    def new_file(path, tree = "<group>") = main_group.new_file(path, tree)
-    def new_group(name, path = nil) = main_group.new_group(name, path)
+    def new(klass)
+      new_object(klass.respond_to?(:name) ? klass.name.split("::").last : klass.to_s)
+    end
+
+    def new_file(path, tree = "<group>")
+      main_group.new_file(path, tree)
+    end
+
+    def new_group(name, path = nil)
+      main_group.new_group(name, path)
+    end
 
     def new_target(type, name, platform, deployment = nil, *arguments)
       metadata = TYPES.fetch(type) { raise SwiftPods::Unsupported, "Unknown target product #{type}" }
@@ -160,7 +199,9 @@ module Xcodeproj
       nil
     end
 
-    def to_hash = { "path" => path.to_s, "graph" => @graph }
+    def to_hash
+      { "path" => path.to_s, "graph" => @graph }
+    end
   end
 end
 

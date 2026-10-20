@@ -10,8 +10,13 @@ module Xcodeproj
         @values = values
       end
 
-      def decode(value) = @project.object(value) || value
-      def encode(value) = value.respond_to?(:uuid) ? value.uuid : value
+      def decode(value)
+        @project.object(value) || value
+      end
+
+      def encode(value)
+        value.respond_to?(:uuid) ? value.uuid : value
+      end
 
       def each
         return enum_for(:each) unless block_given?
@@ -63,18 +68,27 @@ module Xcodeproj
         self
       end
 
-      def include?(value) = @values.include?(encode(value))
+      def include?(value)
+        @values.include?(encode(value))
+      end
 
       def sort!(&block)
         replace(to_a.sort(&block))
       end
 
-      def size = @values.size
+      def size
+        @values.size
+      end
 
       alias length size
 
-      def empty? = @values.empty?
-      def to_ary = to_a
+      def empty?
+        @values.empty?
+      end
+
+      def to_ary
+        to_a
+      end
     end
 
     class PBXObject
@@ -85,13 +99,33 @@ module Xcodeproj
         @uuid = uuid
       end
 
-      def data = project.graph["objects"].fetch(uuid)
-      def isa = data.fetch("isa")
-      def to_s = data["name"] || data["path"] || uuid
-      def display_name = to_s
-      def to_hash = data
-      def attribute(name) = Project::ATTRIBUTE_CONTRACT.fetch("classes").fetch(isa, {})[name.to_s]
-      def field(name) = attribute(name)&.fetch("plist_name") || name.to_s.gsub(/_([a-z])/) { $1.upcase }
+      def data
+        project.graph["objects"].fetch(uuid)
+      end
+
+      def isa
+        data.fetch("isa")
+      end
+
+      def to_s
+        data["name"] || data["path"] || uuid
+      end
+
+      def display_name
+        to_s
+      end
+
+      def to_hash
+        data
+      end
+
+      def attribute(name)
+        Project::ATTRIBUTE_CONTRACT.fetch("classes").fetch(isa, {})[name.to_s]
+      end
+
+      def field(name)
+        attribute(name)&.fetch("plist_name") || name.to_s.gsub(/_([a-z])/) { $1.upcase }
+      end
 
       def method_missing(name, *arguments)
         raw = name.to_s
@@ -152,14 +186,27 @@ module Xcodeproj
         entry
       end
 
-      def source_build_phase = phase("PBXSourcesBuildPhase")
+      def source_build_phase
+        phase("PBXSourcesBuildPhase")
+      end
 
       alias sources_build_phase source_build_phase
 
-      def frameworks_build_phase = phase("PBXFrameworksBuildPhase")
-      def resources_build_phase = phase("PBXResourcesBuildPhase")
-      def headers_build_phase = phase("PBXHeadersBuildPhase")
-      def shell_script_build_phases = build_phases.select { |entry| entry.isa == "PBXShellScriptBuildPhase" }
+      def frameworks_build_phase
+        phase("PBXFrameworksBuildPhase")
+      end
+
+      def resources_build_phase
+        phase("PBXResourcesBuildPhase")
+      end
+
+      def headers_build_phase
+        phase("PBXHeadersBuildPhase")
+      end
+
+      def shell_script_build_phases
+        build_phases.select { |entry| entry.isa == "PBXShellScriptBuildPhase" }
+      end
 
       def new_shell_script_build_phase(name = nil)
         entry = phase("PBXShellScriptBuildPhase", name || "Run Script")
@@ -170,21 +217,33 @@ module Xcodeproj
         entry
       end
 
-      def new_copy_files_build_phase(name = nil) = phase("PBXCopyFilesBuildPhase", name || "Copy Files")
-      def files_references = files.map(&:file_ref)
+      def new_copy_files_build_phase(name = nil)
+        phase("PBXCopyFilesBuildPhase", name || "Copy Files")
+      end
+
+      def files_references
+        files.map(&:file_ref)
+      end
 
       def remove_file_reference(reference)
         files.select { |entry| entry.file_ref == reference }.each(&:remove_from_project)
       end
 
-      def groups = children.select { |child| %w[PBXGroup PBXVariantGroup].include?(child.isa) }
+      def groups
+        children.select { |child| %w[PBXGroup PBXVariantGroup].include?(child.isa) }
+      end
 
       def recursive_children
         children.flat_map { |child| [child, *(child.respond_to?(:children) ? child.recursive_children : [])] }
       end
 
-      def recursive_children_groups = groups.flat_map { |group| [group, *group.recursive_children_groups] }
-      def find_file_by_path(path) = children.find { |entry| entry.data["path"] == path.to_s }
+      def recursive_children_groups
+        groups.flat_map { |group| [group, *group.recursive_children_groups] }
+      end
+
+      def find_file_by_path(path)
+        children.find { |entry| entry.data["path"] == path.to_s }
+      end
 
       def [](path)
         first, rest = path.to_s.split("/", 2)

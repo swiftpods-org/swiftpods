@@ -25,7 +25,7 @@ tag such as `3826980940661245.5` selects the existing ref without rewriting it.
 
 Ruby is a separate dependency. Homebrew installs it alongside SwiftPods;
 manual and CI installations select a compatible executable with
-`SWIFTPODS_RUBY`. SwiftPods checks the runtime's version, ABI and architecture
+`SWIFTPODS_RUBY`. SwiftPods checks the runtime's minimum version and architecture
 before executing project code. User gems and plugins require an explicitly
 imported environment rather than an implicit selection of global gems.
 

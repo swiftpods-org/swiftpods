@@ -191,7 +191,7 @@ public enum CLI {
         graph/why --refresh explicitly run install, including project code.
         --json emits schema_version 1; command output is sent to stderr.
         SWIFTPODS_BUNDLE explicitly selects the SwiftPods distribution.
-        SWIFTPODS_RUBY selects an absolute external CRuby 3.4 executable (>= 3.4.11).
+        SWIFTPODS_RUBY selects an absolute external CRuby executable (>= 2.6).
         --environment NAME explicitly selects an imported frozen gem profile.
         install/update --hardened require Podfile.json and JSON podspecs; Ruby,
         plugins, prepare commands and script phases are rejected before execution.

@@ -1,6 +1,6 @@
-SwiftPods uses externally installed CRuby >= 3.4.11, < 3.5.0 (ABI 3.4.0).
+SwiftPods uses externally installed CRuby >= 2.6, without an upper version bound.
 It never builds, patches or distributes Ruby, OpenSSL or libyaml. Homebrew's
-ruby@3.4 formula manages the interpreter and its native dependencies.
+ruby formula manages the interpreter and its native dependencies.
 
 Generated gem executable shebangs use /usr/bin/env ruby. The launcher prepends
 the validated external interpreter directory for hooks and child processes.

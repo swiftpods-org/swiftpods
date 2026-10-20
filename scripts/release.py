@@ -87,7 +87,7 @@ def homebrew_formula(version, assets):
         '  license "MIT"',
         "  version " + json.dumps(version),
         "  depends_on :macos",
-        '  depends_on "ruby@3.4"',
+        '  depends_on "ruby"',
         '  skip_clean "libexec"',
     ]
     if len(selected) == 1:
@@ -119,7 +119,7 @@ def homebrew_formula(version, assets):
         '    (prefix/"README.md").write (libexec/"README.md").read',
         '    (prefix/"LICENSE").write (libexec/"LICENSE").read',
         '    (bin/"swiftpods").write_env_script libexec/"bin/swiftpods",',
-        '      SWIFTPODS_RUBY: Formula["ruby@3.4"].opt_bin/"ruby", SWIFTPODS_BUNDLE: libexec',
+        '      SWIFTPODS_RUBY: Formula["ruby"].opt_bin/"ruby", SWIFTPODS_BUNDLE: libexec',
         '    system bin/"swiftpods", "runtime", "verify", "--json"',
         "  end",
         "",

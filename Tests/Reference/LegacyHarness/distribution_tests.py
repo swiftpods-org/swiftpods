@@ -68,7 +68,7 @@ def main():
     # explicit interpreter dependency/wrapper, never an embedded interpreter.
     formula = release / 'homebrew-tap/Formula/swiftpods.rb'
     subprocess.run([str(RUBY), '-c', str(formula)], check=True)
-    assert 'depends_on "ruby@3.4"' in formula.read_text()
+    assert 'depends_on "ruby"' in formula.read_text()
     assert 'write_env_script' in formula.read_text()
 
     def malicious(members):

@@ -6,7 +6,9 @@ module Pod
 
   class Config
     attr_accessor :installation_root, :verbose, :silent
-    def self.instance = @instance ||= new
+    def self.instance
+      @instance ||= new
+    end
 
     def initialize
       @installation_root = Pathname(Dir.pwd)
@@ -14,9 +16,17 @@ module Pod
       @silent = false
     end
 
-    def sandbox_root = installation_root + "Pods"
-    def podfile_path = installation_root + "Podfile"
-    def lockfile_path = installation_root + "Podfile.lock"
+    def sandbox_root
+      installation_root + "Pods"
+    end
+
+    def podfile_path
+      installation_root + "Podfile"
+    end
+
+    def lockfile_path
+      installation_root + "Podfile.lock"
+    end
   end
 
   class Dependency
@@ -37,8 +47,13 @@ module Pod
       @requirement = Pod::Requirement.new(*versions)
     end
 
-    def root_name = name.split("/").first
-    def to_s = name
+    def root_name
+      name.split("/").first
+    end
+
+    def to_s
+      name
+    end
 
     def ==(other)
       other.is_a?(Dependency) && name == other.name && requirement == other.requirement && external_source == other.external_source
@@ -46,7 +61,9 @@ module Pod
 
     alias eql? ==
 
-    def hash = [name, requirement, external_source].hash
+    def hash
+      [name, requirement, external_source].hash
+    end
   end
 end
 
@@ -64,7 +81,8 @@ class SwiftPods::Podfile
     spec = Pod::Spec.from_file(path)
     selection = options[:subspecs] || options[:subspec]
     specs = selection ? Array(selection).map { |name| spec.subspec_by_name(spec.name + "/" + name) } : [spec]
-    platform = @stack.reverse.filter_map { |entry| entry["platform"] }.first
+    scope = @stack.reverse.find { |entry| entry["platform"] }
+    platform = scope && scope["platform"]
     platform_name = platform && platform["name"].to_sym
     dependencies = specs.flat_map do |selected|
       [selected, *selected.recursive_subspecs].flat_map { |child| child.dependencies(platform_name) }

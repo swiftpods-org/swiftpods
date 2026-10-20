@@ -22,7 +22,9 @@ module SwiftPods
       @parents = {}
     end
 
-    def current = @stack.last
+    def current
+      @stack.last
+    end
 
     def platform(name, version = nil)
       defaults = { "ios" => "4.3", "osx" => "10.6", "tvos" => "9.0", "watchos" => "2.0", "visionos" => "1.0" }
