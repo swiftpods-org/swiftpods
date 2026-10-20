@@ -29,6 +29,10 @@ SCALARS = [
     "DEVELOPMENT_TEAM",
     "PROVISIONING_PROFILE_SPECIFIER",
     "TOOLCHAIN_DIR",
+]
+# These declarations vary between Xcode versions. Their installed Xcode output
+# remains the oracle instead of assuming that every toolchain declares strings.
+TOOLCHAIN_OPTIONS = [
     "LD_ADDRESS_SANITIZER",
     "LD_ADDRESS_SANITIZER_clang",
     "LD_ADDRESS_SANITIZER_swiftc",
@@ -47,17 +51,14 @@ BUILD_KEYS = {"CODE_SIGN_IDENTITY", "DEVELOPMENT_TEAM"}
 def hook(work):
     podfile = work / "Podfile"
     code = podfile.read_text().split("post_install do |i|", 1)[0]
-    podfile.write_text(
-        code
-        + """pre_install { |_| File.write('typed-pre-hook', 'ran') }
+    podfile.write_text(code + """pre_install { |_| File.write('typed-pre-hook', 'ran') }
 post_install do |i|
  t=i.aggregate_targets.first.user_targets.first
  values=%w[SDKROOT SDK_VALUE FILE_SENTINEL].to_h { |key| [key,t.resolved_build_setting(key,true)] }
  File.write('typed-values.json',JSON.generate(values))
  File.write('../Apps/Sources/Typed.h', '#define TYPE_SELECTION ' + values['SDK_VALUE'].values.first.to_i.to_s + 10.chr)
 end
-"""
-    )
+""")
     source = work.parent / "Apps/Sources/main.mm"
     source.write_text(
         '#include "Typed.h"\n#if TYPE_SELECTION != 7\n#error Incorrect typed SDK selection\n#endif\n'
@@ -85,10 +86,11 @@ def compare(fixture, work, selected, label, available):
             actual,
             expected,
         )
-        assert actual == {
-            "SDK_VALUE": "7" if available else None,
-            "FILE_SENTINEL": "17",
-        }
+        assert actual["FILE_SENTINEL"] == "17"
+        if available is None:
+            assert actual["SDK_VALUE"] in {"7", None}
+        else:
+            assert actual["SDK_VALUE"] == ("7" if available else None)
         rows[configuration] = {
             **actual,
             "SDKROOT": expected.get("SDKROOT"),
@@ -106,7 +108,7 @@ def sdk_types(fixture, parent):
         ).strip()
     )
     for array in [False, True]:
-        for key in ARRAYS if array else SCALARS + LISTS:
+        for key in ARRAYS if array else SCALARS + LISTS + TOOLCHAIN_OPTIONS:
             label = "typed-" + ("array-" if array else "scalar-") + key
             work, selected = create(parent / label)
             graph = read_project(selected)
@@ -135,7 +137,8 @@ def sdk_types(fixture, parent):
             original = read_project(selected)
             hook(work)
             fixture.cli(work, "install")
-            compare(fixture, work, selected, label, array or key in SCALARS)
+            available = None if key in TOOLCHAIN_OPTIONS else array or key in SCALARS
+            compare(fixture, work, selected, label, available)
             fixture.verified.append(label + "_matches_Xcode_Debug_Release")
             reinstall(fixture, work, selected)
             fixture.verified.append(label + "_offline_reinstall_is_stable")

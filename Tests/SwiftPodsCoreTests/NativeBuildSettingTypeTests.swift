@@ -45,13 +45,21 @@ final class NativeBuildSettingTypeTests: XCTestCase {
         XCTAssertEqual(try scope.expandedValue("TOOLCHAIN_DIR"), #"SDK\Selected"#)
     }
 
-    func testUntypedInstalledOptionsUseStringDefaults() throws {
-        for key in [
+    func testUntypedOptionsUseStringDefaults() throws {
+        let keys = [
             "LD_ADDRESS_SANITIZER", "LD_ADDRESS_SANITIZER_clang", "LD_ADDRESS_SANITIZER_swiftc", "LD_FUZZER",
             "LD_FUZZER_clang", "LD_FUZZER_swiftc", "LD_OBJC_RUNTIME_ARGS", "LD_OBJC_RUNTIME_ARGS_clang",
             "LD_OBJC_RUNTIME_ARGS_swiftc",
-        ] {
-            let scope = NativeBuildSettingScope([key: #"SDK\$(SUFFIX)"#, "SUFFIX": "Selected"])
+        ]
+        // These options are absent or differently declared in other Xcode versions.
+        let file = try fixture().sourceRoot.appendingPathComponent("Untyped.xcspec")
+        try PropertyListSerialization.data(
+            fromPropertyList: ["Options": keys.map { ["Name": $0] }], format: .xml, options: 0
+        ).write(to: file)
+        let types = NativeBuildSettingTypes(specifications: [file])
+        for key in keys {
+            let scope = NativeBuildSettingScope(
+                [key: #"SDK\$(SUFFIX)"#, "SUFFIX": "Selected"], settingTypes: types)
             XCTAssertEqual(try scope.expandedValue(key), #"SDK\Selected"#, key)
         }
     }
