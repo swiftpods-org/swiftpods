@@ -174,6 +174,31 @@ class RubyAdapterRegressions
     assert(dependencies.last["options"]["configurations"] == ["Release"], "Own explicit configurations were lost")
   end
 
+  def test_search_path_inheritance_builds_packages_without_linking_them_into_plugins
+    podfile = SwiftPods::Podfile.new
+    podfile.target("App") do
+      pod "PodSDK"
+      spm "PackageSDK", git: "https://example.invalid/package.git", exact: "1.0.0", products: ["SDK"]
+      target "Plugin" do
+        inherit! :search_paths
+      end
+      target "Tests" do
+        inherit! :complete
+      end
+      target "Extension" do
+        inherit! :none
+      end
+    end
+    targets = podfile.to_hash.fetch("targets").to_h { |target| [target["name"], target] }
+    plugin = targets.fetch("Plugin")
+    assert(plugin.fetch("dependencies").empty?, "Search-only plugin links its parent's pods")
+    assert(plugin.fetch("search_dependencies").first["name"] == "PodSDK", "Plugin lost pod search paths")
+    assert(plugin.fetch("packages").first["link"] == false, "Plugin links an inherited Swift package")
+    assert(!targets.fetch("App").fetch("packages").first.key?("link"), "Inheritance mutated the app's package")
+    assert(!targets.fetch("Tests").fetch("packages").first.key?("link"), "Complete inheritance lost package linking")
+    assert(targets.fetch("Extension").fetch("packages").empty?, "Packages leaked through none inheritance")
+  end
+
   def test_compatible_specification_dsl_require_does_not_load_an_external_engine
     feature = "cocoapods-core/specification/dsl"
     require feature

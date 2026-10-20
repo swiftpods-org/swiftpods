@@ -27,6 +27,7 @@ runs:
         set -euo pipefail
         if [[ -z "$SELECTED_RUBY" ]]; then
           brew install ruby@3.4
+          brew upgrade ruby@3.4
           SELECTED_RUBY="$(brew --prefix ruby@3.4)/bin/ruby"
         fi
         export SWIFTPODS_RUBY="$SELECTED_RUBY"

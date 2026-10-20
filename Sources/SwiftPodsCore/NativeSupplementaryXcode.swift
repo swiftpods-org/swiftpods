@@ -398,7 +398,7 @@ extension NativeXcode {
         return id
     }
 
-    private func isDynamicProduct(_ product: String) -> Bool {
+    func isDynamicProduct(_ product: String) -> Bool {
         guard let target = graph.objects.values.first(where: { $0["productReference"] as? String == product }),
             let list = target["buildConfigurationList"] as? String,
             let config = (graph.objects[list]?["buildConfigurations"] as? [String])?.first

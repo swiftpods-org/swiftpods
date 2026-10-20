@@ -51,6 +51,77 @@ final class NativeSwiftPackageDeclarationTests: XCTestCase {
         }
     }
 
+    func testLinkOptionRequiresABooleanAndDefaultsToLinking() throws {
+        XCTAssertTrue(try NativeSwiftPackageDeclaration(declaration()).link)
+        XCTAssertTrue(try NativeSwiftPackageDeclaration(declaration(["link": true])).link)
+        XCTAssertFalse(try NativeSwiftPackageDeclaration(declaration(["link": false])).link)
+        for value: Any in [NSNull(), "false", 0, 1, [], [:]] {
+            XCTAssertThrowsError(try NativeSwiftPackageDeclaration(declaration(["link": value])))
+        }
+    }
+
+    func testBuildOnlyPackagesSurviveReinstallAndCanSwitchToLinkingOrBeRemoved() throws {
+        let user = try graph()
+        user.objects["APP"]?["dependencies"] = ["USER_DEPENDENCY"]
+        user.objects["USER_DEPENDENCY"] = ["isa": "PBXTargetDependency", "target": "OTHER"]
+        var record: [String: Any]?
+        for _ in 0..<2 {
+            let integrator = NativeSwiftPackageIntegrator()
+            try integrator.prepare(user, record: record)
+            try integrator.integrate([declaration(["link": false])], targetID: "APP", user: user, installedModules: [])
+            record = integrator.finish(user)
+            let dependencies = try XCTUnwrap(user.objects["APP"]?["dependencies"] as? [String])
+            XCTAssertEqual(dependencies.count, 2)
+            let dependency = try XCTUnwrap(dependencies.first { $0 != "USER_DEPENDENCY" })
+            let product = try XCTUnwrap(user.objects[dependency]?["productRef"] as? String)
+            XCTAssertEqual(user.objects[product]?["productName"] as? String, "Net")
+            XCTAssertEqual(user.objects["APP"]?["packageProductDependencies"] as? [String], [])
+            XCTAssertEqual(user.objects["LINK"]?["files"] as? [String], [])
+        }
+        let linked = NativeSwiftPackageIntegrator()
+        try linked.prepare(user, record: record)
+        try linked.integrate([declaration()], targetID: "APP", user: user, installedModules: [])
+        record = linked.finish(user)
+        XCTAssertEqual(user.objects["APP"]?["dependencies"] as? [String], ["USER_DEPENDENCY"])
+        XCTAssertEqual((user.objects["LINK"]?["files"] as? [String])?.count, 1)
+        let removed = NativeSwiftPackageIntegrator()
+        try removed.prepare(user, record: record)
+        _ = removed.finish(user)
+        XCTAssertEqual(user.objects["APP"]?["dependencies"] as? [String], ["USER_DEPENDENCY"])
+        XCTAssertEqual(user.objects["LINK"]?["files"] as? [String], [])
+        XCTAssertEqual(user.objects["ROOT"]?["packageReferences"] as? [String], [])
+    }
+
+    func testRemovingBuildOnlyDependencyPreservesAUserAttachment() throws {
+        let user = try graph()
+        let integrator = NativeSwiftPackageIntegrator()
+        try integrator.prepare(user, record: nil)
+        try integrator.integrate([declaration(["link": false])], targetID: "APP", user: user, installedModules: [])
+        let record = integrator.finish(user)
+        let dependencies = try XCTUnwrap(user.objects["APP"]?["dependencies"] as? [String])
+        user.objects["OTHER"] = ["isa": "PBXNativeTarget", "dependencies": dependencies]
+        let removal = NativeSwiftPackageIntegrator()
+        try removal.prepare(user, record: record)
+        _ = removal.finish(user)
+        XCTAssertEqual(user.objects["APP"]?["dependencies"] as? [String], [])
+        XCTAssertEqual(user.objects["OTHER"]?["dependencies"] as? [String], dependencies)
+        XCTAssertNotNil(user.objects[dependencies[0]])
+    }
+
+    func testBuildOnlyDependencyWithoutAnOwnershipRecordCanBeRemoved() throws {
+        let user = try graph()
+        let integrator = NativeSwiftPackageIntegrator()
+        try integrator.prepare(user, record: nil)
+        try integrator.integrate([declaration(["link": false])], targetID: "APP", user: user, installedModules: [])
+        _ = integrator.finish(user)
+        let removal = NativeSwiftPackageIntegrator()
+        try removal.prepare(user, record: nil)
+        _ = removal.finish(user)
+        XCTAssertEqual(user.objects["APP"]?["dependencies"] as? [String], [])
+        XCTAssertEqual(user.objects["ROOT"]?["packageReferences"] as? [String], [])
+        XCTAssertFalse(user.objects.values.contains { $0["isa"] as? String == "XCSwiftPackageProductDependency" })
+    }
+
     func testRequirementFormsPreserveTheirDeclaredStrings() throws {
         let cases: [(String, Any, [String: String])] = [
             ("exact", "01.0.0", ["kind": "exactVersion", "version": "01.0.0"]),

@@ -102,6 +102,28 @@ final class NativeSubspecFileTests: XCTestCase {
         XCTAssertEqual(files.headerSettings(b)["ATTRIBUTES"] as? [String], ["Public"])
     }
 
+    func testWrapperSourcesDoNotCompileHeadersFromASiblingsVendoredSDK() throws {
+        let vendorHeader = "Kit.xcframework/device/Kit.framework/Headers/Kit.h"
+        let root = try directory(["Wrapper.c", "Wrapper.h", vendorHeader])
+        let spec = try NativeSpec(
+            data: [
+                "name": "Kit", "version": "1.0",
+                "subspecs": [
+                    ["name": "Binary", "vendored_frameworks": "Kit.xcframework"],
+                    ["name": "Wrapper", "source_files": ["Wrapper.*", "Kit.xcframework/**/*.h"]],
+                ],
+            ], directory: root)
+        let files = try NativeLibraryFiles(
+            spec: spec, names: ["Kit/Binary", "Kit/Wrapper"], platform: "ios", root: root)
+        XCTAssertEqual(Set(files.files.map(\.lastPathComponent)), ["Wrapper.c", "Wrapper.h"])
+        XCTAssertEqual(files.publicHeaders, [root.appendingPathComponent("Wrapper.h")])
+        // The Ruby FileAccessor still exposes the author's full source declaration.
+        let attributes = try spec.attributes("Kit/Wrapper", platform: "ios")
+        XCTAssertTrue(
+            try NativeFileSelection.sourceFiles(attributes, root: root).contains(
+                root.appendingPathComponent(vendorHeader)))
+    }
+
     func testSelectingOnlyAChildDoesNotAddItsParentsNonInheritedFiles() throws {
         let root = try directory(["Root.c", "Child.c"])
         let spec = try NativeSpec(

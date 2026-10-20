@@ -135,6 +135,7 @@ def main():
         submission = json.loads(
             subprocess.check_output(list(map(str, command)), text=True)
         )
+        submission["archive_sha256"] = hashlib.sha256(archive.read_bytes()).hexdigest()
         archive.with_suffix(".zip.notary.json").write_text(
             json.dumps(submission, indent=2) + "\n"
         )

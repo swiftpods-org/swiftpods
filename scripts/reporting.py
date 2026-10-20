@@ -32,6 +32,8 @@ def source_digest():
         "Tests",
         "scripts",
         "Profiles",
+        "lib",
+        "fastlane-plugin-swiftpods.gemspec",
         ".github",
         "action.yml",
         "Package.swift",
@@ -55,7 +57,6 @@ def contract_digest():
     files = [
         ROOT / "Profiles/contract.json",
         ROOT / "Runtime/attributes.json",
-        ROOT / "docs/SwiftPods-Specification-v0.1.md",
     ]
     return hashlib.sha256(
         json.dumps(

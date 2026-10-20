@@ -23,6 +23,11 @@ def inspect_archive(archive):
         root = extract_archive(Path(archive).read_bytes(), Path(temporary))
         manifest = (root / "compatibility.json").read_bytes()
         metadata = json.loads(manifest)
+        if (
+            metadata.get("status") == "release"
+            and not (root / "compatibility.cms").is_file()
+        ):
+            raise RuntimeError("Release bundle has no signed compatibility manifest")
         if not (root / "bin/swiftpods").stat().st_mode & 0o111:
             raise RuntimeError("Release executable has no executable permissions")
         if (
@@ -148,6 +153,21 @@ def prepare(args, destination):
         )
         archives.append(temporary)
     evidence = [(path, validate_evidence(path)) for path in args.evidence]
+    notarizations = {}
+    for path in args.notarization:
+        receipt = json.loads(path.read_text())
+        checksum = receipt.get("archive_sha256", "")
+        if (
+            receipt.get("status") != "Accepted"
+            or not isinstance(receipt.get("id"), str)
+            or not receipt["id"].strip()
+            or not re.fullmatch(r"[0-9a-f]{64}", checksum)
+            or checksum in notarizations
+        ):
+            raise RuntimeError(
+                "Invalid or duplicate notarization receipt: " + str(path)
+            )
+        notarizations[checksum] = receipt
     assets, acceptances, seen, used_evidence, source = [], [], set(), set(), None
     for archive in archives:
         metadata, manifest_sha256 = inspect_archive(archive)
@@ -241,6 +261,18 @@ def prepare(args, destination):
         else:
             shutil.copy2(archive, target)
         sha256 = hashlib.sha256(target.read_bytes()).hexdigest()
+        notarization = notarizations.pop(sha256, None)
+        if not args.development and (
+            notarization is None
+            or metadata.get("status") != "release"
+            or not metadata.get("signing", {})
+            .get("identity", "")
+            .startswith("Developer ID Application: ")
+            or metadata.get("signing", {}).get("notarization_requested") is not True
+        ):
+            raise RuntimeError(
+                "Each release archive requires Developer ID signing and matching accepted notarization"
+            )
         assets.append(
             {
                 "os": "macos",
@@ -252,6 +284,11 @@ def prepare(args, destination):
                 + args.version
                 + "/"
                 + filename,
+                "notarization": (
+                    {"id": notarization["id"], "status": notarization["status"]}
+                    if notarization
+                    else None
+                ),
             }
         )
     assets.sort(key=lambda asset: (asset["architecture"], asset["minimum_macos"]))
@@ -259,13 +296,23 @@ def prepare(args, destination):
         raise RuntimeError(
             "An evidence archive does not belong to a supplied release bundle"
         )
+    if notarizations:
+        raise RuntimeError(
+            "A notarization receipt does not match a supplied release archive"
+        )
     shutil.copy2(ROOT / "scripts/install.py", destination / "install.py")
     release = {
         "schema_version": 1,
         "development": args.development,
         "publishable": not args.development
-        and bool(acceptances)
-        and all(item["stable_acceptance"] == "established" for item in acceptances),
+        and len(acceptances) == len(assets)
+        and all(asset["notarization"] is not None for asset in assets),
+        "stable_acceptance": (
+            "established"
+            if acceptances
+            and all(item["stable_acceptance"] == "established" for item in acceptances)
+            else "not_established"
+        ),
         "source_revision": {"commit": source[0], "digest": source[1]},
         "version": args.version,
         "runtime_mode": "external",
@@ -277,16 +324,18 @@ def prepare(args, destination):
     }
     (destination / "release.json").write_text(json.dumps(release, indent=2) + "\n")
     checksums = []
-    for path in sorted(destination.iterdir()):
-        if path.is_file():
-            checksums.append(
-                hashlib.sha256(path.read_bytes()).hexdigest() + "  " + path.name
-            )
+    for name in sorted(
+        ["release.json", "install.py", *[asset["filename"] for asset in assets]]
+    ):
+        checksums.append(
+            hashlib.sha256((destination / name).read_bytes()).hexdigest() + "  " + name
+        )
     (destination / "SHA256SUMS").write_text("\n".join(checksums) + "\n")
     formula = destination / "homebrew-tap/Formula/swiftpods.rb"
     formula.parent.mkdir(parents=True)
     formula.write_text(homebrew_formula(args.version, assets))
-    (formula.parents[1] / "README.md").write_text("""# SwiftPods binary installation fixture
+    (formula.parents[1] / "README.md").write_text(
+        """# SwiftPods binary installation fixture
 
 This generated formula checks installation of the prepared binary archives
 through an isolated Homebrew tap. It is not the source-build formula submitted
@@ -297,7 +346,8 @@ The official Homebrew formula is maintained in homebrew/core after acceptance.
 
 [Website](https://swiftpods.org) ·
 [Project](https://github.com/swiftpods-org/swiftpods)
-""")
+"""
+    )
     print(
         "Manifest SHA-256:",
         hashlib.sha256((destination / "release.json").read_bytes()).hexdigest(),
@@ -317,6 +367,13 @@ def main():
         default=[],
         help="Full acceptance evidence.zip for each supplied bundle",
     )
+    parser.add_argument(
+        "--notarization",
+        type=Path,
+        action="append",
+        default=[],
+        help="Accepted notarytool JSON receipt bound to each archive SHA-256",
+    )
     parser.add_argument("--destination", type=Path, required=True)
     parser.add_argument(
         "--development",
@@ -332,6 +389,8 @@ def main():
         parser.error(
             "Release preparation requires --evidence from the full packaged check"
         )
+    if not args.development and not args.notarization:
+        parser.error("Release preparation requires accepted --notarization receipts")
     destination = args.destination.absolute()
     if destination.exists() or destination.is_symlink():
         raise RuntimeError("Release destination already exists")

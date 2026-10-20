@@ -5,6 +5,7 @@ struct NativeSwiftPackageDeclaration {
     let url: String
     let requirement: [String: String]
     let products: [String]
+    let link: Bool
 
     static func list(_ value: Any?, file: String? = nil) throws -> [Self] {
         guard let value, !(value is NSNull) else { return [] }
@@ -26,7 +27,7 @@ struct NativeSwiftPackageDeclaration {
             return value
         }
         let selectors = ["exact", "from", "range", "branch", "revision"]
-        let allowed = Set(selectors + ["name", "git", "products"])
+        let allowed = Set(selectors + ["name", "git", "products", "link"])
         guard Set(data.keys).isSubset(of: allowed) else {
             throw invalid(
                 "SP-SPM-OPTION",
@@ -40,6 +41,14 @@ struct NativeSwiftPackageDeclaration {
             throw invalid("SP-SPM-URL", "Swift packages require a nonempty :git string")
         }
         self.url = url
+        if let value = data["link"] {
+            guard let value = NativeScalarString.boolean(value) else {
+                throw invalid("SP-SPM-LINK", "Swift package :link must be a boolean")
+            }
+            link = value
+        } else {
+            link = true
+        }
         let keys = selectors.filter { data[$0] != nil && !(data[$0] is NSNull) }
         guard keys.count == 1 else {
             throw invalid("SP-SPM-REQUIREMENT", "Specify one Swift package requirement")

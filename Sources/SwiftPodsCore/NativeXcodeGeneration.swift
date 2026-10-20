@@ -9,6 +9,7 @@ extension NativeXcode {
         }
         try connectLibraryTargets()
         try generateSupplementaryTargets()
+        try generateConsumerResourceTargets()
         try generateAggregateTargets()
         assembleProjectGraph()
         try developmentSchemes()
@@ -101,7 +102,9 @@ extension NativeXcode {
             }
             let roots = try dependencyRoots(requests)
             let label = target["label"] as? String ?? "Pods-" + name
-            let deps = roots.sorted().compactMap { libraryTargets[variantKey($0, platform["name"] ?? "ios")] }.map {
+            var producers = roots.sorted().compactMap { libraryTargets[variantKey($0, platform["name"] ?? "ios")] }
+            if let resources = consumerResourceTargets[nativeConsumerKey(target)] { producers.append(resources) }
+            let deps = producers.map {
                 graph.add("aggregate-dependency:" + label + ":" + $0, ["isa": "PBXTargetDependency", "target": $0])
             }
             let id = graph.add(

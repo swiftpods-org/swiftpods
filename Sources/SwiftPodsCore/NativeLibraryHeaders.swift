@@ -91,7 +91,7 @@ extension NativeXcode {
                     separator: "/")
                 return "#include \"" + relative + "\""
             }).joined(separator: "\n") + "\n"
-        try Data(content.utf8).writeIfChanged(to: umbrella)
+        try Data(umbrellaHeader(content, variant: variant).utf8).writeIfChanged(to: umbrella)
         if modular {
             try Data(
                 ("module " + module + " { umbrella header \"" + umbrella.lastPathComponent

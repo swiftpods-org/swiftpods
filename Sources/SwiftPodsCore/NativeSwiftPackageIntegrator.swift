@@ -4,6 +4,7 @@ import Foundation
 final class NativeSwiftPackageIntegrator {
     private var owned: [String: [String: Any]] = [:]
     private var targetProducts: [String: [String]] = [:]
+    private var targetDependencies: [String: [String]] = [:]
     private var phaseFiles: [String: [String]] = [:]
     private var requirements: [String: Data] = [:]
     private var declaredReferences = Set<String>()
@@ -24,6 +25,7 @@ final class NativeSwiftPackageIntegrator {
         let previous = record ?? legacyOwnership(user)
         try Self.validate(user, record: previous)
         targetProducts = [:]
+        targetDependencies = [:]
         phaseFiles = [:]
         requirements = [:]
         declaredReferences = []
@@ -35,6 +37,11 @@ final class NativeSwiftPackageIntegrator {
         for (phase, files) in previous["phases"] as? [String: [String]] ?? [:] where user.objects[phase] != nil {
             let current = user.objects[phase]?["files"] as? [String] ?? []
             user.objects[phase]?["files"] = current.filter { !files.contains($0) }
+        }
+        for (target, dependencies) in previous["dependencies"] as? [String: [String]] ?? [:]
+        where user.objects[target] != nil {
+            let current = user.objects[target]?["dependencies"] as? [String] ?? []
+            user.objects[target]?["dependencies"] = current.filter { !dependencies.contains($0) }
         }
     }
 
@@ -65,7 +72,7 @@ final class NativeSwiftPackageIntegrator {
                 removed = true
             }
         }
-        return ["objects": owned, "targets": targetProducts, "phases": phaseFiles]
+        return ["objects": owned, "targets": targetProducts, "phases": phaseFiles, "dependencies": targetDependencies]
     }
 
     private func legacyOwnership(_ user: NativePBX) -> [String: Any] {
@@ -86,14 +93,23 @@ final class NativeSwiftPackageIntegrator {
             }
         }
         var targets: [String: [String]] = [:]
+        var dependencies: [String: [String]] = [:]
         var phases: [String: [String]] = [:]
         for (id, object) in user.objects {
             if let products = object["packageProductDependencies"] as? [String] {
                 targets[id] = products.filter { objects[$0] != nil }
             }
             if let files = object["files"] as? [String] { phases[id] = files.filter { objects[$0] != nil } }
+            for dependency in object["dependencies"] as? [String] ?? [] {
+                guard let value = user.objects[dependency], value["isa"] as? String == "PBXTargetDependency",
+                    let product = value["productRef"] as? String, objects[product] != nil,
+                    dependency == NativePBX.identifier("swiftpods:packagedependency:\(id):\(product)")
+                else { continue }
+                objects[dependency] = value
+                dependencies[id, default: []].append(dependency)
+            }
         }
-        return ["objects": objects, "targets": targets, "phases": phases]
+        return ["objects": objects, "targets": targets, "phases": phases, "dependencies": dependencies]
     }
 
     func integrate(_ packages: [[String: Any]], targetID: String, user: NativePBX, installedModules: Set<String>) throws
@@ -153,6 +169,23 @@ final class NativeSwiftPackageIntegrator {
                         "swiftpods:packageproduct:\(reference):\(product)",
                         ["isa": "XCSwiftPackageProductDependency", "package": reference, "productName": product])
                 if existingProduct == nil { owned[id] = user.objects[id] }
+                if !package.link {
+                    // Build the SDK before this consumer without merging it into a static archive.
+                    var dependencies = user.objects[targetID]?["dependencies"] as? [String] ?? []
+                    let existing = dependencies.first { user.objects[$0]?["productRef"] as? String == id }
+                    let dependency =
+                        existing
+                        ?? user.add(
+                            "swiftpods:packagedependency:\(targetID):\(id)",
+                            ["isa": "PBXTargetDependency", "productRef": id])
+                    if existing == nil {
+                        owned[dependency] = user.objects[dependency]
+                        dependencies.append(dependency)
+                        targetDependencies[targetID, default: []].append(dependency)
+                    }
+                    user.objects[targetID]?["dependencies"] = dependencies
+                    continue
+                }
                 if !products.contains(id) {
                     products.append(id)
                     targetProducts[targetID, default: []].append(id)

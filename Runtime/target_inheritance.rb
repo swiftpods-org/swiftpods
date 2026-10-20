@@ -26,7 +26,9 @@ module SwiftPods
       result["own_swift_version_requirements"] = entry["swift_version_requirements"]
       result["dependencies"] = dependencies_for(entry, inherited, mode, same_platform)
       result["search_dependencies"] = search_dependencies_for(parent, inherited, mode, same_platform)
-      result["packages"] = (mode == "none" ? [] : inherited.fetch("packages", [])) + entry.fetch("packages", [])
+      packages = mode == "none" ? [] : copy(inherited.fetch("packages", []))
+      packages.each { |package| package["link"] = false } if mode == "search_paths"
+      result["packages"] = packages + entry.fetch("packages", [])
       result
     end
 

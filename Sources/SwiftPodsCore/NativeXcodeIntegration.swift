@@ -12,6 +12,7 @@ extension NativeXcode {
             packages[path] = integrator
         }
         var originalAttributes: [String: [String: Any]] = [:]
+        var swiftRuntimePath: String?
         let previousAttributes = integrationSettings["_project_attributes"] as? [String: [String: Any]] ?? [:]
         for user in userProjects.values {
             try removePreviousAggregateIntegration(user)
@@ -36,36 +37,20 @@ extension NativeXcode {
                     "SP-XCODE-TARGET", stage: "integrate", "Target \(name) does not exist", file: path.path)
             }
             let group = (user.root["rootObject"] as? String).flatMap { user.objects[$0]?["mainGroup"] as? String }
-            var linked: [String] = []
-            var embedded: [String] = []
             let platform = target["platform"] as? [String: String] ?? [:]
-            let requests = try (target["dependencies"] as? [[String: Any]] ?? []).flatMap {
-                try NativeDependency(
-                    $0, platform: platform["name"] ?? "ios", deployment: platform["deployment_target"] ?? "0"
-                ).expandedSelections()
-            }
             let searchRequests = try nativeDependencies(target, search: true).flatMap {
                 try NativeDependency(
                     $0, platform: platform["name"] ?? "ios", deployment: platform["deployment_target"] ?? "0"
                 ).expandedSelections()
             }
-            var configuredRoots: [String: Set<String>] = [:]
-            for configuration in configurationNames {
-                configuredRoots[configuration] = try dependencyRoots(
-                    requests.filter { dependencyEnabled($0, configuration: configuration) })
-            }
+            let configuredRoots = try configuredDependencyRoots(target)
             let eligibleRoots = configuredRoots.values.reduce(into: Set<String>()) { $0.formUnion($1) }
             let searchRoots = try dependencyRoots(searchRequests).union(eligibleRoots)
-            let conditionalRoots = eligibleRoots.subtracting(
-                configuredRoots.values.reduce(eligibleRoots) { $0.intersection($1) })
             if let aggregate = aggregateTargets[nativeConsumerKey(target)] {
                 let portal = user.add(
                     "swiftpods:pods-project",
-                    [
-                        "isa": "PBXFileReference",
-                        "path": NativeBuildSetting.literal(project.appendingPathComponent("Pods/Pods.xcodeproj").path),
-                        "sourceTree": "<absolute>", "lastKnownFileType": "wrapper.pb-project",
-                    ])
+                    user.relativeFileReference(
+                        project.appendingPathComponent("Pods/Pods.xcodeproj"), type: "wrapper.pb-project"))
                 let label = target["label"] as? String ?? "Pods-" + name
                 let proxy = user.add(
                     "swiftpods:aggregate-proxy:" + targetID,
@@ -85,39 +70,17 @@ extension NativeXcode {
                     user.objects[group]?["children"] = children
                 }
             }
-            consumerVariantDependencies(
-                user, target: targetID, roots: eligibleRoots, platform: platform["name"] ?? "ios")
-            for product in products
-            where graph.objects[product]?["explicitFileType"] as? String != "wrapper.cfbundle"
-                && matchesProduct(product, roots: eligibleRoots, platform: platform["name"] ?? "ios")
-            {
-                let value = consumerProduct(product)
-                let reference = user.add("swiftpods:product:" + product, value)
-                let build = user.add("swiftpods:build:" + product, ["isa": "PBXBuildFile", "fileRef": reference])
-                if !conditionalRoots.contains(productRoots[product] ?? "") { linked.append(build) }
-                let dynamicTarget = graph.objects.values.first { $0["productReference"] as? String == product }
-                if let list = dynamicTarget?["buildConfigurationList"] as? String,
-                    let config = (graph.objects[list]?["buildConfigurations"] as? [String])?.first,
-                    (graph.objects[config]?["buildSettings"] as? [String: Any])?["MACH_O_TYPE"] as? String
-                        == "mh_dylib", !conditionalRoots.contains(productRoots[product] ?? "")
-                {
-                    embedded.append(
-                        user.add(
-                            "swiftpods:embed:" + product,
-                            [
-                                "isa": "PBXBuildFile", "fileRef": reference,
-                                "settings": ["ATTRIBUTES": ["CodeSignOnCopy", "RemoveHeadersOnCopy"]],
-                            ]))
-                }
-                if let group {
-                    var children = user.objects[group]?["children"] as? [String] ?? []
-                    if !children.contains(reference) { children.append(reference) }
-                    user.objects[group]?["children"] = children
-                }
-            }
+            removePreviousVariantDependencies(user, target: targetID)
             let targetSDKs = eligibleRoots.sorted().flatMap {
                 vendorSDKs[variantKey($0, platform["name"] ?? "ios")] ?? []
             }
+            let searchSDKs = searchRoots.sorted().flatMap {
+                vendorSDKs[variantKey($0, platform["name"] ?? "ios")] ?? []
+            }
+            let usesSwift = eligibleRoots.contains {
+                activeVariants[$0].flatMap { variantPlan?.variants[$0] }?.swiftVersion != nil
+            }
+            if usesSwift && swiftRuntimePath == nil { swiftRuntimePath = try swiftRuntimeSearchPath() }
             try validateExistingPackages(
                 user, target: targetID, roots: eligibleRoots, platform: platform["name"] ?? "ios")
             var sdkNames: [String: String] = [:]
@@ -128,31 +91,8 @@ extension NativeXcode {
                         file: sdk.url.path)
                 }
                 sdkNames[sdk.productName] = sdk.url.path
-                let key = "swiftpods:vendor:" + sdk.url.path
-                let reference = user.add(
-                    key,
-                    [
-                        "isa": "PBXFileReference", "path": NativeBuildSetting.literal(sdk.url.path),
-                        "sourceTree": "<absolute>",
-                        "lastKnownFileType": sdk.fileType,
-                    ])
-                let build = user.add(key + ":link", ["isa": "PBXBuildFile", "fileRef": reference])
-                if !linked.contains(build) { linked.append(build) }
-                if sdk.dynamic {
-                    embedded.append(
-                        user.add(
-                            key + ":embed",
-                            [
-                                "isa": "PBXBuildFile", "fileRef": reference,
-                                "settings": ["ATTRIBUTES": ["CodeSignOnCopy", "RemoveHeadersOnCopy"]],
-                            ]))
-                }
-                if let group {
-                    var children = user.objects[group]?["children"] as? [String] ?? []
-                    if !children.contains(reference) { children.append(reference) }
-                    user.objects[group]?["children"] = children
-                }
             }
+            removeConsumerProductLinks(user, target: targetID)
             var phases = user.objects[targetID]?["buildPhases"] as? [String] ?? []
             let frameworkPhase =
                 phases.first { user.objects[$0]?["isa"] as? String == "PBXFrameworksBuildPhase" }
@@ -162,14 +102,6 @@ extension NativeXcode {
                         "isa": "PBXFrameworksBuildPhase", "buildActionMask": "2147483647",
                         "runOnlyForDeploymentPostprocessing": "0", "files": [],
                     ])
-            let managedLinks = Set(
-                previousProducts.union(products).map { NativePBX.identifier("swiftpods:build:" + $0) })
-            var files = (user.objects[frameworkPhase]?["files"] as? [String] ?? []).filter {
-                !isVendorBuild($0, user: user) && !managedLinks.contains($0)
-            }
-
-            for file in linked where !files.contains(file) { files.append(file) }
-            user.objects[frameworkPhase]?["files"] = files
             if !phases.contains(frameworkPhase) { phases.append(frameworkPhase) }
             let check = user.add(
                 "swiftpods:manifest:" + targetID,
@@ -186,39 +118,15 @@ extension NativeXcode {
             let configuredOnDemand = try configuredRoots.mapValues {
                 try onDemandResources(roots: $0, platform: platform["name"] ?? "ios")
             }
-            let configuredResources = configuredRoots.mapValues {
-                $0.sorted().flatMap { staticResources[variantKey($0, platform["name"] ?? "ios")] ?? [] }
-            }
-            let resourcePlan = try NativeConditionalResources(
-                directory: project.appendingPathComponent(
-                    "Pods/Target Support Files/" + (target["label"] as? String ?? "Pods-" + name)),
-                normal: configuredResources, configurations: configuredOnDemand)
+            let resourcePlan =
+                try consumerResourcePlans[nativeConsumerKey(target)]
+                ?? NativeConditionalResources(directory: project, normal: [:], configurations: [:])
             try NativeResources.apply(
-                resourcePlan.paths + bridgeSupportResource(target),
+                (consumerNativeResources[nativeConsumerKey(target)] ?? []) + bridgeSupportResource(target),
                 target: targetID, graph: user, allowMissing: Set(bridgeSupportResource(target)),
                 ungrouped: Set(resourcePlan.onDemand.files.keys))
             resourcePlan.onDemand.tag(target: targetID, graph: user)
-            try copyResourceBundles(
-                roots: eligibleRoots, platform: platform["name"] ?? "ios", target: targetID, user: user,
-                configurations: Array(configuredRoots.values))
-            phases = user.objects[targetID]?["buildPhases"] as? [String] ?? phases
-            let embedID = NativePBX.identifier("swiftpods:embedphase:" + targetID)
-            phases.removeAll { $0 == embedID }
-            user.objects.removeValue(forKey: embedID)
-            if !embedded.isEmpty {
-                let embed = user.add(
-                    "swiftpods:embedphase:" + targetID,
-                    [
-                        "isa": "PBXCopyFilesBuildPhase", "name": "[SwiftPods] Embed Frameworks",
-                        "buildActionMask": "2147483647", "runOnlyForDeploymentPostprocessing": "0", "files": embedded,
-                        "dstPath": "", "dstSubfolderSpec": "10",
-                    ])
-                if !phases.contains(embed) { phases.append(embed) }
-            }
-            user.objects[targetID]?["buildPhases"] = phases
-            try conditionalEmbeds(
-                conditionalRoots, configured: configuredRoots, platform: platform["name"] ?? "ios", target: targetID,
-                user: user)
+            try integrateConsumerCopies(target, targetID: targetID, configured: configuredRoots, user: user)
             NativeScriptPhase.apply(try NativeScriptPhase.parse(target["script_phases"]), target: targetID, graph: user)
             applyInputOutputOptions(targetID, graph: user)
             let list = user.objects[targetID]?["buildConfigurationList"] as? String
@@ -239,29 +147,51 @@ extension NativeXcode {
                     settings[key] = values
                 }
                 for (key, paths) in [
-                    "FRAMEWORK_SEARCH_PATHS": targetSDKs.filter { !$0.isXCFramework && $0.isFramework }.map {
+                    "FRAMEWORK_SEARCH_PATHS": searchSDKs.filter { !$0.isXCFramework && $0.isFramework }.map {
                         $0.url.deletingLastPathComponent().path
                     },
-                    "LIBRARY_SEARCH_PATHS": targetSDKs.filter { !$0.isXCFramework && !$0.isFramework }.map {
+                    "LIBRARY_SEARCH_PATHS": searchSDKs.filter { !$0.isXCFramework && !$0.isFramework }.map {
                         $0.url.deletingLastPathComponent().path
                     },
-                    "HEADER_SEARCH_PATHS": targetSDKs.filter { !$0.isXCFramework }.compactMap {
+                    "HEADER_SEARCH_PATHS": searchSDKs.filter { !$0.isXCFramework }.compactMap {
                         $0.slices.first?.headers?.path
                     },
                 ] {
                     var values = nativeStrings(settings[key])
                     if values.isEmpty { values = ["$(inherited)"] }
-                    for path in paths.map(NativeBuildSetting.literalPath) where !values.contains(path) {
-                        values.append(path)
-                    }
+                    let additions = paths.map {
+                        NativeBuildSetting.path(user.buildSettingPath(URL(fileURLWithPath: $0)))
+                    }.filter { !values.contains($0) }
+                    let index = values.firstIndex(of: "$(BUILT_PRODUCTS_DIR)") ?? values.endIndex
+                    values.insert(contentsOf: additions, at: index)
                     settings[key] = values
+                }
+                if usesSwift, let swiftRuntimePath {
+                    // Clang-only consumers do not get Swift's back-deployment search paths from Xcode.
+                    var libraries = nativeStrings(settings["LIBRARY_SEARCH_PATHS"])
+                    for path in [swiftRuntimePath, "$(SDKROOT)/usr/lib/swift"]
+                    where !libraries.contains(path) {
+                        libraries.append(path)
+                    }
+                    settings["LIBRARY_SEARCH_PATHS"] = libraries
+                    let wrappers: Set<String> = [
+                        "com.apple.product-type.application", "com.apple.product-type.app-extension",
+                        "com.apple.product-type.framework", "com.apple.product-type.bundle",
+                        "com.apple.product-type.bundle.unit-test", "com.apple.product-type.bundle.ui-testing",
+                    ]
+                    if wrappers.contains(user.objects[targetID]?["productType"] as? String ?? ""),
+                        settings["ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES"] == nil
+                    {
+                        settings["ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES"] = "YES"
+                    }
                 }
                 var headerPaths = nativeStrings(settings["HEADER_SEARCH_PATHS"])
                 if headerPaths.isEmpty { headerPaths = ["$(inherited)"] }
                 let publicHeaders = headerSettings(searchRoots, platform: platform["name"] ?? "ios")
-                for directory in publicHeaders where !headerPaths.contains(directory) { headerPaths.append(directory) }
+                for directory in publicHeaders + searchSDKs.compactMap(consumerSDKHeaders)
+                where !headerPaths.contains(directory) { headerPaths.append(directory) }
                 settings["HEADER_SEARCH_PATHS"] = headerPaths
-                if !embedded.isEmpty || !conditionalRoots.isEmpty {
+                if hasConsumerDynamicProducts(eligibleRoots, platform: platform["name"] ?? "ios") {
                     var runpaths = nativeStrings(settings["LD_RUNPATH_SEARCH_PATHS"])
                     if runpaths.isEmpty { runpaths = ["$(inherited)"] }
                     let frameworkPath =
@@ -270,8 +200,8 @@ extension NativeXcode {
                     settings["LD_RUNPATH_SEARCH_PATHS"] = runpaths
                 }
                 if settings["ALWAYS_SEARCH_USER_PATHS"] == nil { settings["ALWAYS_SEARCH_USER_PATHS"] = "NO" }
-                settings["PODS_ROOT"] = NativeBuildSetting.scalarLiteral(project.appendingPathComponent("Pods").path)
-                settings["PODS_PODFILE_DIR_PATH"] = NativeBuildSetting.scalarLiteral(project.path)
+                settings["PODS_ROOT"] = user.buildSettingPath(project.appendingPathComponent("Pods"))
+                settings["PODS_PODFILE_DIR_PATH"] = user.buildSettingPath(project)
                 if original["GCC_PREPROCESSOR_DEFINITIONS"] == nil
                     || nativeStrings(original["GCC_PREPROCESSOR_DEFINITIONS"]).contains(where: {
                         $0.contains("$(inherited)")
@@ -296,25 +226,12 @@ extension NativeXcode {
                     if exclusions.isEmpty { exclusions = ["$(inherited)"] }
                     for asset in excludedAssets {
                         // Physical exclusions are absolute; product paths already contain Xcode expressions.
-                        let expression = asset.utf8.first == 47 ? NativeBuildSetting.literal(asset) : asset
+                        let expression =
+                            asset.utf8.first == 47 ? user.buildSettingPath(URL(fileURLWithPath: asset)) : asset
                         let value = NativeBuildSetting.quoted(expression)
                         if !exclusions.contains(value) { exclusions.append(value) }
                     }
                     settings["EXCLUDED_SOURCE_FILE_NAMES"] = exclusions
-                }
-                let conditionalProducts = products.filter {
-                    productRoots[$0] != nil
-                        && matchesProduct(
-                            $0, roots: conditionalRoots.intersection(enabled), platform: platform["name"] ?? "ios")
-                }
-                var flags: [String] = []
-                for product in conditionalProducts {
-                    let path = graph.objects[product]?["path"] as? String ?? ""
-                    if path.hasSuffix(".framework") {
-                        flags += ["-framework", "\"" + String(path.dropLast(10)) + "\""]
-                    } else {
-                        flags.append("-l\"" + String(path.dropFirst(3).dropLast(2)) + "\"")
-                    }
                 }
                 var linker = nativeStrings(settings["OTHER_LDFLAGS"]).filter { $0 != "$(SWIFTPODS_CONFIG_LDFLAGS)" }
                 let dependencyFlags = try consumerLinkerFlags(
@@ -338,13 +255,12 @@ extension NativeXcode {
                     if linker.isEmpty { linker = ["$(inherited)"] }
                     linker.append("-fobjc-arc")
                 }
-                if !flags.isEmpty {
+                let productFlags = consumerProductLinkerFlags(enabled, platform: platform["name"] ?? "ios")
+                if !productFlags.isEmpty {
                     if linker.isEmpty { linker = ["$(inherited)"] }
-                    linker.append("$(SWIFTPODS_CONFIG_LDFLAGS)")
-                    settings["SWIFTPODS_CONFIG_LDFLAGS"] = flags
-                } else {
-                    settings.removeValue(forKey: "SWIFTPODS_CONFIG_LDFLAGS")
+                    linker += productFlags
                 }
+                settings.removeValue(forKey: "SWIFTPODS_CONFIG_LDFLAGS")
                 if !linker.isEmpty {
                     settings["OTHER_LDFLAGS"] = linker
                 } else {
@@ -407,17 +323,19 @@ extension NativeXcode {
     }
     private func isVendorBuild(_ id: String, user: NativePBX) -> Bool {
         guard let reference = user.objects[id]?["fileRef"] as? String,
-            let path = user.objects[reference]?["path"] as? String
+            let key = user.ownedFileKey(reference, prefix: "swiftpods:vendor:")
         else { return false }
-        let key = "swiftpods:vendor:" + path
-        return reference == NativePBX.identifier(key)
-            && [NativePBX.identifier(key + ":link"), NativePBX.identifier(key + ":embed")].contains(id)
+        return [NativePBX.identifier(key + ":link"), NativePBX.identifier(key + ":embed")].contains(id)
     }
     private func pruneSourceObjects(_ user: NativePBX) {
         let candidates = previousProducts.union(products)
         let builds = Set(
             candidates.flatMap {
                 [NativePBX.identifier("swiftpods:build:" + $0), NativePBX.identifier("swiftpods:embed:" + $0)]
+            }
+        ).union(
+            user.objects.filter { $0.value["isa"] as? String == "PBXNativeTarget" }.keys.flatMap { target in
+                candidates.map { NativePBX.identifier("swiftpods:bundle-build:" + target + ":" + $0) }
             })
         let usedBuilds = Set(user.objects.values.flatMap { $0["files"] as? [String] ?? [] })
         for id in builds.subtracting(usedBuilds) { user.objects.removeValue(forKey: id) }
@@ -454,15 +372,34 @@ extension NativeXcode {
         }
     }
 
+    private func swiftRuntimeSearchPath() throws -> String {
+        // TOOLCHAIN_DIR can select an auxiliary Metal toolchain while Clang links.
+        // Locate the selected Swift compiler instead, including custom toolchains.
+        let result = try ToolProcess.run("/usr/bin/xcrun", ["--find", "swiftc"])
+        guard result.status == 0, let output = String(data: result.output, encoding: .utf8) else {
+            throw Diagnostic("SP-SWIFT-TOOLCHAIN", stage: "integrate", "Cannot locate the Swift compiler")
+        }
+        let path = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard path.hasPrefix("/"), !path.utf8.contains(0) else {
+            throw Diagnostic("SP-SWIFT-TOOLCHAIN", stage: "integrate", "Invalid Swift compiler path", file: path)
+        }
+        let libraries = URL(fileURLWithPath: path).deletingLastPathComponent().deletingLastPathComponent()
+            .appendingPathComponent("lib/swift")
+        guard FileManager.default.fileExists(atPath: libraries.path) else {
+            throw Diagnostic(
+                "SP-SWIFT-TOOLCHAIN", stage: "integrate", "Swift runtime libraries are missing", file: libraries.path)
+        }
+        return NativeBuildSetting.path(NativeBuildSetting.literal(libraries.path) + "/$(PLATFORM_NAME)")
+    }
+
     private func pruneVendorObjects(_ user: NativePBX) {
         let usedBuilds = Set(user.objects.values.flatMap { $0["files"] as? [String] ?? [] })
         for id in Array(user.objects.keys) where isVendorBuild(id, user: user) && !usedBuilds.contains(id) {
             user.objects.removeValue(forKey: id)
         }
         let usedReferences = Set(user.objects.values.compactMap { $0["fileRef"] as? String })
-        for (id, object) in user.objects {
-            guard object["isa"] as? String == "PBXFileReference", let path = object["path"] as? String,
-                id == NativePBX.identifier("swiftpods:vendor:" + path), !usedReferences.contains(id)
+        for id in user.objects.keys {
+            guard user.ownedFileKey(id, prefix: "swiftpods:vendor:") != nil, !usedReferences.contains(id)
             else { continue }
             user.objects.removeValue(forKey: id)
             for group in Array(user.objects.keys) {

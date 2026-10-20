@@ -10,9 +10,8 @@ Declare both for your Apple project, install dependencies, and build with Xcode.
 
 ## Installation
 
-Version 0.1.0 and official Homebrew distribution are being prepared. The command
-below will be available after SwiftPods is accepted into Homebrew. Until then,
-see [development setup](docs/Development.md) to build from source.
+Check [downloads](https://swiftpods.org/downloads/) for current release and
+Homebrew availability, or [build from source](docs/Development.md).
 
 ```sh
 brew install swiftpods
@@ -74,6 +73,9 @@ swiftpods install --deployment
 ```
 
 See [Installation and CI](docs/Release.md) for pinned releases and runner setup.
+
+For Fastlane, use the [SwiftPods plugin](docs/Fastlane.md) to call
+`swiftpods(...)` from your lanes.
 
 ## Projects and configurations
 

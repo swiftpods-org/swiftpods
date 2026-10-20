@@ -133,6 +133,14 @@ enum NativeProjectProjection {
         project["productRefGroup"] = products
         result.objects[root] = project
         result.root["rootObject"] = root
+        for (id, object) in result.objects
+        where object["isa"] as? String == "PBXFileReference" && object["sourceTree"] as? String == "SOURCE_ROOT"
+            && source.objects[id] != nil
+        {
+            let path = try NativeBuildSettings.file(id, graph: source)
+            let relative = result.relativeFilePath(path)
+            result.objects[id]?["path"] = relative
+        }
         let included = reachable(result.objects, from: [root])
         result.objects = result.objects.filter { included.contains($0.key) }
         return result

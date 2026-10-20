@@ -21,11 +21,10 @@ enum NativeDeintegrator {
         removable.formUnion(podRefs)
         removable.formUnion(podBuilds)
         removable.insert(NativePBX.identifier("swiftpods:pods-project"))
-        for (id, item) in user.objects where item["isa"] as? String == "PBXFileReference" {
-            if let path = item["path"] as? String, id == NativePBX.identifier("swiftpods:vendor:" + path) {
+        for id in user.objects.keys {
+            if let key = user.ownedFileKey(id, prefix: "swiftpods:vendor:") {
                 removable.formUnion([
-                    id, NativePBX.identifier("swiftpods:vendor:" + path + ":link"),
-                    NativePBX.identifier("swiftpods:vendor:" + path + ":embed"),
+                    id, NativePBX.identifier(key + ":link"), NativePBX.identifier(key + ":embed"),
                 ])
             }
         }
@@ -39,7 +38,7 @@ enum NativeDeintegrator {
             try NativeResources.apply([], target: id, graph: user)
             let prefix = "swiftpods:resources:" + id + ":"
             for (reference, value) in user.objects {
-                if let path = value["path"] as? String, reference == NativePBX.identifier(prefix + "file:" + path) {
+                if user.ownedFileKey(reference, prefix: prefix + "file:") != nil {
                     removable.formUnion([reference, NativePBX.identifier(prefix + "build:" + reference)])
                 }
                 if let name = value["name"] as? String,
@@ -110,23 +109,7 @@ enum NativeDeintegrator {
                     current, record: settings[path + ":" + id] as? [String: Any] ?? [:])
             }
         }
-        for _ in 0..<3 {
-            for id in removable where user.objects[id] != nil {
-                let used = user.objects.values.contains { object in
-                    object["isa"] as? String != "PBXGroup" && object["isa"] as? String != "PBXVariantGroup"
-                        && object.values.contains {
-                            ($0 as? String) == id || ($0 as? [String])?.contains(id) == true
-                        }
-                }
-                if used { continue }
-                user.objects.removeValue(forKey: id)
-                for group in Array(user.objects.keys) {
-                    if let children = user.objects[group]?["children"] as? [String] {
-                        user.objects[group]?["children"] = children.filter { $0 != id }
-                    }
-                }
-            }
-        }
+        user.removeUnreferencedObjects(removable)
     }
     static func run(_ project: URL) throws -> [URL] {
         let archive = project.appendingPathComponent("Pods/Target Support Files/SwiftPods-Integration.json")

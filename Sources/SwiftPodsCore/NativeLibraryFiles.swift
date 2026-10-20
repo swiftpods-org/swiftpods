@@ -18,11 +18,22 @@ struct NativeLibraryFiles {
 
     init(spec: NativeSpec, names: [String], platform: String, root: URL) throws {
         self.root = root
-        owners = try Set(names).sorted {
+        let consumers = try Set(names).sorted {
             (NativePodName.components($0).count, $0) < (NativePodName.components($1).count, $1)
         }.map { name in
-            let attributes = try spec.attributes(name, platform: platform)
-            let files = try NativeFileSelection.sourceFiles(attributes, root: root)
+            (name: name, attributes: try spec.attributes(name, platform: platform))
+        }
+        let frameworks = Set(
+            try consumers.flatMap {
+                try NativeFileSelection.paths(
+                    $0.attributes["vendored_frameworks"], attributes: $0.attributes, root: root)
+            })
+        owners = try consumers.map { name, attributes in
+            // Headers inside a vendored SDK belong to its destination-specific
+            // module, even when a broad source_files pattern also selects them.
+            let files = try NativeFileSelection.sourceFiles(attributes, root: root).filter {
+                !NativeFileSelection.excluded($0, by: frameworks)
+            }
             return Owner(
                 name: name, attributes: attributes, files: Set(files),
                 rules: try NativeFileRules(attributes, root: root, files: files))

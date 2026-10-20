@@ -63,8 +63,7 @@ struct NativeOnDemandResources {
         where graph.objects[phase]?["isa"] as? String == "PBXResourcesBuildPhase" {
             for build in graph.objects[phase]?["files"] as? [String] ?? [] {
                 guard let reference = graph.objects[build]?["fileRef"] as? String,
-                    let path = graph.objects[reference]?["path"] as? String,
-                    let tags = files[URL(fileURLWithPath: NativeBuildSetting.decodedLiteral(path)).standardizedFileURL]
+                    let path = try? NativeBuildSettings.file(reference, graph: graph), let tags = files[path]
                 else { continue }
                 var settings = graph.objects[build]?["settings"] as? [String: Any] ?? [:]
                 settings["ASSET_TAGS"] = tags.sorted()

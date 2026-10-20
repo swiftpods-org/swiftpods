@@ -66,7 +66,7 @@ final class NativeUnicodePathTests: XCTestCase {
         ]
         let refs = try NativeResources.references(names.map(root.appendingPathComponent), owner: "Demo", graph: graph)
         XCTAssertEqual(
-            Set(refs.compactMap { graph.objects[$0]?["path"] as? String }),
+            Set(try refs.map { try NativeBuildSettings.file($0, graph: graph).path }),
             [root.appendingPathComponent("Folder").path, root.appendingPathComponent("FolderPeer/keep.txt").path])
     }
 

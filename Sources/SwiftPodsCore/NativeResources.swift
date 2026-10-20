@@ -21,11 +21,7 @@ enum NativeResources {
         var directories: [URL] = []
         var variants: [String: [URL]] = [:]
         func file(_ path: URL, type: String? = nil) -> String {
-            var value: [String: Any] = [
-                "isa": "PBXFileReference", "path": NativeBuildSetting.literal(path.path), "sourceTree": "<absolute>",
-            ]
-            if let type { value["lastKnownFileType"] = type }
-            return graph.add(prefix + "file:" + path.path, value)
+            graph.add(prefix + "file:" + graph.relativeFilePath(path), graph.relativeFileReference(path, type: type))
         }
         for path in Set(candidates).sorted(by: { $0.path < $1.path }) {
             if directories.contains(where: { NativePath.isDescendant(path, of: $0) }) { continue }

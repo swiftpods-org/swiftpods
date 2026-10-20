@@ -22,6 +22,7 @@ import check as check_tools
 import evidence as evidence_tools
 import install as installer
 import reporting
+from release_tests import ReleaseTests
 import swift_binary_producer as swift_producer
 from processes import run_logged
 from reporting import ROOT, execute
@@ -151,6 +152,22 @@ class EvidenceTests(unittest.TestCase):
             license_file.write_text("updated license")
             self.assertNotEqual(reporting.source_digest(), before)
 
+    def testPluginChangesInvalidateSourceEvidence(self):
+        for relative in (
+            "lib/fastlane/plugin/swiftpods.rb",
+            "fastlane-plugin-swiftpods.gemspec",
+        ):
+            path = self.root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("original plugin input")
+            with (
+                self.subTest(file=relative),
+                patch.object(reporting, "ROOT", self.root),
+            ):
+                before = reporting.source_digest()
+                path.write_text("changed plugin input")
+                self.assertNotEqual(reporting.source_digest(), before)
+
     def testInstallerDownloadsThePinnedReleaseFromTheMainRepository(self):
         version = "0.1.0"
         base = "https://github.com/swiftpods-org/swiftpods/releases/download/v0.1.0/"
@@ -175,7 +192,14 @@ class EvidenceTests(unittest.TestCase):
             "url": base + "swiftpods-0.1.0-macos-13.0-arm64.zip",
         }
         manifest = json.dumps(
-            {"schema_version": 1, "version": version, "assets": [asset]}
+            {
+                "schema_version": 1,
+                "version": version,
+                "assets": [asset],
+                "development": False,
+                "publishable": True,
+                "runtime_mode": "external",
+            }
         ).encode()
         responses = {base + "release.json": manifest, asset["url"]: archive_bytes}
 
@@ -196,7 +220,9 @@ class EvidenceTests(unittest.TestCase):
         ]
         with (
             patch("sys.argv", argv),
-            patch.object(installer.urllib.request, "urlopen", side_effect=download) as fetch,
+            patch.object(
+                installer.urllib.request, "urlopen", side_effect=download
+            ) as fetch,
             patch.object(installer, "select_asset", return_value=asset),
             patch.object(installer, "verify_distribution"),
         ):
@@ -205,6 +231,36 @@ class EvidenceTests(unittest.TestCase):
             [call.args[0] for call in fetch.call_args_list], list(responses)
         )
         installer.verify_launcher(prefix)
+
+    def testInstallerRejectsUnpublishableRemoteManifestsBeforeSelectingAnArchive(self):
+        argv = [
+            "install.py",
+            "--version",
+            "0.1.0",
+            "--manifest-sha256",
+            "a" * 64,
+            "--prefix",
+            str(self.root / "installed"),
+        ]
+        for development, publishable in ((True, False), (False, False), (None, True)):
+            manifest = {
+                "development": development,
+                "publishable": publishable,
+                "runtime_mode": "external",
+            }
+            with (
+                self.subTest(development=development, publishable=publishable),
+                patch("sys.argv", argv),
+                patch.object(
+                    installer,
+                    "checked_bytes",
+                    return_value=json.dumps(manifest).encode(),
+                ),
+                patch.object(installer, "select_asset") as select,
+                self.assertRaisesRegex(RuntimeError, "not a publishable"),
+            ):
+                installer.main()
+            select.assert_not_called()
 
     def testInstallerTreatsMissingMacOSPatchComponentAsZero(self):
         asset = {"os": "macos", "architecture": "arm64", "minimum_macos": "13.0.0"}
@@ -1074,7 +1130,12 @@ class EvidenceTests(unittest.TestCase):
 
 def main():
     result = unittest.TextTestRunner(verbosity=2).run(
-        unittest.defaultTestLoader.loadTestsFromTestCase(EvidenceTests)
+        unittest.TestSuite(
+            [
+                unittest.defaultTestLoader.loadTestsFromTestCase(EvidenceTests),
+                unittest.defaultTestLoader.loadTestsFromTestCase(ReleaseTests),
+            ]
+        )
     )
     if not result.wasSuccessful():
         raise RuntimeError("Acceptance evidence tests failed")
@@ -1089,6 +1150,8 @@ def main():
                     "replaced executable rejected",
                     "external artifact hash checked",
                     "unverified external gates and dirty revisions cannot establish stable acceptance",
+                    "publication requires matching notarization and verified public assets",
+                    "incomplete uploads stay hidden and retargeted tags are rejected",
                 ],
             },
             indent=2,

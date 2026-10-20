@@ -12,6 +12,10 @@ extension NativeXcode {
         }
         let attributes = try NativeVariantPlan.attributes(spec, names: variant.names, platform: platform)
         let selection = try NativeLibraryFiles(spec: spec, names: variant.names, platform: platform, root: directory)
+        let sdks = try loadVendoredSDKs(attributes, root: directory, platform: platform)
+        // A binary-only pod must not produce an empty framework that shadows its SDK's module
+        // or collides with the product extracted by Xcode's ProcessXCFramework step.
+        let binaryOnly = selection.files.isEmpty && !sdks.isEmpty
         let targetName = variant.label
         var module = spec.moduleName
         if attributes["module_name"] == nil, module.first?.isNumber == true { module = "_" + module }
@@ -19,8 +23,8 @@ extension NativeXcode {
             throw Diagnostic("SP-XCODE-MODULE", stage: "integrate", "Invalid module name", file: name)
         }
         let mode = variant.mode
-        let useFramework = mode != "library"
-        let dynamic = mode == "dynamic"
+        let useFramework = mode != "library" && !binaryOnly
+        let dynamic = useFramework && mode == "dynamic"
         let productName = useFramework ? module : targetName
         let productFilename = useFramework ? module + ".framework" : "lib" + productName + ".a"
         let minimum =
@@ -50,6 +54,9 @@ extension NativeXcode {
         if inhibitWarnings(variant) {
             settings["GCC_WARN_INHIBIT_ALL_WARNINGS"] = "YES"
             settings["SWIFT_SUPPRESS_WARNINGS"] = "YES"
+            // Swift rejects combining -suppress-warnings with -warnings-as-errors.
+            // Honor the manifest's explicit opt-in for this SDK only.
+            settings["SWIFT_TREAT_WARNINGS_AS_ERRORS"] = "NO"
         }
         if manifest["set_arc_compatibility_flag"] as? Bool == true, attributes["requires_arc"] as? Bool != false {
             let flags = nativeStrings(settings["OTHER_LDFLAGS"])
@@ -67,7 +74,8 @@ extension NativeXcode {
             let own = try spec.supplementaryAttributes(request.name, platform: platform)
             return try NativeFileSelection.sourceFiles(own, root: directory)
         }
-        let modular = requiresModule(variant, attributes: attributes, sources: all + supplementarySources)
+        let modular =
+            !binaryOnly && requiresModule(variant, attributes: attributes, sources: all + supplementarySources)
         settings["DEFINES_MODULE"] = modular ? "YES" : "NO"
         try compileSettings(attributes, root: directory, label: targetName, settings: &settings)
         var sources: [String] = []
@@ -102,7 +110,6 @@ extension NativeXcode {
                     sourceTree: "SDKROOT"), target: targetName,
                 settings: weakFrameworks.contains(framework) ? ["ATTRIBUTES": ["Weak"]] : [:])
         }
-        let sdks = try loadVendoredSDKs(attributes, root: directory, platform: platform)
         for sdk in sdks {
             frameworks.append(buildFile(file(sdk.url.path, type: sdk.fileType), target: targetName))
         }
@@ -148,10 +155,9 @@ extension NativeXcode {
             let content =
                 "#ifdef __OBJC__\n#import <Foundation/Foundation.h>\n#endif\n"
                 + (try publicHeaders.map {
-                    "#include \"" + (try selection.headerPath($0))
-                        + "\""
+                    "#include <" + module + "/" + (try selection.headerPath($0)) + ">"
                 }).joined(separator: "\n") + "\n"
-            try Data(content.utf8).writeIfChanged(to: umbrella, options: .atomic)
+            try Data(umbrellaHeader(content, variant: variant).utf8).writeIfChanged(to: umbrella, options: .atomic)
             headers.append(buildFile(file(umbrella.path), target: targetName, settings: ["ATTRIBUTES": ["Public"]]))
             let modulemap = support.appendingPathComponent(module + ".modulemap")
             try Data(
@@ -237,7 +243,7 @@ extension NativeXcode {
         } else {
             staticResources[variantKey(name, platform)] = directPaths
         }
-        for (bundle, paths) in try selection.resourceBundles() {
+        for (bundle, paths) in try selection.resourceBundles().sorted(by: { $0.key < $1.key }) {
             guard bundle.range(of: #"\A[A-Za-z0-9_][A-Za-z0-9_.+-]*\z"#, options: .regularExpression) != nil else {
                 throw Diagnostic(
                     "SP-XCODE-RESOURCE", stage: "integrate", "Invalid resource bundle name", file: name)

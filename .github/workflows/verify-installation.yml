@@ -1,5 +1,16 @@
 name: Verify published installation
 on:
+  workflow_call:
+    inputs:
+      version:
+        type: string
+        required: true
+      manifest_sha256:
+        type: string
+        required: true
+      verify_homebrew:
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       version:

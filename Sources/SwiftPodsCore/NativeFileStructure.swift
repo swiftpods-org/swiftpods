@@ -9,9 +9,8 @@ extension NativeXcode {
         where spec.local || installationOptions["preserve_pod_file_structure"] as? Bool == true {
             guard let directory = spec.directory else { continue }
             let refs = children.filter { id in
-                guard let path = graph.objects[id]?["path"] as? String else { return false }
-                return NativePath.isDescendant(
-                    URL(fileURLWithPath: NativeBuildSetting.decodedLiteral(path)), of: directory)
+                guard let path = try? NativeBuildSettings.file(id, graph: graph) else { return false }
+                return NativePath.isDescendant(path, of: directory)
             }
             guard !refs.isEmpty else { continue }
             children.removeAll { refs.contains($0) }
@@ -25,10 +24,10 @@ extension NativeXcode {
             children.append(pod)
             var groups: [String: String] = ["": pod]
             for ref in refs.sorted() {
-                guard let path = graph.objects[ref]?["path"] as? String else { continue }
+                guard let path = try? NativeBuildSettings.file(ref, graph: graph) else { continue }
                 guard
                     let relative = NativePath.relativeComponents(
-                        of: URL(fileURLWithPath: NativeBuildSetting.decodedLiteral(path)), to: directory)
+                        of: path, to: directory)
                 else { continue }
                 let components = relative.dropLast()
                 var parent = pod

@@ -11,6 +11,11 @@ final class NativeConsumerAssetTests: XCTestCase {
             project: root, manifest: [:], resolution: NativeResolution(specs: [:], requests: []),
             integrateUserProjects: false)
     }
+    private func copyBundles(_ engine: NativeXcode, roots: Set<String>, target: String, user: NativePBX) throws {
+        let copies = try engine.consumerBundleCopies(roots: roots, platform: "osx")
+        try engine.consumerCopyPhase(
+            ["Debug": copies], kind: "resources", label: "Pods-" + target, target: target, user: user)
+    }
     func testExclusionsKeepSharedResourcesAndOtherPlatformsSeparate() throws {
         let engine = try engine()
         let shared = engine.project.appendingPathComponent("Shared/direct.txt")
@@ -34,7 +39,7 @@ final class NativeConsumerAssetTests: XCTestCase {
             try engine.consumerAssetExclusions(eligible: ["Debug"], enabled: [], platform: "ios"),
             [engine.project.appendingPathComponent("iOS/direct.txt").path])
     }
-    func testNativeBundleCopyPhaseCanBeRemovedWithoutTouchingUserPhases() throws {
+    func testResourceCopyScriptCanBeRemovedWithoutTouchingUserPhases() throws {
         let engine = try engine()
         let user = try NativePBX(engine.project.appendingPathComponent("Demo.xcodeproj/project.pbxproj"))
         let custom = user.add("custom", ["isa": "PBXShellScriptBuildPhase", "name": "User"])
@@ -48,12 +53,12 @@ final class NativeConsumerAssetTests: XCTestCase {
         engine.products = [product]
         engine.productPlatforms[product] = "osx"
         engine.resourceBundleRoots[product] = "Kit"
-        try engine.copyResourceBundles(roots: ["Kit"], platform: "osx", target: target, user: user)
+        try copyBundles(engine, roots: ["Kit"], target: target, user: user)
         let phase = NativePBX.identifier("swiftpods:resources:" + target)
-        XCTAssertEqual(user.objects[phase]?["isa"] as? String, "PBXCopyFilesBuildPhase")
-        XCTAssertEqual(user.objects[phase]?["dstSubfolderSpec"] as? String, "7")
-        XCTAssertEqual((user.objects[phase]?["files"] as? [String])?.count, 1)
-        try engine.copyResourceBundles(roots: [], platform: "osx", target: target, user: user)
+        XCTAssertEqual(user.objects[phase]?["isa"] as? String, "PBXShellScriptBuildPhase")
+        XCTAssertEqual((user.objects[phase]?["inputFileListPaths"] as? [String])?.count, 1)
+        XCTAssertEqual(user.objects[phase]?["files"] as? [String], [])
+        try copyBundles(engine, roots: [], target: target, user: user)
         XCTAssertNil(user.objects[phase])
         XCTAssertEqual(user.objects[target]?["buildPhases"] as? [String], [custom])
     }
@@ -74,6 +79,21 @@ final class NativeConsumerAssetTests: XCTestCase {
             try write()
             XCTAssertThrowsError(try ExecutionPolicy.hardenedManifest(path))
         }
+    }
+
+    func testManagedCopiesPrecedePostBuildScriptsWithoutMovingPreBuildScripts() throws {
+        let engine = try engine()
+        let user = try NativePBX(engine.project.appendingPathComponent("Demo.xcodeproj/project.pbxproj"))
+        let pre = user.add("pre", ["isa": "PBXShellScriptBuildPhase", "name": "PreBuild"])
+        let sources = user.add("sources", ["isa": "PBXSourcesBuildPhase"])
+        let resources = user.add("resources", ["isa": "PBXResourcesBuildPhase"])
+        let post = user.add("post", ["isa": "PBXShellScriptBuildPhase", "name": "PostBuild"])
+        let copy = user.add("copy", ["isa": "PBXCopyFilesBuildPhase"])
+        let embed = user.add("embed", ["isa": "PBXCopyFilesBuildPhase"])
+        var phases = [pre, sources, resources, post]
+        engine.insertConsumerCopyPhase(copy, into: &phases, user: user)
+        engine.insertConsumerCopyPhase(embed, into: &phases, user: user)
+        XCTAssertEqual(phases, [pre, sources, resources, embed, copy, post])
     }
 
     func testBundleProductsKeepOwnershipWhenDeclaredNamesMatch() throws {
@@ -114,18 +134,14 @@ final class NativeConsumerAssetTests: XCTestCase {
                 try generated.consumerAssetExclusions(eligible: [name], enabled: [], platform: "osx"),
                 matching.map { generated.productBuildPath($0) })
         }
-        let user = try NativePBX(root.appendingPathComponent("Demo.xcodeproj/project.pbxproj"))
-        let target = user.add("consumer", ["isa": "PBXNativeTarget", "buildPhases": []])
         generated.activeVariants = [:]
-        XCTAssertThrowsError(
-            try generated.copyResourceBundles(roots: Set(names), platform: "osx", target: target, user: user))
-        XCTAssertNoThrow(
-            try generated.copyResourceBundles(
-                roots: Set(names), platform: "osx", target: target, user: user,
-                configurations: [["KitA"], ["KitB"]]))
+        XCTAssertThrowsError(try generated.consumerBundleCopies(roots: Set(names), platform: "osx"))
+        for name in names {
+            XCTAssertNoThrow(try generated.consumerBundleCopies(roots: [name], platform: "osx"))
+        }
     }
 
-    func testSharedBundleUsesDistinctBuildFilesForEachConsumer() throws {
+    func testSharedBundleUsesSeparateFileListsForEachConsumer() throws {
         let engine = try engine()
         let user = try NativePBX(engine.project.appendingPathComponent("Demo.xcodeproj/project.pbxproj"))
         let product = engine.graph.add(
@@ -133,16 +149,16 @@ final class NativeConsumerAssetTests: XCTestCase {
         engine.products = [product]
         engine.productPlatforms[product] = "osx"
         engine.resourceBundleRoots[product] = "Kit"
-        var builds: [String] = []
+        var lists: [String] = []
         for name in ["First", "Second"] {
             let target = user.add(name, ["isa": "PBXNativeTarget", "buildPhases": []])
-            try engine.copyResourceBundles(roots: ["Kit"], platform: "osx", target: target, user: user)
+            try copyBundles(engine, roots: ["Kit"], target: target, user: user)
             let phase = try XCTUnwrap((user.objects[target]?["buildPhases"] as? [String])?.first)
-            builds += user.objects[phase]?["files"] as? [String] ?? []
+            lists += user.objects[phase]?["inputFileListPaths"] as? [String] ?? []
         }
-        XCTAssertEqual(builds.count, 2)
-        XCTAssertEqual(Set(builds).count, 2)
-        XCTAssertEqual(Set(builds.compactMap { user.objects[$0]?["fileRef"] as? String }).count, 1)
+        XCTAssertEqual(lists.count, 2)
+        XCTAssertEqual(Set(lists).count, 2)
+        XCTAssertFalse(user.objects.values.contains { $0["isa"] as? String == "PBXBuildFile" })
     }
 
     func testMappedFrameworkHeadersKeepPublicPrivateAndProjectVisibility() throws {
@@ -234,7 +250,7 @@ final class NativeConsumerAssetTests: XCTestCase {
             XCTAssertEqual(generated.frameworkResourceBundles.contains(bundle), linkage == "dynamic")
             let user = try NativePBX(root.appendingPathComponent("Demo.xcodeproj/project.pbxproj"))
             let target = user.add("consumer", ["isa": "PBXNativeTarget", "buildPhases": []])
-            try generated.copyResourceBundles(roots: ["Kit"], platform: "osx", target: target, user: user)
+            try copyBundles(generated, roots: ["Kit"], target: target, user: user)
             XCTAssertEqual((user.objects[target]?["buildPhases"] as? [String] ?? []).isEmpty, linkage == "dynamic")
         }
     }

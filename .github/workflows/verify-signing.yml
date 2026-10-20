@@ -1,0 +1,41 @@
+name: Verify Apple signing
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Import signing identity and validate Apple API credentials
+        env:
+          SWIFTPODS_SIGNING_P12: ${{ secrets.SWIFTPODS_SIGNING_P12 }}
+          SWIFTPODS_SIGNING_PASSWORD: ${{ secrets.SWIFTPODS_SIGNING_PASSWORD }}
+          SWIFTPODS_SIGNING_IDENTITY: ${{ secrets.SWIFTPODS_SIGNING_IDENTITY }}
+          SWIFTPODS_NOTARY_KEY: ${{ secrets.SWIFTPODS_NOTARY_KEY }}
+          SWIFTPODS_NOTARY_KEY_ID: ${{ secrets.SWIFTPODS_NOTARY_KEY_ID }}
+          SWIFTPODS_NOTARY_ISSUER: ${{ secrets.SWIFTPODS_NOTARY_ISSUER }}
+        run: python3 scripts/ci_signing.py setup
+      - name: Sign and execute a temporary test program
+        run: |
+          set -euo pipefail
+          if [[ "$SWIFTPODS_SIGNING_IDENTITY" != "Developer ID Application: "* ]]; then
+            echo "::error::SWIFTPODS_SIGNING_IDENTITY must name a Developer ID Application identity."
+            exit 1
+          fi
+          signing_check_dir="$(mktemp -d "$RUNNER_TEMP/swiftpods-signing-check.XXXXXX")"
+          trap 'rm -rf "$signing_check_dir"' EXIT
+          printf '%s\n' 'int main(void) { return 0; }' > "$signing_check_dir/main.c"
+          xcrun clang -Wall -Wextra -Werror "$signing_check_dir/main.c" -o "$signing_check_dir/signing-check"
+          codesign --force --timestamp --options runtime \
+            --keychain "$SWIFTPODS_NOTARY_KEYCHAIN" \
+            --sign "$SWIFTPODS_SIGNING_IDENTITY" "$signing_check_dir/signing-check"
+          codesign --verify --strict --verbose=2 "$signing_check_dir/signing-check"
+          "$signing_check_dir/signing-check"
+      - name: Remove temporary signing credentials
+        if: always()
+        run: python3 scripts/ci_signing.py cleanup

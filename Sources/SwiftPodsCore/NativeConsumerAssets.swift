@@ -1,6 +1,16 @@
 import Foundation
 
 extension NativeXcode {
+    /// Bundle copies must finish before post-build scripts that depend on the app's dSYM.
+    /// Appending after those scripts creates a cycle through Xcode's Info.plist processing.
+    func insertConsumerCopyPhase(_ phase: String, into phases: inout [String], user: NativePBX) {
+        let anchors: Set<String> = [
+            "PBXHeadersBuildPhase", "PBXSourcesBuildPhase", "PBXFrameworksBuildPhase", "PBXResourcesBuildPhase",
+        ]
+        let index = phases.lastIndex { anchors.contains(user.objects[$0]?["isa"] as? String ?? "") }
+        phases.insert(phase, at: index.map { $0 + 1 } ?? 0)
+    }
+
     /// Full paths keep exclusions scoped to managed assets, including files with
     /// the same basename in a user's own resource phase. Shared assets remain
     /// enabled if any selected dependency needs them in this configuration.
@@ -31,45 +41,4 @@ extension NativeXcode {
         return try assets(eligible).subtracting(assets(enabled)).sorted()
     }
 
-    func copyResourceBundles(
-        roots: Set<String>, platform: String, target: String, user: NativePBX,
-        configurations: [Set<String>] = []
-    ) throws {
-        let key = "swiftpods:resources:" + target
-        var phases = user.objects[target]?["buildPhases"] as? [String] ?? []
-        phases.removeAll { $0 == NativePBX.identifier(key) }
-        user.objects.removeValue(forKey: NativePBX.identifier(key))
-        var files: [String] = []
-        var destinations: [String: Set<String>] = [:]
-        for product in products where matchesProduct(product, roots: roots, platform: platform) {
-            guard !frameworkResourceBundles.contains(product) else { continue }
-            guard let value = graph.objects[product], value["explicitFileType"] as? String == "wrapper.cfbundle"
-            else { continue }
-            let name = value["path"] as? String ?? ""
-            let owner = resourceBundleRoots[product] ?? ""
-            let previous = destinations[name, default: []]
-            let enabled = configurations.isEmpty ? [roots] : configurations
-            guard !enabled.contains(where: { $0.contains(owner) && !$0.isDisjoint(with: previous) }) else {
-                throw Diagnostic(
-                    "SP-XCODE-RESOURCE", stage: "integrate",
-                    "Multiple dependencies copy the resource bundle " + name + " into the same target", file: target)
-            }
-            destinations[name, default: []].insert(owner)
-            let reference = user.add("swiftpods:product:" + product, consumerProduct(product))
-            files.append(
-                user.add(
-                    "swiftpods:bundle-build:" + target + ":" + product, ["isa": "PBXBuildFile", "fileRef": reference]))
-        }
-        if !files.isEmpty {
-            phases.append(
-                user.add(
-                    key,
-                    [
-                        "isa": "PBXCopyFilesBuildPhase", "name": "[SwiftPods] Copy Resource Bundles",
-                        "buildActionMask": "2147483647", "runOnlyForDeploymentPostprocessing": "0", "files": files,
-                        "dstPath": "", "dstSubfolderSpec": "7",
-                    ]))
-        }
-        user.objects[target]?["buildPhases"] = phases
-    }
 }

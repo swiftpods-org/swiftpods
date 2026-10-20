@@ -204,7 +204,7 @@ intended graph. Ordinary directory receipts retain their fingerprint format.
 Doctor rejects paths or aliases escaping SDK/framework/application containers
 while supporting Unicode names, contained aliases and versioned frameworks.
 
-## Verifying a release
+## Paths and build settings
 
 Glob operators remain syntax before combining marks. Literal runs retain NFC
 matching, while class members keep their declared scalars. Native/reference
@@ -371,14 +371,19 @@ receipt encoding versions fail before hooks or managed changes. Upgrade tests
 include random UUIDs, raw historical paths, relocated projects, missing generated
 projects and unrelated neighboring support files.
 
-A successful parse is insufficient: acceptance checks the chosen graph, hook
-results, generated files, builds, resources, applications and repeat installs.
-The [specification](SwiftPods-Specification-v0.1.md) defines T-001–T-025 and
-AC-001–AC-010. [Full acceptance](Full-Acceptance.md) describes the reproducible
-runner and evidence format.
+## Verify your installation
 
-Reports identify the source revision, contract digest, distribution, toolchain
-and actual platform matrix. A mapped test does not establish every combination
-of inputs. Signing, notarization, physical devices, Intel execution, the minimum
-macOS and clean installations require their own evidence. An unavailable or
-skipped required check remains unverified.
+Check the SwiftPods executable and its Ruby adapter:
+
+```sh
+swiftpods runtime verify --json
+```
+
+From your Xcode project directory, check installed dependencies against their
+recorded checksums:
+
+```sh
+swiftpods integrity verify
+```
+
+See [Installation and CI](Release.md) for pinned downloads and checksum checks.

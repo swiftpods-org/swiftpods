@@ -34,6 +34,26 @@ final class NativeResourceIsolationTests: XCTestCase {
         return generated
     }
 
+    func testResourceBundlesProduceStableProjectBytesAcrossRepeatedGeneration() throws {
+        let root = try directory(["asset.txt"])
+        let names = ["Zulu", "Alpha", "Beta", "Middle", "Omega"]
+        let bundles = Dictionary(uniqueKeysWithValues: names.map { ($0, "asset.txt") })
+        let spec = try NativeSpec(
+            data: ["name": "Kit", "version": "1.0", "resource_bundles": bundles], directory: root)
+        var first: Data?
+        for _ in 0..<6 {
+            let generated = try engine(root, specs: [spec], dependencies: [["name": "Kit"]])
+            let products = generated.products.compactMap { generated.graph.objects[$0] }.filter {
+                $0["explicitFileType"] as? String == "wrapper.cfbundle"
+            }.compactMap { $0["path"] as? String }
+            XCTAssertEqual(products, names.sorted().map { $0 + ".bundle" })
+            try generated.graph.save()
+            let contents = try Data(contentsOf: generated.graph.url)
+            if let first { XCTAssertEqual(contents, first) }
+            first = contents
+        }
+    }
+
     func testOnDemandExclusionsStayWithTheirDeclaringSubspec() throws {
         for platform in ["osx", "ios"] {
             for mode: String? in [nil, "static", "dynamic"] {

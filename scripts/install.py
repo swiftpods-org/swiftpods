@@ -177,6 +177,12 @@ def main():
             str(args.manifest or url), args.manifest_sha256, local=bool(args.manifest)
         )
     )
+    if not args.manifest and (
+        manifest.get("development") is not False
+        or manifest.get("publishable") is not True
+        or manifest.get("runtime_mode") != "external"
+    ):
+        raise RuntimeError("Downloaded manifest is not a publishable SwiftPods release")
     asset = select_asset(manifest, args.version)
     prefix = args.prefix.absolute()
     receipt = {

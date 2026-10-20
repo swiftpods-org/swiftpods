@@ -1,6 +1,44 @@
 import Foundation
 
 extension NativeXcode {
+    func hasConsumerDynamicProducts(_ roots: Set<String>, platform: String) -> Bool {
+        products.contains { matchesProduct($0, roots: roots, platform: platform) && isDynamicProduct($0) }
+            || roots.contains { (vendorSDKs[variantKey($0, platform)] ?? []).contains { $0.dynamic } }
+    }
+
+    func consumerProductLinkerFlags(_ roots: Set<String>, platform: String) -> [String] {
+        var flags: [String] = []
+        for product in products
+        where productRoots[product] != nil && matchesProduct(product, roots: roots, platform: platform) {
+            let path = consumerProductPath(product)
+            if path.relative.hasSuffix(".framework") {
+                if productVariants[product].flatMap({ variantPlan?.variants[$0]?.scoped }) == true {
+                    // A framework name alone is ambiguous when several variants share its module name.
+                    let binary = URL(fileURLWithPath: path.relative).deletingPathExtension().lastPathComponent
+                    flags.append(NativeBuildSetting.quoted(path.setting + "/" + binary))
+                    continue
+                }
+                flags += [
+                    "-framework",
+                    NativeBuildSetting.quoted(
+                        URL(fileURLWithPath: path.relative).deletingPathExtension().lastPathComponent),
+                ]
+            } else {
+                flags.append(NativeBuildSetting.quoted(path.setting))
+            }
+        }
+        var seen = Set<URL>()
+        for sdk in roots.sorted().flatMap({ vendorSDKs[variantKey($0, platform)] ?? [] })
+        where seen.insert(sdk.url).inserted {
+            if sdk.isFramework {
+                flags += ["-framework", NativeBuildSetting.quoted(String(sdk.productName.dropLast(10)))]
+            } else {
+                flags.append(NativeBuildSetting.quoted(consumerSDKPath(sdk).setting))
+            }
+        }
+        return flags
+    }
+
     func linkerSources(_ target: String, graph: NativePBX) -> [URL] {
         (graph.objects[target]?["buildPhases"] as? [String] ?? []).filter {
             graph.objects[$0]?["isa"] as? String == "PBXSourcesBuildPhase"

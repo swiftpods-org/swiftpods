@@ -42,6 +42,55 @@ final class NativeVendorTests: XCTestCase {
         if let variant { result["SupportedPlatformVariant"] = variant }
         return result
     }
+
+    private func archive(_ object: Data) -> Data {
+        let header =
+            "object.o/".padding(toLength: 16, withPad: " ", startingAt: 0)
+            + "0".padding(toLength: 12, withPad: " ", startingAt: 0)
+            + "0".padding(toLength: 6, withPad: " ", startingAt: 0)
+            + "0".padding(toLength: 6, withPad: " ", startingAt: 0)
+            + "644".padding(toLength: 8, withPad: " ", startingAt: 0)
+            + String(object.count).padding(toLength: 10, withPad: " ", startingAt: 0) + "`\n"
+        return Data("!<arch>\n".utf8) + Data(header.utf8) + object
+    }
+
+    private func universal(_ objects: [(subtype: UInt32, data: Data)]) -> Data {
+        var offset = UInt32(8 + 20 * objects.count)
+        var words: [UInt32] = [0xcafe_babe, UInt32(objects.count)]
+        for object in objects {
+            words += [0x0100_000c, object.subtype, offset, UInt32(object.data.count), 0]
+            offset += UInt32(object.data.count)
+        }
+        let header = Data(
+            words.flatMap { word in (0..<4).reversed().map { UInt8(truncatingIfNeeded: word >> ($0 * 8)) } })
+        return objects.reduce(header) { $0 + $1.data }
+    }
+
+    func testMetadataMayAdvertiseSubsetOfUniversalBinaryArchitectures() throws {
+        let path = try xcframework(directory(), entries: [entry("device")])
+        try universal([
+            (0, archive(macho(platform: 2, kind: 1))),
+            (2, archive(macho(platform: 2, subtype: 2, kind: 1))),
+        ]).write(to: path.appendingPathComponent("device/Kit.framework/Kit"))
+        let sdk = try NativeVendorSDK(path)
+        XCTAssertFalse(sdk.dynamic)
+        XCTAssertEqual(sdk.slices.first?.architectures, ["arm64"])
+        XCTAssertEqual(
+            try sdk.select(platform: "ios", variant: "device", architectures: ["arm64"]).identifier, "device")
+        XCTAssertThrowsError(try sdk.select(platform: "ios", variant: "device", architectures: ["arm64e"]))
+    }
+
+    func testExtraArchitecturesCannotHideMismatchedPlatforms() throws {
+        let path = try xcframework(directory(), entries: [entry("device")])
+        try universal([
+            (0, archive(macho(platform: 2, kind: 1))),
+            (2, archive(macho(platform: 7, subtype: 2, kind: 1))),
+        ]).write(to: path.appendingPathComponent("device/Kit.framework/Kit"))
+        XCTAssertThrowsError(try NativeVendorSDK(path)) {
+            XCTAssertEqual(($0 as? Diagnostic)?.code, "SP-XCFRAMEWORK-BINARY")
+        }
+    }
+
     func testArm64SelectionDistinguishesDeviceAndSimulator() throws {
         let path = try xcframework(directory(), entries: [entry("device"), entry("simulator", variant: "simulator")])
         let sdk = try NativeVendorSDK(path)
@@ -55,6 +104,47 @@ final class NativeVendorTests: XCTestCase {
         XCTAssertTrue(sdk.dynamic)
         XCTAssertTrue(sdk.supports(platform: "ios"))
         XCTAssertFalse(sdk.supports(platform: "osx"))
+    }
+
+    func testBinaryOnlyPodsDoNotShadowTheirVendoredFrameworks() throws {
+        for mode in ["static", "dynamic", "library"] {
+            let root = try directory()
+            _ = try xcframework(root, entries: [entry("device"), entry("simulator", variant: "simulator")])
+            for slice in ["device", "simulator"] {
+                let headers = root.appendingPathComponent("Kit.xcframework/" + slice + "/Kit.framework/Headers")
+                try FileManager.default.createDirectory(at: headers, withIntermediateDirectories: true)
+                try Data("void vendor_api(void);\n".utf8).write(to: headers.appendingPathComponent("Kit.h"))
+            }
+            let spec = try NativeSpec(
+                data: [
+                    "name": "Kit", "version": "1.0", "vendored_frameworks": "Kit.xcframework",
+                    "source_files": "Kit.xcframework/**/*.h",
+                ],
+                directory: root)
+            let dependency = try NativeDependency(["name": "Kit"], platform: "ios", deployment: "15.0")
+            let engine = try NativeXcode(
+                project: root,
+                manifest: [
+                    "targets": [
+                        [
+                            "name": "Demo", "platform": ["name": "ios", "deployment_target": "15.0"],
+                            "frameworks": mode, "dependencies": [["name": "Kit"]],
+                        ]
+                    ]
+                ],
+                resolution: NativeResolution(specs: ["Kit": spec], requests: [dependency]),
+                integrateUserProjects: false)
+            try engine.generate()
+            let product = try XCTUnwrap(engine.products.first)
+            XCTAssertEqual(engine.graph.objects[product]?["path"] as? String, "libKit.a")
+            XCTAssertEqual(engine.graph.objects[product]?["explicitFileType"] as? String, "archive.ar")
+            let target = try XCTUnwrap(
+                engine.graph.objects.values.first {
+                    $0["isa"] as? String == "PBXNativeTarget" && $0["name"] as? String == "Kit"
+                })
+            XCTAssertEqual(target["productType"] as? String, "com.apple.product-type.library.static")
+            XCTAssertEqual(engine.vendorSDKs["Kit:ios"]?.first?.productName, "Kit.framework")
+        }
     }
     func testMetadataMustMatchBinaryArchitectureAndPlatform() throws {
         let root = try directory()
@@ -89,15 +179,7 @@ final class NativeVendorTests: XCTestCase {
         let path = try xcframework(directory(), entries: [entry("first"), entry("second")])
         XCTAssertThrowsError(try NativeVendorSDK(path))
         let object = macho(platform: 2, kind: 1)
-        // A BSD archive member wrapping a real Mach-O object header.
-        let header =
-            "object.o/".padding(toLength: 16, withPad: " ", startingAt: 0)
-            + "0".padding(toLength: 12, withPad: " ", startingAt: 0)
-            + "0".padding(toLength: 6, withPad: " ", startingAt: 0)
-            + "0".padding(toLength: 6, withPad: " ", startingAt: 0)
-            + "644".padding(toLength: 8, withPad: " ", startingAt: 0)
-            + String(object.count).padding(toLength: 10, withPad: " ", startingAt: 0) + "`\n"
-        try (Data("!<arch>\n".utf8) + Data(header.utf8) + object).write(
+        try archive(object).write(
             to: path.appendingPathComponent("second/Kit.framework/Kit"))
         XCTAssertThrowsError(try NativeVendorSDK(path))
     }

@@ -6,6 +6,7 @@ final class NativePBX {
     var root: [String: Any] = [:]
     let url: URL
     private var original: String
+    private var document: NativePBXDocument?
     var normalizedConfigurationPaths: [String: String] = [:]
     var randomIdentifiers = false
     private var identifiers: [String: String] = [:]
@@ -18,7 +19,8 @@ final class NativePBX {
         self.url = url
         original = try FileFingerprint.tree(url)
         if existing {
-            let decoded = try PropertyListSerialization.propertyList(from: Data(contentsOf: url), format: nil)
+            let data = try Data(contentsOf: url)
+            let decoded = try PropertyListSerialization.propertyList(from: data, format: nil)
             try NativeDictionaryKeys.validate(decoded, file: url.path, stage: "integrate")
             guard
                 let value = decoded as? [String: Any],
@@ -27,6 +29,10 @@ final class NativePBX {
             root = value
             self.objects = objects
             try NativePBXPaths.validateGraph(objects, file: url.path)
+            if let text = String(data: data, encoding: .utf8) {
+                let start = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if start.hasPrefix("//") || start.hasPrefix("{") { document = try NativePBXDocument(text) }
+            }
         }
     }
     @discardableResult func add(_ key: String, _ object: [String: Any]) -> String {
@@ -46,6 +52,59 @@ final class NativePBX {
             || normalizedConfigurationPaths[id] == path
     }
     static func identifier(_ key: String) -> String { String(digest(Data(key.utf8)).prefix(24)).uppercased() }
+
+    func relativeFileReference(_ path: URL, type: String? = nil) -> [String: Any] {
+        var reference: [String: Any] = [
+            "isa": "PBXFileReference", "path": relativeFilePath(path), "sourceTree": "SOURCE_ROOT",
+        ]
+        if let type { reference["lastKnownFileType"] = type }
+        return reference
+    }
+
+    func relativeFilePath(_ path: URL) -> String {
+        NativeBuildSetting.literal(NativePath.relativePath(of: path, to: sourceRoot))
+    }
+
+    func buildSettingPath(_ path: URL) -> String {
+        let relative = NativePath.relativePath(of: path, to: sourceRoot)
+        return relative == "." ? "$(SRCROOT)" : "$(SRCROOT)/" + NativeBuildSetting.scalarLiteral(relative)
+    }
+
+    /// Recognize both portable references and the absolute references written by earlier releases.
+    func ownedFileKey(_ id: String, prefix: String) -> String? {
+        guard objects[id]?["isa"] as? String == "PBXFileReference", let path = objects[id]?["path"] as? String else {
+            return nil
+        }
+        return [path, NativeBuildSetting.decodedLiteral(path)].map { prefix + $0 }.first { Self.identifier($0) == id }
+    }
+
+    /// Drop obsolete managed objects, retaining anything still used outside navigation groups.
+    func removeUnreferencedObjects(_ candidates: Set<String>) {
+        func references(_ value: Any) -> Set<String> {
+            if let id = value as? String { return candidates.contains(id) ? [id] : [] }
+            if let values = value as? [Any] { return values.reduce(into: []) { $0.formUnion(references($1)) } }
+            if let values = value as? [String: Any] { return references(Array(values.values)) }
+            return []
+        }
+        var remaining = candidates.intersection(objects.keys)
+        while !remaining.isEmpty {
+            let used = objects.values.reduce(into: references(root["rootObject"] ?? "")) { used, object in
+                if !["PBXGroup", "PBXVariantGroup"].contains(object["isa"] as? String ?? "") {
+                    used.formUnion(references(object))
+                }
+            }
+            let unused = remaining.subtracting(used)
+            guard !unused.isEmpty else { return }
+            for id in unused { objects.removeValue(forKey: id) }
+            for id in Array(objects.keys) {
+                if let children = objects[id]?["children"] as? [String] {
+                    objects[id]?["children"] = children.filter { !unused.contains($0) }
+                }
+            }
+            remaining.subtract(unused)
+        }
+    }
+
     func save() throws {
         try NativePBXPaths.validateGraph(objects, file: url.path)
         guard try FileFingerprint.tree(url) == original else {
@@ -54,8 +113,14 @@ final class NativePBX {
         }
         root["objects"] = objects
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let data = Data(("// !$*UTF8*$!\n" + Self.serialize(root) + "\n").utf8)
+        let text = document?.updating(root) ?? ("// !$*UTF8*$!\n" + NativePBXFormatting.value(root) + "\n")
+        let data = Data(text.utf8)
+        let decoded = try PropertyListSerialization.propertyList(from: data, format: nil)
+        guard Self.serialize(decoded) == Self.serialize(root) else {
+            throw Diagnostic("SP-XCODE-PROJECT", stage: "integrate", "Project edit changed its graph", file: url.path)
+        }
         if (try? Data(contentsOf: url)) != data { try data.writeIfChanged(to: url, options: .atomic) }
+        document = try NativePBXDocument(text)
         original = try FileFingerprint.tree(url)
     }
     static func serialize(_ value: Any, level: Int = 0) -> String {

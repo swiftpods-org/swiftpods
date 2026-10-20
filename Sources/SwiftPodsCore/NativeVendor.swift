@@ -67,7 +67,9 @@ struct NativeVendorSDK {
                 let inspected = try BinaryInspection.inspect(binary)
                 let linkage = try Self.linkage(inspected, file: binary)
                 let metadataArches = Set(arches)
-                guard metadataArches == Set(inspected.map(\.architecture)),
+                // Vendors may leave additional architectures in the universal
+                // binary; only those advertised by the XCFramework are selectable.
+                guard metadataArches.isSubset(of: Set(inspected.map(\.architecture))),
                     inspected.allSatisfy({
                         ($0.platform == "unknown" || $0.platform == normalized)
                             && ($0.variant == "unknown" || $0.variant == variant)

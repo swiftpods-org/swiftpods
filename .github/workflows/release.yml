@@ -1,14 +1,52 @@
-name: Prepare release
+name: Release SwiftPods
 on:
+  push:
+    tags: ['v*']
   workflow_dispatch:
     inputs:
       version:
-        description: Existing tag version without v (must match Profiles/baseline.json)
+        description: Existing tag version without v
         required: true
 permissions:
   contents: read
+concurrency:
+  group: release-${{ github.event_name == 'push' && github.ref_name || format('v{0}', inputs.version) }}
+  cancel-in-progress: false
 jobs:
+  metadata:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      commit: ${{ steps.resolve.outputs.commit }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: resolve
+        name: Resolve and validate the release tag
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          python3 - <<'PY'
+          import json, os, re, subprocess
+          version = os.environ['GITHUB_REF_NAME'][1:] if os.environ['GITHUB_EVENT_NAME'] == 'push' else os.environ['REQUESTED_VERSION']
+          if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?', version):
+              raise RuntimeError('Invalid release version')
+          commit = subprocess.check_output(['git', 'rev-parse', '--verify', 'refs/tags/v' + version + '^{commit}'], text=True).strip()
+          baseline = json.loads(subprocess.check_output(['git', 'show', commit + ':Profiles/baseline.json']))
+          if baseline['swiftpods_version'] != version:
+              raise RuntimeError('Tag must match Profiles/baseline.json')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('version=' + version + '\ncommit=' + commit + '\n')
+          PY
+  plugin:
+    needs: metadata
+    uses: ./.github/workflows/fastlane-plugin.yml
+    with:
+      source_ref: ${{ needs.metadata.outputs.commit }}
   build:
+    needs: metadata
     strategy:
       fail-fast: false
       matrix:
@@ -18,14 +56,14 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: v${{ inputs.version }}
+          ref: ${{ needs.metadata.outputs.commit }}
           persist-credentials: false
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.13.16'
       - name: Validate tagged version
         env:
-          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
         run: |
           python3 -c 'import json, os; assert json.load(open("Profiles/baseline.json"))["swiftpods_version"] == os.environ["RELEASE_VERSION"]'
       - name: Install external Ruby
@@ -55,7 +93,9 @@ jobs:
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: release-${{ matrix.runner }}
-          path: dist/SwiftPods.zip
+          path: |
+            dist/SwiftPods.zip
+            dist/SwiftPods.zip.notary.json
       - name: Preserve verification evidence
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
@@ -69,12 +109,14 @@ jobs:
         if: always()
         run: python3 scripts/ci_signing.py cleanup
   assemble:
-    needs: build
+    needs: [metadata, build, plugin]
     runs-on: macos-15
+    outputs:
+      manifest-sha256: ${{ steps.validate.outputs.manifest-sha256 }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: v${{ inputs.version }}
+          ref: ${{ needs.metadata.outputs.commit }}
           persist-credentials: false
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
@@ -89,15 +131,49 @@ jobs:
           path: evidence
       - name: Assemble checksums, installer and binary Homebrew test fixture
         env:
-          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
         run: |
           python3 scripts/release.py --version "$RELEASE_VERSION" \
             --archive inputs/release-macos-15/SwiftPods.zip \
             --archive inputs/release-macos-15-intel/SwiftPods.zip \
             --evidence evidence/evidence-macos-15/test-results/evidence.zip \
             --evidence evidence/evidence-macos-15-intel/test-results/evidence.zip \
+            --notarization inputs/release-macos-15/SwiftPods.zip.notary.json \
+            --notarization inputs/release-macos-15-intel/SwiftPods.zip.notary.json \
             --destination dist/release
+      - id: validate
+        name: Validate public release assets
+        env:
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.metadata.outputs.commit }}
+        run: python3 scripts/publish_release.py dist/release --version "$RELEASE_VERSION" --commit "$RELEASE_COMMIT"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: swiftpods-assets
           path: dist/release/
+  publish:
+    needs: [metadata, assemble]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.metadata.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: swiftpods-assets
+          path: dist/release
+      - name: Publish the verified archives and installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.metadata.outputs.commit }}
+        run: python3 scripts/publish_release.py dist/release --version "$RELEASE_VERSION" --commit "$RELEASE_COMMIT" --publish
+  verify-download:
+    needs: [metadata, assemble, publish]
+    uses: ./.github/workflows/verify-installation.yml
+    with:
+      version: ${{ needs.metadata.outputs.version }}
+      manifest_sha256: ${{ needs.assemble.outputs.manifest-sha256 }}

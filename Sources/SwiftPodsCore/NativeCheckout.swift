@@ -42,7 +42,8 @@ extension NativeSources {
         let staging = directory.deletingLastPathComponent().appendingPathComponent(".git-" + UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: staging) }
         try command("/usr/bin/git", ["clone", "--no-checkout", "--", location, staging.path])
-        try command("/usr/bin/git", ["-C", staging.path, "checkout", "--detach", selector])
+        let selectedCommit = try gitCommit(selector, in: staging)
+        try command("/usr/bin/git", ["-C", staging.path, "checkout", "--detach", selectedCommit])
         if submodules, FileManager.default.fileExists(atPath: staging.appendingPathComponent(".gitmodules").path) {
             try command("/usr/bin/git", ["-C", staging.path, "submodule", "update", "--init", "--recursive"])
         }
@@ -64,6 +65,21 @@ extension NativeSources {
         try cacheCommit(directory, location: location, refreshed: true)
         return directory
     }
+
+    private func gitCommit(_ selector: String, in directory: URL) throws -> String {
+        // A remote branch without a local counterpart makes Git try to create
+        // a branch even with --detach. Resolve its commit before checking it out.
+        for reference in [selector, "refs/remotes/origin/" + selector] {
+            let result = try ToolProcess.run(
+                "/usr/bin/git",
+                ["-C", directory.path, "rev-parse", "--verify", "--quiet", "--end-of-options", reference + "^{commit}"])
+            if result.status == 0 {
+                return String(decoding: result.output, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        throw Diagnostic("SP-SOURCE-REVISION", stage: "download", "Cannot resolve Git revision " + selector)
+    }
+
     func shouldUpdate(_ root: String) -> Bool { updating && (updateRoots.isEmpty || updateRoots.contains(root)) }
     func pinnedSelector(_ root: String, source: [String: Any]) -> String {
         let declared =

@@ -50,8 +50,8 @@ extension NativeXcode {
                 direct.removeValue(forKey: key)
             }
         }
-        generated["PODS_ROOT"] = NativeBuildSetting.scalarLiteral(project.appendingPathComponent("Pods").path)
-        generated["PODS_PODFILE_DIR_PATH"] = NativeBuildSetting.scalarLiteral(project.path)
+        generated["PODS_ROOT"] = user.buildSettingPath(project.appendingPathComponent("Pods"))
+        generated["PODS_PODFILE_DIR_PATH"] = user.buildSettingPath(project)
         generated["PODS_BUILD_DIR"] = "$(BUILD_DIR)"
         generated["PODS_CONFIGURATION_BUILD_DIR"] = "$(BUILD_DIR)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)"
         for (key, value) in generated {
@@ -66,13 +66,10 @@ extension NativeXcode {
             generated.removeValue(forKey: key)
         }
         let path = try supportConfiguration(label: label, name: name, settings: generated)
-        let expression = NativeBuildSetting.literal(path.path)
+        let expression = user.relativeFilePath(path)
         let reference = user.add(
             "swiftpods:xcconfig:" + expression,
-            [
-                "isa": "PBXFileReference", "path": expression, "sourceTree": "<absolute>",
-                "lastKnownFileType": "text.xcconfig",
-            ])
+            user.relativeFileReference(path, type: "text.xcconfig"))
         var support = integrationSettings["_support_configurations"] as? [String: String] ?? [:]
         support[recordKey] = reference
         integrationSettings["_support_configurations"] = support

@@ -1857,7 +1857,7 @@
           ]
         },
         "rationale": "Retain identical dependency edges from distinct parents so targeted updates preserve pins owned by unchanged dependencies.",
-        "documentation": "docs/Code-Audit.md"
+        "documentation": "docs/Compatibility.md"
       },
       "Scheme.XML_whitespace": {
         "feature": "Scheme",
@@ -1893,7 +1893,7 @@
           ]
         },
         "rationale": "Keep a child target's own unconfigured dependencies enabled under inherit! :none; only parent dependencies and configuration whitelists stop inheriting.",
-        "documentation": "docs/Code-Audit.md"
+        "documentation": "docs/Compatibility.md"
       },
       "Targets.none_nested_configurations": {
         "feature": "Targets",
@@ -1915,7 +1915,7 @@
           ]
         },
         "rationale": "Preserve own default configuration enablement under none after a search_paths parent; compare all other nested inheritance fields exactly.",
-        "documentation": "docs/Code-Audit.md"
+        "documentation": "docs/Compatibility.md"
       },
       "Sources.mutable_checkout_pins": {
         "feature": "Sources",
@@ -1935,7 +1935,7 @@
           ]
         },
         "rationale": "Preserve immutable checkout options for unchanged symbolic Git/Mercurial selectors during install and deployment; explicit update remains permitted.",
-        "documentation": "docs/Code-Audit.md"
+        "documentation": "docs/Compatibility.md"
       },
       "ScriptPhases.boolean_log_visibility": {
         "feature": "ScriptPhases",
@@ -1953,7 +1953,7 @@
           ]
         },
         "rationale": "Interpret boolean false as disabling script environment logging instead of silently ignoring it.",
-        "documentation": "docs/Code-Audit.md"
+        "documentation": "docs/Compatibility.md"
       },
       "Glob.character_class_matching": {
         "feature": "Glob",

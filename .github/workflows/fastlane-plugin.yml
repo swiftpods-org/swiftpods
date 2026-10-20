@@ -1,0 +1,56 @@
+name: Fastlane plugin
+on:
+  push:
+    branches: ['**']
+    paths:
+      - 'lib/**'
+      - 'fastlane-plugin-swiftpods.gemspec'
+      - 'Profiles/baseline.json'
+      - 'Tests/FastlanePlugin/**'
+      - 'scripts/fastlane_plugin_tests.rb'
+      - 'docs/Fastlane.md'
+      - '.github/workflows/fastlane-plugin.yml'
+  pull_request:
+    paths:
+      - 'lib/**'
+      - 'fastlane-plugin-swiftpods.gemspec'
+      - 'Profiles/baseline.json'
+      - 'Tests/FastlanePlugin/**'
+      - 'scripts/fastlane_plugin_tests.rb'
+      - 'docs/Fastlane.md'
+      - '.github/workflows/fastlane-plugin.yml'
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      source_ref:
+        type: string
+        required: true
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        ruby: ['3.4', '4.0']
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+          persist-credentials: false
+      - uses: ruby/setup-ruby@824c0e29fdfc7d689c191c27acc969d2d04b7dd8 # v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+      - name: Build and install the plugin with its test dependencies
+        run: |
+          mkdir -p dist
+          gem build fastlane-plugin-swiftpods.gemspec --strict --output dist/fastlane-plugin-swiftpods.gem
+          gem install dist/fastlane-plugin-swiftpods.gem --development --no-document
+      - name: Test the installed plugin and Bundler integration
+        run: ruby scripts/fastlane_plugin_tests.rb
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: fastlane-plugin-ruby-${{ matrix.ruby }}
+          path: dist/fastlane-plugin-swiftpods.gem

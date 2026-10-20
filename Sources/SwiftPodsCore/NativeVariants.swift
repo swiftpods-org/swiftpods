@@ -287,46 +287,24 @@ extension NativeXcode {
         ).sorted()
     }
 
-    func consumerVariantDependencies(_ user: NativePBX, target: String, roots: Set<String>, platform: String) {
+    /// The aggregate already builds the selected libraries and their resource bundles.
+    /// Remove the individual consumer dependencies written by earlier versions.
+    func removePreviousVariantDependencies(_ user: NativePBX, target: String) {
         let managed = Set(
             previousProducts.union(products).map {
                 NativePBX.identifier("swiftpods:variant-dependency:" + target + ":" + $0)
             })
-        var dependencies = (user.objects[target]?["dependencies"] as? [String] ?? []).filter { !managed.contains($0) }
-        for product in products
-        where productBuildPaths[product] != nil && matchesProduct(product, roots: roots, platform: platform) {
-            guard let producer = graph.objects.first(where: { $0.value["productReference"] as? String == product }),
-                let owner = targetOwners[producer.key]
-            else { continue }
-            let path = multipleProjects ? projectForPod(owner) : project.appendingPathComponent("Pods/Pods.xcodeproj")
-            let portal = user.add(
-                "swiftpods:variant-project:" + owner,
-                [
-                    "isa": "PBXFileReference", "path": NativeBuildSetting.literal(path.path),
-                    "sourceTree": "<absolute>",
-                    "lastKnownFileType": "wrapper.pb-project",
-                ])
-            let key = "swiftpods:variant-dependency:" + target + ":" + product
-            let name = producer.value["name"] as? String ?? owner
-            let proxy = user.add(
-                key + ":proxy",
-                [
-                    "isa": "PBXContainerItemProxy", "containerPortal": portal, "proxyType": "1",
-                    "remoteGlobalIDString": producer.key, "remoteInfo": name,
-                ])
-            dependencies.append(user.add(key, ["isa": "PBXTargetDependency", "name": name, "targetProxy": proxy]))
+        let dependencies = user.objects[target]?["dependencies"] as? [String] ?? []
+        user.objects[target]?["dependencies"] = dependencies.filter {
+            !managed.contains($0)
         }
-        user.objects[target]?["dependencies"] = dependencies
-        let used = Set(user.objects.values.flatMap { $0["dependencies"] as? [String] ?? [] })
-        for dependency in managed.subtracting(used) {
+        var removable = managed
+        for dependency in managed {
             if let proxy = user.objects[dependency]?["targetProxy"] as? String {
-                let portal = user.objects[proxy]?["containerPortal"] as? String
-                user.objects.removeValue(forKey: proxy)
-                if let portal, !user.objects.values.contains(where: { $0["containerPortal"] as? String == portal }) {
-                    user.objects.removeValue(forKey: portal)
-                }
+                removable.insert(proxy)
+                if let portal = user.objects[proxy]?["containerPortal"] as? String { removable.insert(portal) }
             }
-            user.objects.removeValue(forKey: dependency)
         }
+        user.removeUnreferencedObjects(removable)
     }
 }

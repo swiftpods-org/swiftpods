@@ -1,6 +1,15 @@
 import Foundation
 
 extension NativeXcode {
+    func umbrellaHeader(_ contents: String, variant: NativePodVariant) -> String {
+        guard inhibitWarnings(variant) else { return contents }
+        // Keep the opt-in local to SDK headers. A [system] module would also
+        // change how Swift imports NSUInteger, altering the SDK's API.
+        return
+            "#ifdef __clang__\n#pragma clang diagnostic push\n#pragma clang diagnostic ignored \"-Weverything\"\n#endif\n"
+            + contents + "#ifdef __clang__\n#pragma clang diagnostic pop\n#endif\n"
+    }
+
     enum HeaderVisibility: String {
         case publicHeaders = "Public"
         case privateHeaders = "Private"
