@@ -152,11 +152,13 @@ extension NativeXcode {
             try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
             let umbrella = support.appendingPathComponent(module + "-umbrella.h")
             let publicHeaders = selection.publicHeaders.sorted { $0.path < $1.path }
+            let includes: [String] = try publicHeaders.map { header in
+                let path = try selection.headerPath(header)
+                return "#include <" + module + "/" + path + ">"
+            }
             let content =
                 "#ifdef __OBJC__\n#import <Foundation/Foundation.h>\n#endif\n"
-                + (try publicHeaders.map {
-                    "#include <" + module + "/" + (try selection.headerPath($0)) + ">"
-                }).joined(separator: "\n") + "\n"
+                + includes.joined(separator: "\n") + "\n"
             try Data(umbrellaHeader(content, variant: variant).utf8).writeIfChanged(to: umbrella, options: .atomic)
             headers.append(buildFile(file(umbrella.path), target: targetName, settings: ["ATTRIBUTES": ["Public"]]))
             let modulemap = support.appendingPathComponent(module + ".modulemap")
