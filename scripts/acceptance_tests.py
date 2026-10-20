@@ -30,6 +30,30 @@ from vendor_fixture import run as fixture_command
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_failure_logs_keep_early_assertions_before_a_long_successful_tail(self):
+        failure = (
+            "ExampleTests.swift:17: error: Assertion failed: expected relative path"
+        )
+        text = "\n".join(
+            [
+                failure,
+                *["Test Case passed"] * 1000,
+                "Executed 734 tests, with 1 failure",
+            ]
+        )
+        excerpt = reporting.failure_excerpt(text)
+        self.assertIn(failure, excerpt)
+        self.assertIn("Executed 734 tests, with 1 failure", excerpt)
+        self.assertLess(len(excerpt.splitlines()), 140)
+
+    def test_successful_logs_do_not_produce_failure_excerpts(self):
+        self.assertEqual(
+            reporting.failure_excerpt(
+                "Test Case passed\nExecuted 1 test, with 0 failures"
+            ),
+            "",
+        )
+
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)

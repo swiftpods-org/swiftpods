@@ -34,16 +34,7 @@ jobs:
         run: python3 scripts/check.py --full --package dist/SwiftPods-${{ matrix.runner }}
       - name: Show verification failure details
         if: failure()
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          paths = sorted(Path('test-results').glob('*.log'))
-          for path in paths:
-              text = path.read_text(errors='replace')
-              if any(word in text.lower() for word in ('error:', 'failed', 'traceback', 'warning:')):
-                  print(str(path), flush=True)
-                  print('\n'.join(text.splitlines()[-180:]), flush=True)
-          PY
+        run: python3 scripts/failure_logs.py
       - name: Install and test the generated Homebrew formula
         if: runner.arch == 'ARM64'
         run: |

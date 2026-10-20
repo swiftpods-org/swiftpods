@@ -79,6 +79,9 @@ jobs:
         run: python3 scripts/ci_signing.py setup
       - name: Verify, sign, notarize and test the final package
         run: python3 scripts/check.py --full --package dist/SwiftPods --signing-identity "$SWIFTPODS_SIGNING_IDENTITY" --notary-profile "$SWIFTPODS_NOTARY_PROFILE" --notary-keychain "$SWIFTPODS_NOTARY_KEYCHAIN"
+      - name: Show verification failure details
+        if: failure()
+        run: python3 scripts/failure_logs.py
       - name: Install and test the signed Homebrew distribution
         if: runner.arch == 'ARM64'
         run: |

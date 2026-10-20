@@ -4,6 +4,7 @@ import datetime
 import hashlib
 import json
 import platform
+import re
 import subprocess
 import sys
 import tempfile
@@ -11,6 +12,25 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def failure_excerpt(text):
+    """Keep early failures visible when a provider truncates a long test log."""
+    lines = text.splitlines()
+    pattern = re.compile(
+        r"error:|warning:|traceback|\b(?:assertionerror|runtimeerror|fatalerror)\b|Test Case .+ failed",
+        re.IGNORECASE,
+    )
+    selected = set()
+    for index, line in enumerate(lines):
+        if pattern.search(line):
+            selected.update(range(max(0, index - 2), min(len(lines), index + 3)))
+    if not selected:
+        return ""
+    indices = sorted(
+        set(sorted(selected)[:100]) | set(range(max(0, len(lines) - 30), len(lines)))
+    )
+    return "\n".join(lines[index] for index in indices)
 
 
 def source_revision():
