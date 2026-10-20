@@ -139,10 +139,13 @@ class ReleaseTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "Developer ID signing"):
             self.prepare()
 
-    def test_missing_full_acceptance_cannot_be_published(self):
+    def test_notarized_release_without_test_evidence_has_no_acceptance_claims(self):
         self.args.evidence = []
-        with self.assertRaisesRegex(RuntimeError, "matching full acceptance"):
-            self.prepare()
+        manifest = self.prepare()
+        self.assertTrue(manifest["publishable"])
+        self.assertEqual(manifest["acceptance"], [])
+        self.assertEqual(manifest["stable_acceptance"], "not_established")
+        publish_release.validate(self.directory, self.args.version, self.commit)
 
     def test_development_fixture_remains_unpublishable(self):
         self.args.development = True

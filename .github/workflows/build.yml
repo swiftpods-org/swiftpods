@@ -1,0 +1,42 @@
+name: Build SwiftPods
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13.16'
+      - uses: ./.github/actions/setup-runtime
+      - name: Build and package SwiftPods
+        run: |
+          python3 scripts/bootstrap.py
+          python3 scripts/package.py --destination dist/SwiftPods
+      - name: Archive the distribution
+        run: |
+          /usr/bin/ditto -c -k --norsrc --noextattr --noqtn --keepParent dist/SwiftPods dist/SwiftPods.zip
+          /usr/bin/shasum -a 256 dist/SwiftPods.zip > dist/SwiftPods.zip.sha256
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: swiftpods-${{ matrix.runner }}
+          path: |
+            dist/SwiftPods.zip
+            dist/SwiftPods.zip.sha256
+          if-no-files-found: error

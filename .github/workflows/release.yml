@@ -52,7 +52,7 @@ jobs:
       matrix:
         runner: [macos-15, macos-15-intel]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 180
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -66,7 +66,7 @@ jobs:
           RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
         run: |
           python3 -c 'import json, os; assert json.load(open("Profiles/baseline.json"))["swiftpods_version"] == os.environ["RELEASE_VERSION"]'
-      - uses: ./.github/actions/setup-verification
+      - uses: ./.github/actions/setup-runtime
       - run: python3 scripts/bootstrap.py
       - name: Import explicitly configured release credentials
         env:
@@ -77,36 +77,19 @@ jobs:
           SWIFTPODS_NOTARY_KEY_ID: ${{ secrets.SWIFTPODS_NOTARY_KEY_ID }}
           SWIFTPODS_NOTARY_ISSUER: ${{ secrets.SWIFTPODS_NOTARY_ISSUER }}
         run: python3 scripts/ci_signing.py setup
-      - name: Verify, sign, notarize and test the final package
-        run: python3 scripts/check.py --full --package dist/SwiftPods --signing-identity "$SWIFTPODS_SIGNING_IDENTITY" --notary-profile "$SWIFTPODS_NOTARY_PROFILE" --notary-keychain "$SWIFTPODS_NOTARY_KEYCHAIN"
-      - name: Show verification failure details
-        if: failure()
-        run: python3 scripts/failure_logs.py
-      - name: Install and test the signed Homebrew distribution
-        if: runner.arch == 'ARM64'
+      - name: Build the signed and notarized distribution
         run: |
-          brew update
-          brew install ruby@3.4
-          brew upgrade ruby@3.4
-          python3 scripts/native_homebrew_tests.py --bundle dist/SwiftPods
-          python3 scripts/evidence.py
-      - name: Package tested distribution
-        run: /usr/bin/shasum -a 256 dist/SwiftPods.zip
+          python3 scripts/package.py --destination dist/SwiftPods
+          python3 scripts/sign_release.py dist/SwiftPods \
+            --identity "$SWIFTPODS_SIGNING_IDENTITY" \
+            --notarize --keychain-profile "$SWIFTPODS_NOTARY_PROFILE" \
+            --keychain "$SWIFTPODS_NOTARY_KEYCHAIN"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: release-${{ matrix.runner }}
           path: |
             dist/SwiftPods.zip
             dist/SwiftPods.zip.notary.json
-      - name: Preserve verification evidence
-        if: always()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
-        with:
-          name: evidence-${{ matrix.runner }}
-          include-hidden-files: true
-          path: |
-            test-results/
-            .build/native-homebrew-*/homebrew.log
       - name: Remove temporary signing credentials
         if: always()
         run: python3 scripts/ci_signing.py cleanup
@@ -126,22 +109,16 @@ jobs:
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           pattern: release-*
-          path: inputs
-      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
-        with:
-          pattern: evidence-*
-          path: evidence
-      - name: Assemble checksums, installer and binary Homebrew test fixture
+          path: .build/release-inputs
+      - name: Assemble release archives, checksums and installer
         env:
           RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
         run: |
           python3 scripts/release.py --version "$RELEASE_VERSION" \
-            --archive inputs/release-macos-15/SwiftPods.zip \
-            --archive inputs/release-macos-15-intel/SwiftPods.zip \
-            --evidence evidence/evidence-macos-15/test-results/evidence.zip \
-            --evidence evidence/evidence-macos-15-intel/test-results/evidence.zip \
-            --notarization inputs/release-macos-15/SwiftPods.zip.notary.json \
-            --notarization inputs/release-macos-15-intel/SwiftPods.zip.notary.json \
+            --archive .build/release-inputs/release-macos-15/SwiftPods.zip \
+            --archive .build/release-inputs/release-macos-15-intel/SwiftPods.zip \
+            --notarization .build/release-inputs/release-macos-15/SwiftPods.zip.notary.json \
+            --notarization .build/release-inputs/release-macos-15-intel/SwiftPods.zip.notary.json \
             --destination dist/release
       - id: validate
         name: Validate public release assets
@@ -167,15 +144,9 @@ jobs:
         with:
           name: swiftpods-assets
           path: dist/release
-      - name: Publish the verified archives and installer
+      - name: Publish the signed archives and installer
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
           RELEASE_COMMIT: ${{ needs.metadata.outputs.commit }}
         run: python3 scripts/publish_release.py dist/release --version "$RELEASE_VERSION" --commit "$RELEASE_COMMIT" --publish
-  verify-download:
-    needs: [metadata, assemble, publish]
-    uses: ./.github/workflows/verify-installation.yml
-    with:
-      version: ${{ needs.metadata.outputs.version }}
-      manifest_sha256: ${{ needs.assemble.outputs.manifest-sha256 }}

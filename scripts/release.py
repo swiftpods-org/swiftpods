@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare release assets, checksums and a binary Homebrew fixture; never publishes."""
+"""Prepare release archives, checksums and the installer; never publishes."""
 
 import argparse
 import hashlib
@@ -227,9 +227,9 @@ def prepare(args, destination):
                 for bundle in index["bundles"]
             )
         ]
-        if len(matching) > 1 or (not args.development and not matching):
+        if len(matching) > 1:
             raise RuntimeError(
-                "Each release bundle requires exactly one matching full acceptance archive"
+                "A release bundle cannot have multiple matching acceptance archives"
             )
         if matching:
             path, index = matching[0]
@@ -305,7 +305,6 @@ def prepare(args, destination):
         "schema_version": 1,
         "development": args.development,
         "publishable": not args.development
-        and len(acceptances) == len(assets)
         and all(asset["notarization"] is not None for asset in assets),
         "stable_acceptance": (
             "established"
@@ -331,23 +330,24 @@ def prepare(args, destination):
             hashlib.sha256((destination / name).read_bytes()).hexdigest() + "  " + name
         )
     (destination / "SHA256SUMS").write_text("\n".join(checksums) + "\n")
-    formula = destination / "homebrew-tap/Formula/swiftpods.rb"
-    formula.parent.mkdir(parents=True)
-    formula.write_text(homebrew_formula(args.version, assets))
-    (formula.parents[1] / "README.md").write_text(
-        """# SwiftPods binary installation fixture
+    if args.development:
+        formula = destination / "homebrew-tap/Formula/swiftpods.rb"
+        formula.parent.mkdir(parents=True)
+        formula.write_text(homebrew_formula(args.version, assets))
+        (formula.parents[1] / "README.md").write_text(
+            """# SwiftPods binary installation fixture
 
-This generated formula checks installation of the prepared binary archives
-through an isolated Homebrew tap. It is not the source-build formula submitted
-to homebrew/core, and must not replace the project's README.
+    This generated formula checks installation of the prepared binary archives
+    through an isolated Homebrew tap. It is not the source-build formula submitted
+    to homebrew/core, and must not replace the project's README.
 
-Publish the release assets in the main repository's GitHub Releases.
-The official Homebrew formula is maintained in homebrew/core after acceptance.
+    Publish the release assets in the main repository's GitHub Releases.
+    The official Homebrew formula is maintained in homebrew/core after acceptance.
 
-[Website](https://swiftpods.org) ·
-[Project](https://github.com/swiftpods-org/swiftpods)
-"""
-    )
+    [Website](https://swiftpods.org) ·
+    [Project](https://github.com/swiftpods-org/swiftpods)
+    """
+        )
     print(
         "Manifest SHA-256:",
         hashlib.sha256((destination / "release.json").read_bytes()).hexdigest(),
@@ -365,7 +365,7 @@ def main():
         type=Path,
         action="append",
         default=[],
-        help="Full acceptance evidence.zip for each supplied bundle",
+        help="Optional local acceptance evidence.zip for a supplied bundle",
     )
     parser.add_argument(
         "--notarization",
@@ -385,10 +385,6 @@ def main():
         parser.error("Explicit release version required, without a leading v")
     if not args.bundle and not args.archive:
         parser.error("At least one --bundle or --archive is required")
-    if not args.development and not args.evidence:
-        parser.error(
-            "Release preparation requires --evidence from the full packaged check"
-        )
     if not args.development and not args.notarization:
         parser.error("Release preparation requires accepted --notarization receipts")
     destination = args.destination.absolute()

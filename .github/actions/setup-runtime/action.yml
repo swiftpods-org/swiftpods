@@ -1,0 +1,21 @@
+name: Select external Ruby
+description: Install the Ruby version selected by the SwiftPods runtime profile
+runs:
+  using: composite
+  steps:
+    - id: profile
+      shell: bash
+      run: |
+        python3 - <<'RUBY_PROFILE'
+        import json, os
+        from pathlib import Path
+        profile = json.loads(Path('Profiles/baseline.json').read_text())
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('ruby-version=' + profile['runtime']['minimum_version'] + '\n')
+        RUBY_PROFILE
+    - uses: ruby/setup-ruby@824c0e29fdfc7d689c191c27acc969d2d04b7dd8 # v1
+      with:
+        ruby-version: ${{ steps.profile.outputs.ruby-version }}
+        bundler: none
+    - shell: bash
+      run: echo "SWIFTPODS_RUBY=$(ruby -rrbconfig -e 'print RbConfig.ruby')" >> "$GITHUB_ENV"
