@@ -8,6 +8,41 @@ import XCTest
 #endif
 
 final class NativeWorkspaceRegressionTests: XCTestCase {
+    func testUnchangedXcodeWorkspaceKeepsItsOriginalBytesAndOwnership() throws {
+        let path = try workspace(
+            """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <Workspace
+               version = "1.0">
+               <!-- User formatting must survive installation. -->
+               <FileRef
+                  location = "group:App.xcodeproj">
+               </FileRef>
+               <FileRef
+                  location = "group:Pods/Pods.xcodeproj">
+               </FileRef>
+            </Workspace>
+
+            """)
+        let original = try Data(contentsOf: path)
+        let references = ["group:App.xcodeproj", "group:Pods/Pods.xcodeproj"]
+        for previous in [[], ["group:Pods/Pods.xcodeproj"]] {
+            let owned = try NativeWorkspace.update(path, references: references, previous: previous)
+            XCTAssertEqual(owned, previous)
+            XCTAssertEqual(try Data(contentsOf: path), original)
+        }
+    }
+
+    func testUnchangedUTF16WorkspaceKeepsItsEncodingAndBytes() throws {
+        let path = try workspace("<Workspace version=\"1.0\"/>")
+        let input =
+            "<?xml version=\"1.0\" encoding=\"UTF-16\"?><Workspace version=\"1.0\"><FileRef location=\"group:App.xcodeproj\"/></Workspace>"
+        let original = try XCTUnwrap(input.data(using: .utf16))
+        try original.write(to: path)
+        _ = try NativeWorkspace.update(path, references: ["group:App.xcodeproj"], previous: [])
+        XCTAssertEqual(try Data(contentsOf: path), original)
+    }
+
     func testLocationSeparatorsRemainBoundariesBeforeCombiningMarks() throws {
         let path = try workspace("<Workspace version=\"1.0\"/>")
         let references = ["group:\u{301}One.xcodeproj", "container:\u{301}Two.xcodeproj"]

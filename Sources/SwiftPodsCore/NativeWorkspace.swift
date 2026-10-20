@@ -52,6 +52,7 @@ enum NativeWorkspace {
         let requested = Set(references.compactMap { resolve($0, parent: container, container: container) })
         var owned: [String] = []
         var remaining = Set(previous)
+        var changed = false
         // This writer only adds direct children. Legacy receipts contain raw
         // locations, so they must never claim references inside user groups.
         for element in root.children?.compactMap({ $0 as? XMLElement }) ?? [] where element.name == "FileRef" {
@@ -64,6 +65,7 @@ enum NativeWorkspace {
                 owned.append(location)
             } else {
                 element.detach()
+                changed = true
             }
         }
         var existing = Set(
@@ -93,9 +95,10 @@ enum NativeWorkspace {
             node.addAttribute(XMLNode.attribute(withName: "location", stringValue: reference) as! XMLNode)
             root.addChild(node)
             owned.append(reference)
+            changed = true
         }
         return Update(
-            path: path, before: before, data: try xmlData(document), owned: owned.sorted())
+            path: path, before: before, data: try changed ? xmlData(document) : data, owned: owned.sorted())
     }
 
     /// Foundation emits literal attribute whitespace, which XML readers normalize to spaces.

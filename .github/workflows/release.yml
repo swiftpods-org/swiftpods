@@ -15,7 +15,7 @@ permissions:
   contents: read
 concurrency:
   group: release-${{ github.event_name == 'push' && github.ref_name || format('v{0}', inputs.version) }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' && inputs.replace_existing }}
 jobs:
   metadata:
     runs-on: ubuntu-latest
