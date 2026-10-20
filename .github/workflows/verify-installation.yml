@@ -60,17 +60,14 @@ jobs:
           assert hashlib.sha256(installer).hexdigest() == metadata['installer_sha256']
           Path('.build/install.py').write_bytes(installer)
           PY
-      - name: Install compatible external Ruby
+      - uses: ./.github/actions/setup-verification
+      - name: Install and test the accepted official Homebrew formula
+        if: inputs.verify_homebrew && runner.arch == 'ARM64'
         run: |
           set -euo pipefail
           brew update
           brew install ruby@3.4
           brew upgrade ruby@3.4
-          echo "SWIFTPODS_RUBY=$(brew --prefix ruby@3.4)/bin/ruby" >> "$GITHUB_ENV"
-      - name: Install and test the accepted official Homebrew formula
-        if: inputs.verify_homebrew
-        run: |
-          set -euo pipefail
           brew info --json=v2 --formula swiftpods > test-results/formula.json
           python3 - <<'PYTHON'
           import json, os

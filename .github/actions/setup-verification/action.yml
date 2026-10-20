@@ -1,0 +1,25 @@
+name: Prepare verification tools
+description: Select the supported external Ruby and verify runner build tools
+runs:
+  using: composite
+  steps:
+    - id: profile
+      shell: bash
+      run: |
+        python3 - <<'PY'
+        import json, os
+        from pathlib import Path
+        profile = json.loads(Path('Profiles/baseline.json').read_text())
+        with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+            output.write('ruby-version=' + profile['runtime']['minimum_version'] + '\n')
+        PY
+    - uses: ruby/setup-ruby@824c0e29fdfc7d689c191c27acc969d2d04b7dd8 # v1
+      with:
+        ruby-version: ${{ steps.profile.outputs.ruby-version }}
+        bundler: none
+    - shell: bash
+      run: |
+        echo "SWIFTPODS_RUBY=$(ruby -rrbconfig -e 'print RbConfig.ruby')" >> "$GITHUB_ENV"
+        for tool in cmake svn hg; do
+          command -v "$tool"
+        done

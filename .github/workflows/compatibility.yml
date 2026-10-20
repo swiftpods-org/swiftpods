@@ -24,12 +24,7 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.13.16'
-      - name: Install external Ruby
-        run: |
-          brew update
-          brew install ruby@3.4 cmake subversion mercurial
-          brew upgrade ruby@3.4
-          echo "SWIFTPODS_RUBY=$(brew --prefix ruby@3.4)/bin/ruby" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/setup-verification
       - name: Prepare native DSL adapter
         run: |
           set -o pipefail
@@ -50,7 +45,11 @@ jobs:
                   print('\n'.join(text.splitlines()[-180:]), flush=True)
           PY
       - name: Install and test the generated Homebrew formula
+        if: runner.arch == 'ARM64'
         run: |
+          brew update
+          brew install ruby@3.4
+          brew upgrade ruby@3.4
           python3 scripts/native_homebrew_tests.py --bundle dist/SwiftPods-${{ matrix.runner }}
           python3 scripts/evidence.py
       - name: Preserve evidence

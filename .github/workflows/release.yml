@@ -66,12 +66,7 @@ jobs:
           RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
         run: |
           python3 -c 'import json, os; assert json.load(open("Profiles/baseline.json"))["swiftpods_version"] == os.environ["RELEASE_VERSION"]'
-      - name: Install external Ruby
-        run: |
-          brew update
-          brew install ruby@3.4 cmake subversion mercurial
-          brew upgrade ruby@3.4
-          echo "SWIFTPODS_RUBY=$(brew --prefix ruby@3.4)/bin/ruby" >> "$GITHUB_ENV"
+      - uses: ./.github/actions/setup-verification
       - run: python3 scripts/bootstrap.py
       - name: Import explicitly configured release credentials
         env:
@@ -85,7 +80,11 @@ jobs:
       - name: Verify, sign, notarize and test the final package
         run: python3 scripts/check.py --full --package dist/SwiftPods --signing-identity "$SWIFTPODS_SIGNING_IDENTITY" --notary-profile "$SWIFTPODS_NOTARY_PROFILE" --notary-keychain "$SWIFTPODS_NOTARY_KEYCHAIN"
       - name: Install and test the signed Homebrew distribution
+        if: runner.arch == 'ARM64'
         run: |
+          brew update
+          brew install ruby@3.4
+          brew upgrade ruby@3.4
           python3 scripts/native_homebrew_tests.py --bundle dist/SwiftPods
           python3 scripts/evidence.py
       - name: Package tested distribution
