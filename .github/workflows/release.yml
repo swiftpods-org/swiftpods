@@ -11,11 +11,15 @@ on:
         description: Replace this release and tag with the selected source ref after building
         type: boolean
         default: false
+      cancel_only:
+        description: Cancel the active release for this version without publishing
+        type: boolean
+        default: false
 permissions:
   contents: read
 concurrency:
   group: release-${{ github.event_name == 'push' && github.ref_name || format('v{0}', inputs.version) }}
-  cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' && inputs.replace_existing }}
+  cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' && (inputs.replace_existing || inputs.cancel_only) }}
 jobs:
   metadata:
     runs-on: ubuntu-latest
@@ -33,12 +37,16 @@ jobs:
         env:
           REQUESTED_VERSION: ${{ inputs.version }}
           REPLACE_EXISTING: ${{ inputs.replace_existing }}
+          CANCEL_ONLY: ${{ inputs.cancel_only }}
         run: |
           python3 - <<'PY'
           import json, os, re, subprocess
           version = os.environ['GITHUB_REF_NAME'][1:] if os.environ['GITHUB_EVENT_NAME'] == 'push' else os.environ['REQUESTED_VERSION']
           if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?', version):
               raise RuntimeError('Invalid release version')
+          if os.environ['CANCEL_ONLY'] == 'true':
+              print('Cancelled the active release for v' + version)
+              raise SystemExit(0)
           tag = 'refs/tags/v' + version
           replace = os.environ['GITHUB_EVENT_NAME'] == 'workflow_dispatch' and os.environ['REPLACE_EXISTING'] == 'true'
           tag_object = subprocess.check_output(['git', 'rev-parse', '--verify', tag], text=True).strip() if replace else ''
@@ -58,6 +66,7 @@ jobs:
       source_ref: ${{ needs.metadata.outputs.commit }}
       release_assets: true
   build:
+    if: inputs.cancel_only != true
     needs: metadata
     strategy:
       fail-fast: false
@@ -197,6 +206,7 @@ jobs:
         if: steps.current.outputs.update == 'true'
         env:
           RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+          REPLACE_EXISTING: ${{ inputs.replace_existing }}
         run: |
           python3 scripts/prepare_integrations.py .build/release-assets/release.json
           git add Formula/swiftpods.rb lib/fastlane/plugin/swiftpods/release.json
@@ -209,4 +219,8 @@ jobs:
           if [[ -z "$remote_tag" ]]; then
             git tag "$plugin_tag"
             git push origin "refs/tags/$plugin_tag"
+          elif [[ "$REPLACE_EXISTING" == 'true' ]]; then
+            read -r tag_object tag_ref <<< "$remote_tag"
+            git tag -f "$plugin_tag"
+            git push --force-with-lease="refs/tags/$plugin_tag:$tag_object" origin "refs/tags/$plugin_tag"
           fi
