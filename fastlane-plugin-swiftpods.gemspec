@@ -20,6 +20,5 @@ Gem::Specification.new do |spec|
     'allowed_push_host' => 'https://rubygems.org'
   }
 
-  spec.add_dependency 'fastlane', '>= 2.241.1', '< 3.0'
   spec.add_development_dependency 'minitest', '~> 5.25'
 end

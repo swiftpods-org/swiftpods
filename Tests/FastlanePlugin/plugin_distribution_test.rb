@@ -27,11 +27,11 @@ class SwiftpodsPluginDistributionTest < Minitest::Test
 
   def test_gem_contains_the_action_without_the_native_engine_or_build_inputs
     specification = Gem.loaded_specs.fetch(NAME)
-    archive = ENV.fetch('SWIFTPODS_PLUGIN_GEM', File.join(ROOT, 'dist/fastlane-plugin-swiftpods.gem'))
+    archive = ENV.fetch('SWIFTPODS_PLUGIN_GEM')
     contents = Gem::Package.new(archive).contents
     assert_equal Gem::Version.new(@version), specification.version
     assert_equal specification.version.to_s, Fastlane::Swiftpods::VERSION
-    assert_equal ['fastlane'], specification.runtime_dependencies.map(&:name)
+    assert_empty specification.runtime_dependencies
     assert_equal ['lib'], specification.require_paths
     assert_includes contents, 'lib/fastlane/plugin/swiftpods.rb'
     assert_includes contents, 'lib/fastlane/plugin/swiftpods/actions/swiftpods_action.rb'
@@ -77,19 +77,22 @@ class SwiftpodsPluginDistributionTest < Minitest::Test
 
   def test_the_runner_rejects_a_successful_process_that_executes_zero_tests
     repository = File.join(@temporary, 'empty-suite')
-    ['scripts', 'dist', 'Tests/FastlanePlugin'].each do |path|
+    ['scripts', 'Tests/FastlanePlugin', 'runner-temp'].each do |path|
       FileUtils.mkdir_p(File.join(repository, path))
     end
     FileUtils.cp(File.join(ROOT, 'scripts/fastlane_plugin_tests.rb'), File.join(repository, 'scripts'))
-    archive = ENV.fetch('SWIFTPODS_PLUGIN_GEM', File.join(ROOT, 'dist/fastlane-plugin-swiftpods.gem'))
-    FileUtils.cp(archive, File.join(repository, 'dist/fastlane-plugin-swiftpods.gem'))
+    archive = ENV.fetch('SWIFTPODS_PLUGIN_GEM')
     File.write(File.join(repository, 'Tests/FastlanePlugin/empty_test.rb'), "require 'minitest/autorun'\n")
     output, status = Bundler.with_unbundled_env do
-      Open3.capture2e(RbConfig.ruby, File.join(repository, 'scripts/fastlane_plugin_tests.rb'))
+      Open3.capture2e(
+        { 'SWIFTPODS_PLUGIN_GEM' => archive, 'TMPDIR' => File.join(repository, 'runner-temp') },
+        RbConfig.ruby, File.join(repository, 'scripts/fastlane_plugin_tests.rb')
+      )
     end
     refute status.success?, output
     assert_includes output, '0 runs, 0 assertions'
     assert_includes output, 'nonempty suite'
+    assert_empty Dir.children(File.join(repository, 'runner-temp'))
   end
 
   private
@@ -100,7 +103,7 @@ class SwiftpodsPluginDistributionTest < Minitest::Test
     File.write(File.join(project, 'fastlane/Pluginfile'), declaration)
     File.write(File.join(project, 'Gemfile'), <<~RUBY)
       source 'https://rubygems.org'
-      gem 'fastlane'
+      gem 'fastlane', #{Gem.loaded_specs.fetch('fastlane').version.to_s.inspect}
       eval_gemfile File.join(__dir__, 'fastlane/Pluginfile')
     RUBY
     File.write(File.join(project, 'Podfile'), "platform :ios, '15.4'\n")

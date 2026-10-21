@@ -99,6 +99,10 @@ jobs:
         with:
           ref: ${{ needs.metadata.outputs.commit }}
           persist-credentials: false
+      - name: Create temporary build directory
+        run: |
+          build_root="$(mktemp -d "$RUNNER_TEMP/swiftpods-release-build.XXXXXX")"
+          echo "SWIFTPODS_BUILD_ROOT=$build_root" >> "$GITHUB_ENV"
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.13.16'
@@ -108,7 +112,6 @@ jobs:
         run: |
           python3 -c 'import json, os; assert json.load(open("Profiles/baseline.json"))["swiftpods_version"] == os.environ["RELEASE_VERSION"]'
       - uses: ./.github/actions/setup-runtime
-      - run: python3 scripts/bootstrap.py
       - name: Import explicitly configured release credentials
         env:
           SWIFTPODS_SIGNING_P12: ${{ secrets.SWIFTPODS_SIGNING_P12 }}
@@ -120,8 +123,8 @@ jobs:
         run: python3 scripts/ci_signing.py setup
       - name: Build the signed and notarized distribution
         run: |
-          python3 scripts/package.py --destination dist/SwiftPods
-          python3 scripts/sign_release.py dist/SwiftPods \
+          python3 scripts/package.py --destination "$SWIFTPODS_BUILD_ROOT/SwiftPods"
+          python3 scripts/sign_release.py "$SWIFTPODS_BUILD_ROOT/SwiftPods" \
             --identity "$SWIFTPODS_SIGNING_IDENTITY" \
             --notarize --keychain-profile "$SWIFTPODS_NOTARY_PROFILE" \
             --keychain "$SWIFTPODS_NOTARY_KEYCHAIN"
@@ -129,11 +132,17 @@ jobs:
         with:
           name: release-${{ matrix.runner }}
           path: |
-            dist/SwiftPods.zip
-            dist/SwiftPods.zip.notary.json
+            ${{ env.SWIFTPODS_BUILD_ROOT }}/SwiftPods.zip
+            ${{ env.SWIFTPODS_BUILD_ROOT }}/SwiftPods.zip.notary.json
       - name: Remove temporary signing credentials
         if: always()
         run: python3 scripts/ci_signing.py cleanup
+      - name: Remove temporary build files
+        if: always()
+        run: |
+          if [[ -n "${SWIFTPODS_BUILD_ROOT:-}" ]]; then
+            rm -rf -- "$SWIFTPODS_BUILD_ROOT"
+          fi
   assemble:
     needs: [metadata, build]
     runs-on: macos-15
@@ -144,33 +153,43 @@ jobs:
         with:
           ref: ${{ needs.metadata.outputs.commit }}
           persist-credentials: false
+      - name: Create temporary build directory
+        run: |
+          build_root="$(mktemp -d "$RUNNER_TEMP/swiftpods-release-assets.XXXXXX")"
+          echo "SWIFTPODS_BUILD_ROOT=$build_root" >> "$GITHUB_ENV"
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.13.16'
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           pattern: release-*
-          path: .build/release-inputs
+          path: ${{ env.SWIFTPODS_BUILD_ROOT }}/release-inputs
       - name: Assemble release archives, checksums and installer
         env:
           RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
         run: |
           python3 scripts/release.py --version "$RELEASE_VERSION" \
-            --archive .build/release-inputs/release-macos-15/SwiftPods.zip \
-            --archive .build/release-inputs/release-macos-15-intel/SwiftPods.zip \
-            --notarization .build/release-inputs/release-macos-15/SwiftPods.zip.notary.json \
-            --notarization .build/release-inputs/release-macos-15-intel/SwiftPods.zip.notary.json \
-            --destination dist/release
+            --archive "$SWIFTPODS_BUILD_ROOT/release-inputs/release-macos-15/SwiftPods.zip" \
+            --archive "$SWIFTPODS_BUILD_ROOT/release-inputs/release-macos-15-intel/SwiftPods.zip" \
+            --notarization "$SWIFTPODS_BUILD_ROOT/release-inputs/release-macos-15/SwiftPods.zip.notary.json" \
+            --notarization "$SWIFTPODS_BUILD_ROOT/release-inputs/release-macos-15-intel/SwiftPods.zip.notary.json" \
+            --destination "$SWIFTPODS_BUILD_ROOT/release"
       - id: validate
         name: Validate public release assets
         env:
           RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
           RELEASE_COMMIT: ${{ needs.metadata.outputs.commit }}
-        run: python3 scripts/publish_release.py dist/release --version "$RELEASE_VERSION" --commit "$RELEASE_COMMIT"
+        run: python3 scripts/publish_release.py "$SWIFTPODS_BUILD_ROOT/release" --version "$RELEASE_VERSION" --commit "$RELEASE_COMMIT"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: swiftpods-assets
-          path: dist/release/
+          path: ${{ env.SWIFTPODS_BUILD_ROOT }}/release/
+      - name: Remove temporary build files
+        if: always()
+        run: |
+          if [[ -n "${SWIFTPODS_BUILD_ROOT:-}" ]]; then
+            rm -rf -- "$SWIFTPODS_BUILD_ROOT"
+          fi
   publish:
     needs: [metadata, assemble, plugin]
     runs-on: ubuntu-latest
@@ -181,10 +200,14 @@ jobs:
         with:
           ref: ${{ needs.metadata.outputs.commit }}
           persist-credentials: false
+      - name: Create temporary build directory
+        run: |
+          build_root="$(mktemp -d "$RUNNER_TEMP/swiftpods-release-publish.XXXXXX")"
+          echo "SWIFTPODS_BUILD_ROOT=$build_root" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           name: swiftpods-assets
-          path: dist/release
+          path: ${{ env.SWIFTPODS_BUILD_ROOT }}/release
       - name: Publish the signed archives and installer
         env:
           GH_TOKEN: ${{ github.token }}
@@ -196,7 +219,13 @@ jobs:
           if [[ -n "$REPLACE_TAG_OBJECT" ]]; then
             options+=(--replace-tag-object "$REPLACE_TAG_OBJECT")
           fi
-          python3 scripts/publish_release.py dist/release --version "$RELEASE_VERSION" --commit "$RELEASE_COMMIT" --publish "${options[@]}"
+          python3 scripts/publish_release.py "$SWIFTPODS_BUILD_ROOT/release" --version "$RELEASE_VERSION" --commit "$RELEASE_COMMIT" --publish "${options[@]}"
+      - name: Remove temporary build files
+        if: always()
+        run: |
+          if [[ -n "${SWIFTPODS_BUILD_ROOT:-}" ]]; then
+            rm -rf -- "$SWIFTPODS_BUILD_ROOT"
+          fi
   update-integrations:
     needs: [metadata, publish]
     runs-on: ubuntu-latest
@@ -206,10 +235,14 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: main
+      - name: Create temporary build directory
+        run: |
+          build_root="$(mktemp -d "$RUNNER_TEMP/swiftpods-release-integrations.XXXXXX")"
+          echo "SWIFTPODS_BUILD_ROOT=$build_root" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           name: swiftpods-assets
-          path: .build/release-assets
+          path: ${{ env.SWIFTPODS_BUILD_ROOT }}/release-assets
       - id: current
         name: Keep the tap aligned with the current release series
         env:
@@ -228,7 +261,7 @@ jobs:
           RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
           REPLACE_EXISTING: ${{ needs.metadata.outputs.replace }}
         run: |
-          python3 scripts/prepare_integrations.py .build/release-assets/release.json
+          python3 scripts/prepare_integrations.py "$SWIFTPODS_BUILD_ROOT/release-assets/release.json"
           git add Formula/swiftpods.rb lib/fastlane/plugin/swiftpods/release.json
           if ! git diff --cached --quiet; then
             git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'Update Homebrew and Fastlane release pins'
@@ -243,4 +276,10 @@ jobs:
             read -r tag_object tag_ref <<< "$remote_tag"
             git tag -f "$plugin_tag"
             git push --force-with-lease="refs/tags/$plugin_tag:$tag_object" origin "refs/tags/$plugin_tag"
+          fi
+      - name: Remove temporary build files
+        if: always()
+        run: |
+          if [[ -n "${SWIFTPODS_BUILD_ROOT:-}" ]]; then
+            rm -rf -- "$SWIFTPODS_BUILD_ROOT"
           fi

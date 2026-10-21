@@ -41,20 +41,29 @@ jobs:
         with:
           ref: ${{ inputs.source_ref || github.sha }}
           persist-credentials: false
+      - name: Create temporary build directory
+        run: |
+          build_root="$(mktemp -d "$RUNNER_TEMP/swiftpods-plugin.XXXXXX")"
+          echo "SWIFTPODS_BUILD_ROOT=$build_root" >> "$GITHUB_ENV"
       - uses: ./.github/actions/setup-runtime
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         if: inputs.release_assets
         with:
           name: swiftpods-assets
-          path: .build/release-assets
+          path: ${{ env.SWIFTPODS_BUILD_ROOT }}/release-assets
       - name: Pin the assembled CLI release
         if: inputs.release_assets
-        run: python3 scripts/prepare_integrations.py .build/release-assets/release.json
+        run: python3 scripts/prepare_integrations.py "$SWIFTPODS_BUILD_ROOT/release-assets/release.json"
       - name: Build the plugin package
         run: |
-          mkdir -p dist
-          gem build fastlane-plugin-swiftpods.gemspec --strict --output dist/fastlane-plugin-swiftpods.gem
+          gem build fastlane-plugin-swiftpods.gemspec --strict --output "$SWIFTPODS_BUILD_ROOT/fastlane-plugin-swiftpods.gem"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: fastlane-plugin-swiftpods
-          path: dist/fastlane-plugin-swiftpods.gem
+          path: ${{ env.SWIFTPODS_BUILD_ROOT }}/fastlane-plugin-swiftpods.gem
+      - name: Remove temporary build files
+        if: always()
+        run: |
+          if [[ -n "${SWIFTPODS_BUILD_ROOT:-}" ]]; then
+            rm -rf -- "$SWIFTPODS_BUILD_ROOT"
+          fi

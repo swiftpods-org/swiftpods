@@ -6,6 +6,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -82,8 +83,44 @@ class VerificationStages:
                 self.reports.append(report)
 
 
-@termination_signals()
-def main():
+def check_package(run, args):
+    run([sys.executable, "scripts/package.py", "--destination", args.package])
+    if args.signing_identity:
+        command = [
+            sys.executable,
+            "scripts/sign_release.py",
+            args.package,
+            "--identity",
+            args.signing_identity,
+        ]
+        if args.notary_profile:
+            command += ["--notarize", "--keychain-profile", args.notary_profile]
+            if args.notary_keychain:
+                command += ["--keychain", args.notary_keychain]
+        run(command)
+    run(
+        [sys.executable, "scripts/native_distribution_tests.py", args.package],
+        "native-distribution.json",
+    )
+    if args.full:
+        for name in ["variant", "configuration", "layout", "ui"]:
+            report = (
+                "native-packaged-"
+                + ("variants" if name == "variant" else name)
+                + ".json"
+            )
+            run(
+                [
+                    sys.executable,
+                    "scripts/native_" + name + "_tests.py",
+                    "--bundle",
+                    args.package,
+                ],
+                report,
+            )
+
+
+def main(workspace):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--full",
@@ -98,7 +135,13 @@ def main():
     parser.add_argument(
         "--reference-gem-home", type=Path, default=ROOT / ".build/reference-gems"
     )
-    parser.add_argument("--package", type=Path)
+    parser.add_argument(
+        "--package",
+        nargs="?",
+        const=True,
+        type=Path,
+        help="Check a temporary package, or export it to an explicitly supplied path",
+    )
     parser.add_argument("--external-evidence", type=Path)
     parser.add_argument("--require-stable", action="store_true")
     parser.add_argument(
@@ -116,6 +159,8 @@ def main():
         help="Isolated fixture processes after the build finishes",
     )
     args = parser.parse_args()
+    if args.package is True:
+        args.package = workspace / "SwiftPods"
     if not 1 <= args.jobs <= 8:
         parser.error("--jobs must be between 1 and 8")
     if args.full and args.skip_apple:
@@ -135,6 +180,7 @@ def main():
     verification = VerificationStages()
     stages, reports, run = verification.stages, verification.reports, verification.run
 
+    run([sys.executable, "scripts/package_tests.py"])
     run([sys.executable, "scripts/bootstrap.py"])
     run([sys.executable, "scripts/unit_tests.py"], "native-units.json")
     run([sys.executable, "scripts/ruby_runtime_tests.py"])
@@ -186,40 +232,7 @@ def main():
                 future.cancel()
             raise
     if args.package:
-        run([sys.executable, "scripts/package.py", "--destination", args.package])
-        if args.signing_identity:
-            command = [
-                sys.executable,
-                "scripts/sign_release.py",
-                args.package,
-                "--identity",
-                args.signing_identity,
-            ]
-            if args.notary_profile:
-                command += ["--notarize", "--keychain-profile", args.notary_profile]
-                if args.notary_keychain:
-                    command += ["--keychain", args.notary_keychain]
-            run(command)
-        run(
-            [sys.executable, "scripts/native_distribution_tests.py", args.package],
-            "native-distribution.json",
-        )
-        if args.full:
-            for name in ["variant", "configuration", "layout", "ui"]:
-                report = (
-                    "native-packaged-"
-                    + ("variants" if name == "variant" else name)
-                    + ".json"
-                )
-                run(
-                    [
-                        sys.executable,
-                        "scripts/native_" + name + "_tests.py",
-                        "--bundle",
-                        args.package,
-                    ],
-                    report,
-                )
+        check_package(run, args)
     aggregate = collect(reports, args.external_evidence)
     aggregate.update(
         stages=stages, full=args.full, apple_integration_omitted=args.skip_apple
@@ -234,21 +247,27 @@ def main():
     print("Verification passed; stable acceptance:", aggregate["stable_acceptance"])
 
 
-if __name__ == "__main__":
-    execute(main, "check.json")
-    if "--full" in sys.argv and any(
-        argument == "--package" or argument.startswith("--package=")
-        for argument in sys.argv[1:]
-    ):
-        from evidence import export
+@termination_signals()
+def run_checks():
+    with tempfile.TemporaryDirectory(prefix="swiftpods-check-") as temporary:
+        execute(lambda: main(Path(temporary)), "check.json")
+        if "--full" in sys.argv and any(
+            argument == "--package" or argument.startswith("--package=")
+            for argument in sys.argv[1:]
+        ):
+            from evidence import export
 
-        try:
-            export(ROOT / "test-results/evidence.zip")
-        except BaseException as error:
-            path = ROOT / "test-results/check.json"
-            report = json.loads(path.read_text())
-            report.update(
-                status="failed", error="Evidence export failed: " + str(error)
-            )
-            path.write_text(json.dumps(report, indent=2) + "\n")
-            raise
+            try:
+                export(ROOT / "test-results/evidence.zip")
+            except BaseException as error:
+                path = ROOT / "test-results/check.json"
+                report = json.loads(path.read_text())
+                report.update(
+                    status="failed", error="Evidence export failed: " + str(error)
+                )
+                path.write_text(json.dumps(report, indent=2) + "\n")
+                raise
+
+
+if __name__ == "__main__":
+    run_checks()
