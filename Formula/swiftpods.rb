@@ -3,10 +3,10 @@ class Swiftpods < Formula
   homepage "https://swiftpods.org"
   if Hardware::CPU.arm?
     url "https://github.com/swiftpods-org/swiftpods/releases/download/v0.1.0/swiftpods-0.1.0-macos-13.0-arm64.zip"
-    sha256 "daaf66f8a68c4f7daba614278ae0607c2eff7d2b6029e9dd86d52f4daa867679"
+    sha256 "63c010d6658de024d92ef56c7895b3bbebd22881ca11a7e04221477237d2c9d0"
   else
     url "https://github.com/swiftpods-org/swiftpods/releases/download/v0.1.0/swiftpods-0.1.0-macos-13.0-x86_64.zip"
-    sha256 "2436cd0a02ecca6a144ec48ea65e4db27b9a934f811e44f2608b7947889129e8"
+    sha256 "778ed6e1275f2af7990cff2f432082afac1fdaa5622c3871932514359351caaa"
   end
   version "0.1.0"
   license "MIT"
