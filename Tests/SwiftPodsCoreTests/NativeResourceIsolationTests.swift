@@ -54,6 +54,54 @@ final class NativeResourceIsolationTests: XCTestCase {
         }
     }
 
+    func testResourceBundlePlistsOmitExecutablesAcrossPlatformsAndLinkageModes() throws {
+        for platform in ["osx", "ios"] {
+            for mode: String? in [nil, "static", "dynamic"] {
+                let root = try directory(["asset.txt"])
+                let spec = try NativeSpec(
+                    data: [
+                        "name": "Kit", "version": "1.0", "resources": "asset.txt",
+                        "resource_bundles": ["Privacy": "asset.txt"], "info_plist": ["Author": "Fixture"],
+                        "appspecs": [["name": "Example", "resource_bundles": ["AppResources": "asset.txt"]]],
+                        "testspecs": [["name": "Checks", "resource_bundles": ["TestResources": "asset.txt"]]],
+                    ], directory: root)
+                let engine = try engine(
+                    root, specs: [spec],
+                    dependencies: [["name": "Kit", "options": ["appspecs": ["Example"], "testspecs": ["Checks"]]]],
+                    platform: platform, mode: mode)
+                var resourceCount = 0
+                for target in engine.graph.objects.values {
+                    guard let type = target["productType"] as? String,
+                        type == "com.apple.product-type.bundle" || type == "com.apple.product-type.application"
+                            || type == "com.apple.product-type.bundle.unit-test"
+                            || type == "com.apple.product-type.framework"
+                    else { continue }
+                    let list = try XCTUnwrap(target["buildConfigurationList"] as? String)
+                    let configurations = try XCTUnwrap(engine.graph.objects[list]?["buildConfigurations"] as? [String])
+                    for id in configurations {
+                        let configuration = try XCTUnwrap(engine.graph.objects[id])
+                        let settings = try NativeBuildSettings.resolvedScopes(
+                            configuration, graph: engine.graph, targetName: target["name"] as? String
+                        ).targetScope
+                        let path = try XCTUnwrap(settings.expandedValue("INFOPLIST_FILE", undefinedAsEmpty: true))
+                        let plist = try XCTUnwrap(
+                            PropertyListSerialization.propertyList(
+                                from: Data(contentsOf: URL(fileURLWithPath: path)), format: nil) as? [String: Any])
+                        XCTAssertEqual(try settings.expandedValue("GENERATE_INFOPLIST_FILE"), "NO")
+                        if type == "com.apple.product-type.bundle" {
+                            XCTAssertNil(plist["CFBundleExecutable"])
+                            XCTAssertEqual(plist["CFBundlePackageType"] as? String, "BNDL")
+                        } else {
+                            XCTAssertEqual(plist["CFBundleExecutable"] as? String, "$(EXECUTABLE_NAME)")
+                        }
+                    }
+                    if type == "com.apple.product-type.bundle" { resourceCount += 1 }
+                }
+                XCTAssertEqual(resourceCount, mode == "dynamic" ? 3 : 4)
+            }
+        }
+    }
+
     func testOnDemandExclusionsStayWithTheirDeclaringSubspec() throws {
         for platform in ["osx", "ios"] {
             for mode: String? in [nil, "static", "dynamic"] {

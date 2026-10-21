@@ -268,6 +268,7 @@ extension NativeXcode {
             ]) { _, new in new }
             bundleSettings["CONFIGURATION_BUILD_DIR"] =
                 "$(BUILD_DIR)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)/" + targetName
+            try resourceBundleInfoPlist(bundleLabel, settings: &bundleSettings)
             let bundleTarget = graph.add(
                 "resource-bundle-target:" + bundleIdentity,
                 [

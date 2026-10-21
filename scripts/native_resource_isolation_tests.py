@@ -42,11 +42,19 @@ def build(
         fixture.root / (label + "-" + configuration + ".log"),
         env=fixture.env,
     )
-    return (
+    products = (
         fixture_derived_data(parent)
         / "Build/Products"
         / (configuration + ("-iphoneos" if mobile else ""))
     )
+    for bundle in products.rglob("*.bundle"):
+        info = bundle / "Info.plist"
+        if not info.is_file():
+            info = bundle / "Contents/Info.plist"
+        plist = plistlib.loads(info.read_bytes())
+        assert "CFBundleExecutable" not in plist, (info, plist)
+        assert plist["CFBundlePackageType"] == "BNDL", (info, plist)
+    return products
 
 
 def install_twice(fixture, work, selected):

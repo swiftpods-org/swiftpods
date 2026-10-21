@@ -38,6 +38,7 @@ extension NativeXcode {
             settings["PRODUCT_NAME"] = name
             settings["PRODUCT_BUNDLE_IDENTIFIER"] = "org.swiftpods.resources." + NativePBX.identifier(key).lowercased()
             settings["DEFINES_MODULE"] = "NO"
+            try resourceBundleInfoPlist(name, settings: &settings)
             let list = configList(name, settings: settings)
             let eligible = configured.values.reduce(into: Set<String>()) { $0.formUnion($1) }
             for config in graph.objects[list]?["buildConfigurations"] as? [String] ?? [] {

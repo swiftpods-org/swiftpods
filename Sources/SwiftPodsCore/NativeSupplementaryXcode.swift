@@ -333,6 +333,7 @@ extension NativeXcode {
             bundleSettings["PRODUCT_BUNDLE_IDENTIFIER"] = "org.swiftpods.$(PRODUCT_NAME:rfc1034identifier)"
             bundleSettings["CONFIGURATION_BUILD_DIR"] =
                 "$(BUILD_DIR)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)/" + bundleLabel
+            try resourceBundleInfoPlist(bundleLabel, settings: &bundleSettings)
             productBuildPaths[product] = bundleLabel + "/" + bundle + ".bundle"
             productVariants[product] = currentVariant
             let target = graph.add(
