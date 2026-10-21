@@ -1,7 +1,7 @@
 name: Release SwiftPods
 on:
   push:
-    tags: ['v*']
+    tags: ['v*', 'replace-v*']
   workflow_dispatch:
     inputs:
       version:
@@ -18,15 +18,19 @@ on:
 permissions:
   contents: read
 concurrency:
-  group: release-${{ github.event_name == 'push' && github.ref_name || format('v{0}', inputs.version) }}
-  cancel-in-progress: ${{ github.event_name == 'workflow_dispatch' && (inputs.replace_existing || inputs.cancel_only) }}
+  group: release
+  cancel-in-progress: ${{ startsWith(github.ref_name, 'replace-v') || (github.event_name == 'workflow_dispatch' && (inputs.replace_existing || inputs.cancel_only)) }}
 jobs:
   metadata:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
     outputs:
       version: ${{ steps.resolve.outputs.version }}
       commit: ${{ steps.resolve.outputs.commit }}
       replace-tag-object: ${{ steps.resolve.outputs.replace-tag-object }}
+      replace: ${{ steps.resolve.outputs.replace }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -41,14 +45,16 @@ jobs:
         run: |
           python3 - <<'PY'
           import json, os, re, subprocess
-          version = os.environ['GITHUB_REF_NAME'][1:] if os.environ['GITHUB_EVENT_NAME'] == 'push' else os.environ['REQUESTED_VERSION']
+          pushed = os.environ['GITHUB_EVENT_NAME'] == 'push'
+          replacement_tag = pushed and os.environ['GITHUB_REF_NAME'].startswith('replace-v')
+          version = os.environ['GITHUB_REF_NAME'].removeprefix('replace-')[1:] if pushed else os.environ['REQUESTED_VERSION']
           if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?', version):
               raise RuntimeError('Invalid release version')
           if os.environ['CANCEL_ONLY'] == 'true':
               print('Cancelled the active release for v' + version)
               raise SystemExit(0)
           tag = 'refs/tags/v' + version
-          replace = os.environ['GITHUB_EVENT_NAME'] == 'workflow_dispatch' and os.environ['REPLACE_EXISTING'] == 'true'
+          replace = replacement_tag or (not pushed and os.environ['REPLACE_EXISTING'] == 'true')
           tag_object = subprocess.check_output(['git', 'rev-parse', '--verify', tag], text=True).strip() if replace else ''
           source = os.environ['GITHUB_SHA'] if replace else tag + '^{commit}'
           commit = subprocess.check_output(['git', 'rev-parse', '--verify', source], text=True).strip()
@@ -58,7 +64,21 @@ jobs:
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write('version=' + version + '\ncommit=' + commit + '\n')
               output.write('replace-tag-object=' + tag_object + '\n')
+              output.write('replace=' + str(replace).lower() + '\n')
           PY
+      - name: Cancel superseded release builds
+        if: steps.resolve.outputs.replace == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          runs=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release.yml/runs?status=in_progress" --jq '.workflow_runs[].id')
+          for run_id in $runs; do
+            if [[ "$run_id" == "$GITHUB_RUN_ID" ]]; then continue; fi
+            if ! gh api --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/cancel"; then
+              status=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id" --jq '.status')
+              if [[ "$status" != 'completed' ]]; then exit 1; fi
+            fi
+          done
   plugin:
     needs: [metadata, assemble]
     uses: ./.github/workflows/fastlane-plugin.yml
@@ -206,7 +226,7 @@ jobs:
         if: steps.current.outputs.update == 'true'
         env:
           RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
-          REPLACE_EXISTING: ${{ inputs.replace_existing }}
+          REPLACE_EXISTING: ${{ needs.metadata.outputs.replace }}
         run: |
           python3 scripts/prepare_integrations.py .build/release-assets/release.json
           git add Formula/swiftpods.rb lib/fastlane/plugin/swiftpods/release.json
