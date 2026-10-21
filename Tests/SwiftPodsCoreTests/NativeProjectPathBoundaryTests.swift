@@ -132,6 +132,61 @@ final class NativeProjectPathBoundaryTests: XCTestCase {
         XCTAssertNotNil(files[name + ".xcodeproj/project.pbxproj"])
     }
 
+    func testMigratedCocoaPodsProductsSurviveRepeatedProjectGeneration() throws {
+        let root = try directory()
+        // CocoaPods' deterministic target UUID generator uses full MD5 digests.
+        let legacyProduct = "ABCDEF0123456789ABCDEF0123456789"
+        let previous = try NativePBX(root.appendingPathComponent("Pods/Pods.xcodeproj/project.pbxproj"))
+        previous.objects[legacyProduct] = [
+            "isa": "PBXFileReference", "path": "libPods-App.a", "sourceTree": "BUILT_PRODUCTS_DIR",
+        ]
+        _ = previous.add("legacy-target", ["isa": "PBXNativeTarget", "productReference": legacyProduct])
+        try previous.save()
+        let spec = try NativeSpec(data: ["name": "Kit", "version": "1.0"], directory: root)
+        let request = try NativeDependency(["name": "Kit"], platform: "osx", deployment: "13.0")
+        let manifest: [String: Any] = [
+            "targets": [
+                [
+                    "name": "App", "platform": ["name": "osx", "deployment_target": "13.0"],
+                    "dependencies": [["name": "Kit"]],
+                ]
+            ]
+        ]
+        var receipts: [Data] = []
+        for _ in 0..<3 {
+            let engine = try NativeXcode(
+                project: root, manifest: manifest,
+                resolution: NativeResolution(specs: ["Kit": spec], requests: [request]), integrateUserProjects: false)
+            try engine.generate()
+            _ = try engine.savePods()
+            let inventory = try NativeProjectInventory.load(
+                engine.projectInventoryURL, root: root.appendingPathComponent("Pods"))
+            let products = try XCTUnwrap(inventory["products"] as? [String])
+            XCTAssertTrue(products.contains(legacyProduct))
+            XCTAssertTrue(products.contains { $0.count == 24 })
+            receipts.append(try Data(contentsOf: engine.projectInventoryURL))
+        }
+        XCTAssertEqual(receipts[0], receipts[1])
+        XCTAssertEqual(receipts[1], receipts[2])
+    }
+
+    func testInventoryRejectsMalformedProductIdentifiers() throws {
+        let root = try directory()
+        let receipt = root.appendingPathComponent("inventory.json")
+        for product in [
+            String(repeating: "A", count: 23), String(repeating: "A", count: 25),
+            String(repeating: "A", count: 31), String(repeating: "A", count: 33),
+            String(repeating: "G", count: 32), String(repeating: "A", count: 24) + "\n",
+        ] {
+            let bytes = try jsonData(["schema_version": 1, "products": [product], "files": [String: String]()])
+            try bytes.write(to: receipt)
+            XCTAssertThrowsError(try NativeProjectInventory.load(receipt, root: root)) {
+                XCTAssertEqual(($0 as? Diagnostic)?.code, "SP-XCODE-INVENTORY")
+            }
+            XCTAssertEqual(try Data(contentsOf: receipt), bytes)
+        }
+    }
+
     func testMissingGeneratedUnicodeXcconfigsRemainDeferred() throws {
         let root = try directory()
         let missing = root.appendingPathComponent("\u{301}Kit/debug.xcconfig")

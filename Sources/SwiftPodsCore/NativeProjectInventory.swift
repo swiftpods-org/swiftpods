@@ -25,7 +25,10 @@ enum NativeProjectInventory {
         let value = try readObject(url)
         guard value["schema_version"] as? Int == 1, let files = value["files"] as? [String: String],
             let products = value["products"] as? [String],
-            products.allSatisfy({ $0.range(of: #"\A[A-Fa-f0-9]{24}\z"#, options: .regularExpression) != nil })
+            // CocoaPods uses 32-character deterministic product IDs; SwiftPods uses 24.
+            products.allSatisfy({
+                $0.range(of: #"\A(?:[A-Fa-f0-9]{24}|[A-Fa-f0-9]{32})\z"#, options: .regularExpression) != nil
+            })
         else { throw Diagnostic("SP-XCODE-INVENTORY", stage: "integrate", "Invalid project inventory", file: url.path) }
         for (relative, hash) in files {
             _ = try path(relative, root: root)
