@@ -4,6 +4,8 @@ on:
     branches: ['**']
     paths:
       - 'lib/**'
+      - 'scripts/install.py'
+      - 'scripts/prepare_integrations.py'
       - 'fastlane-plugin-swiftpods.gemspec'
       - 'Profiles/baseline.json'
       - 'docs/Fastlane.md'
@@ -12,6 +14,8 @@ on:
   pull_request:
     paths:
       - 'lib/**'
+      - 'scripts/install.py'
+      - 'scripts/prepare_integrations.py'
       - 'fastlane-plugin-swiftpods.gemspec'
       - 'Profiles/baseline.json'
       - 'docs/Fastlane.md'
@@ -23,6 +27,9 @@ on:
       source_ref:
         type: string
         required: true
+      release_assets:
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -35,6 +42,14 @@ jobs:
           ref: ${{ inputs.source_ref || github.sha }}
           persist-credentials: false
       - uses: ./.github/actions/setup-runtime
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        if: inputs.release_assets
+        with:
+          name: swiftpods-assets
+          path: .build/release-assets
+      - name: Pin the assembled CLI release
+        if: inputs.release_assets
+        run: python3 scripts/prepare_integrations.py .build/release-assets/release.json
       - name: Build the plugin package
         run: |
           mkdir -p dist

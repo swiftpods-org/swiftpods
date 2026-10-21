@@ -10,11 +10,11 @@ Declare both for your Apple project, install dependencies, and build with Xcode.
 
 ## Installation
 
-Check [downloads](https://swiftpods.org/downloads/) for current release and
-Homebrew availability, or [build from source](docs/Development.md).
+Install from the SwiftPods Homebrew tap, or [build from source](docs/Development.md).
 
 ```sh
-brew install swiftpods
+brew tap swiftpods-org/swiftpods https://github.com/swiftpods-org/swiftpods.git
+brew install swiftpods-org/swiftpods/swiftpods
 ```
 
 Homebrew installs a compatible Ruby as a separate dependency.
@@ -22,7 +22,7 @@ Homebrew installs a compatible Ruby as a separate dependency.
 Upgrade with:
 
 ```sh
-brew upgrade swiftpods
+brew upgrade swiftpods-org/swiftpods/swiftpods
 ```
 
 ## Getting started

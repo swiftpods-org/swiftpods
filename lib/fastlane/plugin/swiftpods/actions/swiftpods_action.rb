@@ -1,4 +1,5 @@
 require 'fastlane/action'
+require_relative '../helper/executable'
 
 module Fastlane
   module Actions
@@ -10,6 +11,7 @@ module Fastlane
         UI.user_error!('SwiftPods requires a file named Podfile') unless File.basename(podfile) == 'Podfile'
 
         executable = params[:executable]
+        executable ||= Fastlane::Swiftpods::Executable.new.resolve(offline: params[:offline])
         executable = File.expand_path(executable) if executable.include?(File::SEPARATOR)
         command = [executable, 'install']
         command << '--clean-install' if params[:clean_install]
@@ -36,7 +38,7 @@ module Fastlane
             env_name: 'SWIFTPODS_EXECUTABLE',
             description: 'SwiftPods executable path or command name',
             type: String,
-            default_value: 'swiftpods'
+            optional: true
           ),
           FastlaneCore::ConfigItem.new(
             key: :clean_install,

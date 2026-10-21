@@ -84,33 +84,47 @@ def homebrew_formula(version, assets):
         "class Swiftpods < Formula",
         '  desc "Dependency manager for Apple platform projects"',
         '  homepage "https://swiftpods.org"',
-        '  license "MIT"',
+    ]
+    if len(selected) == 1:
+        asset = next(iter(selected.values()))
+        lines += [
+            "  url " + json.dumps(asset["url"]),
+            "  sha256 " + json.dumps(asset["sha256"]),
+        ]
+    else:
+        lines += [
+            "  if Hardware::CPU.arm?",
+            "    url " + json.dumps(selected["arm64"]["url"]),
+            "    sha256 " + json.dumps(selected["arm64"]["sha256"]),
+            "  else",
+            "    url " + json.dumps(selected["x86_64"]["url"]),
+            "    sha256 " + json.dumps(selected["x86_64"]["sha256"]),
+            "  end",
+        ]
+    lines += [
         "  version " + json.dumps(version),
+        '  license "MIT"',
+        "",
         "  depends_on :macos",
         '  depends_on "ruby"',
-        '  skip_clean "libexec"',
     ]
     if len(selected) == 1:
         lines += [
             "  depends_on arch: :" + ("arm64" if "arm64" in selected else "x86_64")
         ]
-    for architecture, condition in [("arm64", "on_arm"), ("x86_64", "on_intel")]:
-        if architecture not in selected:
-            continue
-        asset = selected[architecture]
-        lines += [
-            "  " + condition + " do",
-            "    url " + json.dumps(asset["url"]),
-            "    sha256 " + json.dumps(asset["sha256"]),
-            "  end",
-        ]
+    lines += ["", '  skip_clean "libexec"']
     floors = {
         architecture: asset["minimum_macos"] for architecture, asset in selected.items()
     }
     lines += [
         "",
         "  def install",
-        "    minimum = " + repr(floors).replace("'", '"').replace(": ", " => "),
+        "    minimum = { "
+        + ", ".join(
+            json.dumps(key) + " => " + json.dumps(value)
+            for key, value in floors.items()
+        )
+        + " }",
         '    architecture = Hardware::CPU.arm? ? "arm64" : "x86_64"',
         '    odie "No release for this architecture" unless minimum.key?(architecture)',
         '    odie "Requires macOS #{minimum.fetch(architecture)} or newer" if MacOS.version < minimum.fetch(architecture)',
@@ -119,7 +133,7 @@ def homebrew_formula(version, assets):
         '    (prefix/"README.md").write (libexec/"README.md").read',
         '    (prefix/"LICENSE").write (libexec/"LICENSE").read',
         '    (bin/"swiftpods").write_env_script libexec/"bin/swiftpods",',
-        '      SWIFTPODS_RUBY: Formula["ruby"].opt_bin/"ruby", SWIFTPODS_BUNDLE: libexec',
+        '      SWIFTPODS_RUBY: formula_opt_bin("ruby")/"ruby", SWIFTPODS_BUNDLE: libexec',
         '    system bin/"swiftpods", "runtime", "verify", "--json"',
         "  end",
         "",

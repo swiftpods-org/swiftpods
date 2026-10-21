@@ -7,11 +7,11 @@ Gem::Specification.new do |spec|
   spec.version = profile.fetch('swiftpods_version')
   spec.authors = ['SwiftPods']
   spec.summary = 'Install Apple project dependencies with SwiftPods from Fastlane'
-  spec.description = 'Provides the swiftpods action for an installed SwiftPods executable.'
+  spec.description = 'Provides the swiftpods action and installs a pinned SwiftPods release when needed.'
   spec.homepage = 'https://swiftpods.org'
   spec.license = 'MIT'
   spec.required_ruby_version = '>= 3.0'
-  spec.files = Dir.glob('lib/**/*.rb', base: __dir__) + ['LICENSE', 'docs/Fastlane.md']
+  spec.files = Dir.glob('lib/**/*.{rb,json}', base: __dir__) + ['scripts/install.py', 'LICENSE', 'docs/Fastlane.md']
   spec.require_paths = ['lib']
   spec.metadata = {
     'source_code_uri' => 'https://github.com/swiftpods-org/swiftpods',

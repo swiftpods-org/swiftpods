@@ -52,10 +52,11 @@ jobs:
               output.write('replace-tag-object=' + tag_object + '\n')
           PY
   plugin:
-    needs: metadata
+    needs: [metadata, assemble]
     uses: ./.github/workflows/fastlane-plugin.yml
     with:
       source_ref: ${{ needs.metadata.outputs.commit }}
+      release_assets: true
   build:
     needs: metadata
     strategy:
@@ -105,7 +106,7 @@ jobs:
         if: always()
         run: python3 scripts/ci_signing.py cleanup
   assemble:
-    needs: [metadata, build, plugin]
+    needs: [metadata, build]
     runs-on: macos-15
     outputs:
       manifest-sha256: ${{ steps.validate.outputs.manifest-sha256 }}
@@ -142,7 +143,7 @@ jobs:
           name: swiftpods-assets
           path: dist/release/
   publish:
-    needs: [metadata, assemble]
+    needs: [metadata, assemble, plugin]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -167,3 +168,45 @@ jobs:
             options+=(--replace-tag-object "$REPLACE_TAG_OBJECT")
           fi
           python3 scripts/publish_release.py dist/release --version "$RELEASE_VERSION" --commit "$RELEASE_COMMIT" --publish "${options[@]}"
+  update-integrations:
+    needs: [metadata, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: main
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: swiftpods-assets
+          path: .build/release-assets
+      - id: current
+        name: Keep the tap aligned with the current release series
+        env:
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          current = json.loads(Path('Profiles/baseline.json').read_text())['swiftpods_version']
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('update=' + str(current == os.environ['RELEASE_VERSION']).lower() + '\n')
+          PY
+      - name: Update the Homebrew tap and Fastlane release pin
+        if: steps.current.outputs.update == 'true'
+        env:
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          python3 scripts/prepare_integrations.py .build/release-assets/release.json
+          git add Formula/swiftpods.rb lib/fastlane/plugin/swiftpods/release.json
+          if ! git diff --cached --quiet; then
+            git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'Update Homebrew and Fastlane release pins'
+            git push origin HEAD:main
+          fi
+          plugin_tag="fastlane-v$RELEASE_VERSION"
+          remote_tag="$(git ls-remote --tags origin "refs/tags/$plugin_tag")"
+          if [[ -z "$remote_tag" ]]; then
+            git tag "$plugin_tag"
+            git push origin "refs/tags/$plugin_tag"
+          fi

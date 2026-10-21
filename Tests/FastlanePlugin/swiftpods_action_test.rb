@@ -82,6 +82,26 @@ class SwiftpodsActionTest < Minitest::Test
     assert_equal ['install'], invocation['arguments']
   end
 
+  def test_default_action_installs_the_pinned_executable_before_entering_the_project
+    setup = Minitest::Mock.new
+    setup.expect(:resolve, @executable, offline: false)
+    Fastlane::Swiftpods::Executable.stub(:new, setup) do
+      run_action(executable: nil)
+    end
+    setup.verify
+    assert_equal @project, invocation['cwd']
+  end
+
+  def test_offline_action_passes_offline_to_cli_setup
+    setup = Minitest::Mock.new
+    setup.expect(:resolve, @executable, offline: true)
+    Fastlane::Swiftpods::Executable.stub(:new, setup) do
+      run_action(executable: nil, offline: true)
+    end
+    setup.verify
+    assert_equal ['install', '--offline'], invocation['arguments']
+  end
+
   def test_defaults_to_the_podfile_in_the_current_directory
     configuration = FastlaneCore::Configuration.create(
       Fastlane::Actions::SwiftpodsAction.available_options,

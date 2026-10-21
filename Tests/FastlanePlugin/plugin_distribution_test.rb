@@ -35,6 +35,9 @@ class SwiftpodsPluginDistributionTest < Minitest::Test
     assert_equal ['lib'], specification.require_paths
     assert_includes contents, 'lib/fastlane/plugin/swiftpods.rb'
     assert_includes contents, 'lib/fastlane/plugin/swiftpods/actions/swiftpods_action.rb'
+    assert_includes contents, 'lib/fastlane/plugin/swiftpods/release.json'
+    assert_includes contents, 'scripts/install.py'
+    assert_equal File.join(specification.full_gem_path, 'scripts/install.py'), Fastlane::Swiftpods::Executable::INSTALLER_PATH
     assert contents.none? { |path| path.start_with?('Sources/', 'Runtime/', 'Profiles/', 'Tests/') }
     unpacked = File.join(@temporary, 'unpacked')
     Gem::Package.new(archive).extract_files(unpacked)
@@ -58,13 +61,13 @@ class SwiftpodsPluginDistributionTest < Minitest::Test
   def test_bundler_loads_the_plugin_from_a_git_release_tag
     repository = File.join(@temporary, 'plugin-repository')
     FileUtils.mkdir_p(repository)
-    ['lib', 'Profiles', 'LICENSE', 'docs/Fastlane.md', NAME + '.gemspec'].each do |path|
+    ['lib', 'Profiles', 'scripts/install.py', 'LICENSE', 'docs/Fastlane.md', NAME + '.gemspec'].each do |path|
       target = File.join(repository, path)
       FileUtils.mkdir_p(File.dirname(target))
       FileUtils.cp_r(File.join(ROOT, path), target)
     end
     command('git', 'init', '--quiet', repository)
-    command('git', 'add', '--', 'lib', 'Profiles', 'LICENSE', 'docs', NAME + '.gemspec', directory: repository)
+    command('git', 'add', '--', 'lib', 'Profiles', 'scripts', 'LICENSE', 'docs', NAME + '.gemspec', directory: repository)
     command('git', '-c', 'user.name=SwiftPods Fixture', '-c', 'user.email=fixture@example.invalid',
             '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null',
             'commit', '--quiet', '-m', 'Package plugin fixture', directory: repository)
@@ -123,7 +126,7 @@ class SwiftpodsPluginDistributionTest < Minitest::Test
       'SWIFTPODS_PLUGIN_CAPTURE' => capture
     }
     command(RbConfig.ruby, '-S', 'bundle', 'install', '--local', directory: project, environment: environment)
-    output = command(RbConfig.ruby, '-S', 'bundle', 'exec', 'fastlane', 'ios', 'verify_plugin',
+    output = command(RbConfig.ruby, '-S', 'bundle', 'exec', RbConfig.ruby, Gem.bin_path('fastlane', 'fastlane'), 'ios', 'verify_plugin',
                      directory: project, environment: environment)
     refute_includes output, 'Error loading plugin'
     refute_includes output, 'No actions found'

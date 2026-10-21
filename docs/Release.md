@@ -11,8 +11,9 @@ Published versions and installation availability are listed on the
 ## Homebrew
 
 ```sh
-brew install swiftpods
-brew upgrade swiftpods
+brew tap swiftpods-org/swiftpods https://github.com/swiftpods-org/swiftpods.git
+brew install swiftpods-org/swiftpods/swiftpods
+brew upgrade swiftpods-org/swiftpods/swiftpods
 ```
 
 SwiftPods ships its native executable and its own Ruby DSL adapter. Ruby is
