@@ -159,6 +159,78 @@ final class NativeVendorTests: XCTestCase {
             at: path.appendingPathComponent("Info.plist"))
         XCTAssertThrowsError(try NativeVendorSDK(path))
     }
+
+    func testStaticTargetsPrepareXCFrameworksWithoutLinkingTheirDependencies() throws {
+        for mode in ["library", "static", "dynamic"] {
+            let root = try directory()
+            let sdk = try xcframework(root, entries: [entry("device")])
+            let object = archive(macho(platform: 2, kind: 1))
+            try object.write(to: sdk.appendingPathComponent("device/Kit.framework/Kit"))
+            let raw = root.appendingPathComponent("Raw.framework")
+            try FileManager.default.createDirectory(at: raw, withIntermediateDirectories: true)
+            try object.write(to: raw.appendingPathComponent("Raw"))
+            try object.write(to: root.appendingPathComponent("libRaw.a"))
+            try Data("int wrapper_value(void) { return 42; }\n".utf8).write(
+                to: root.appendingPathComponent("Wrapper.m"))
+            let binary = try NativeSpec(
+                data: [
+                    "name": "BinaryKit", "version": "1.0", "platforms": ["ios": "15.0"],
+                    "vendored_frameworks": ["Kit.xcframework", "Raw.framework"],
+                    "vendored_libraries": "libRaw.a", "frameworks": "Foundation",
+                    "weak_frameworks": "StoreKit",
+                    "pod_target_xcconfig": ["EXCLUDED_SOURCE_FILE_NAMES": ["UserExcluded.m"]],
+                ], directory: root)
+            let wrapper = try NativeSpec(
+                data: [
+                    "name": "Wrapper", "version": "1.0", "platforms": ["ios": "15.0"],
+                    "source_files": "Wrapper.m", "dependencies": ["BinaryKit": []],
+                ], directory: root)
+            let dependency = try NativeDependency(["name": "Wrapper"], platform: "ios", deployment: "15.0")
+            let engine = try NativeXcode(
+                project: root,
+                manifest: [
+                    "targets": [
+                        [
+                            "name": "Demo", "platform": ["name": "ios", "deployment_target": "15.0"],
+                            "frameworks": mode, "dependencies": [["name": "Wrapper"]],
+                        ]
+                    ]
+                ],
+                resolution: NativeResolution(specs: ["BinaryKit": binary, "Wrapper": wrapper], requests: [dependency]),
+                integrateUserProjects: false)
+            try engine.generate()
+            for name in ["BinaryKit", "Wrapper"] {
+                let target = try XCTUnwrap(
+                    engine.graph.objects.values.first {
+                        $0["isa"] as? String == "PBXNativeTarget" && $0["name"] as? String == name
+                    })
+                let phase = try XCTUnwrap(
+                    (target["buildPhases"] as? [String])?.compactMap { engine.graph.objects[$0] }.first {
+                        $0["isa"] as? String == "PBXFrameworksBuildPhase"
+                    })
+                let paths = Set(
+                    (phase["files"] as? [String] ?? []).compactMap { build -> String? in
+                        guard let reference = engine.graph.objects[build]?["fileRef"] as? String else { return nil }
+                        return engine.graph.objects[reference]?["path"] as? String
+                    })
+                if mode == "dynamic" && name == "Wrapper" {
+                    XCTAssertTrue(paths.contains(raw.path))
+                    XCTAssertTrue(paths.contains { $0.hasSuffix("/libBinaryKit.a") })
+                    continue
+                }
+                XCTAssertEqual(paths, [sdk.path])
+                let list = try XCTUnwrap(target["buildConfigurationList"] as? String)
+                for config in engine.graph.objects[list]?["buildConfigurations"] as? [String] ?? [] {
+                    let settings = try NativeBuildSettings.resolvedScopes(
+                        engine.graph.objects[config] ?? [:], graph: engine.graph, targetName: name
+                    ).targetScope
+                    let exclusions = try XCTUnwrap(settings.expandedValue("EXCLUDED_SOURCE_FILE_NAMES"))
+                    XCTAssertTrue(exclusions.contains(sdk.path))
+                    if name == "BinaryKit" { XCTAssertTrue(exclusions.contains("UserExcluded.m")) }
+                }
+            }
+        }
+    }
     func testRejectsTraversalAndSymlinksOutsideSDK() throws {
         let root = try directory()
         let path = try xcframework(root, entries: [entry("device")])

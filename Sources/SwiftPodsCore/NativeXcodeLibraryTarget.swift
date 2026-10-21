@@ -103,16 +103,17 @@ extension NativeXcode {
         }
         let linkedFrameworks = nativeStrings(attributes["frameworks"])
         let weakFrameworks = nativeStrings(attributes["weak_frameworks"])
-        var frameworks = (linkedFrameworks + weakFrameworks).map { framework in
+        var frameworks = (dynamic ? linkedFrameworks + weakFrameworks : []).map { framework in
             buildFile(
                 file(
                     "System/Library/Frameworks/" + framework + ".framework", type: "wrapper.framework",
                     sourceTree: "SDKROOT"), target: targetName,
                 settings: weakFrameworks.contains(framework) ? ["ATTRIBUTES": ["Weak"]] : [:])
         }
-        for sdk in sdks {
+        for sdk in sdks where dynamic || sdk.isXCFramework {
             frameworks.append(buildFile(file(sdk.url.path, type: sdk.fileType), target: targetName))
         }
+        if !dynamic { excludeStaticSDKLinkInputs(sdks, settings: &settings) }
         vendorSDKs[variantKey(name, platform)] = sdks
         settings["OTHER_LDFLAGS"] =
             ["$(inherited)"] + nativeStrings(settings["OTHER_LDFLAGS"])

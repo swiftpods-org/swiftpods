@@ -28,6 +28,7 @@ extension NativeXcode {
             else { continue }
             selectVariant(variant)
             let label = variant.label
+            let dynamic = isDynamicProduct(product)
             let requests = variant.actualRequests
             let roots = try dependencyRoots(requests).subtracting([name])
             let dependencies = roots.sorted().compactMap { dependency -> String? in
@@ -44,9 +45,9 @@ extension NativeXcode {
             {
                 var files = graph.objects[phase]?["files"] as? [String] ?? []
                 let references =
-                    sdks.map { file($0.url.path, type: $0.fileType) }
+                    sdks.filter { dynamic || $0.isXCFramework }.map { file($0.url.path, type: $0.fileType) }
                     + products.filter {
-                        matchesProduct($0, roots: roots, platform: platform) && productRoots[$0] != nil
+                        dynamic && matchesProduct($0, roots: roots, platform: platform) && productRoots[$0] != nil
                     }.map(buildReference)
                 for reference in references {
                     let build = buildFile(reference, target: label)
@@ -72,6 +73,7 @@ extension NativeXcode {
             ]
             for config in configurations[label].map({ Array($0.values) }) ?? [] {
                 var settings = graph.objects[config]?["buildSettings"] as? [String: Any] ?? [:]
+                if !dynamic { excludeStaticSDKLinkInputs(sdks, settings: &settings) }
                 for (key, paths) in searchPaths {
                     var values = nativeStrings(settings[key])
                     if values.isEmpty { values = ["$(inherited)"] }
@@ -79,7 +81,7 @@ extension NativeXcode {
                     settings[key] = values
                 }
                 applyCustomModuleMaps(roots, platform: platform, settings: &settings)
-                if variant.mode == "dynamic" {
+                if dynamic {
                     let flags = try consumerLinkerFlags(
                         roots, platform: platform, sources: linkerSources(id, graph: graph), settings: settings)
                     settings["OTHER_LDFLAGS"] = nativeStrings(settings["OTHER_LDFLAGS"]) + flags
@@ -87,6 +89,16 @@ extension NativeXcode {
                 graph.objects[config]?["buildSettings"] = settings
             }
         }
+    }
+
+    /// Keep native XCFramework slice preparation without merging the selected
+    /// binary into an archive that the consumer links alongside the SDK itself.
+    func excludeStaticSDKLinkInputs(_ sdks: [NativeVendorSDK], settings: inout [String: Any]) {
+        let paths = sdks.filter(\.isXCFramework).map { NativeBuildSetting.literalPath($0.url.path) }
+        guard !paths.isEmpty else { return }
+        var exclusions = nativeStrings(settings["EXCLUDED_SOURCE_FILE_NAMES"])
+        for path in paths where !exclusions.contains(path) { exclusions.append(path) }
+        settings["EXCLUDED_SOURCE_FILE_NAMES"] = exclusions
     }
 
     private func generateAggregateTargets() throws {

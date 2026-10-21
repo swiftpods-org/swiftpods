@@ -317,6 +317,109 @@ def simulator_run(base, app, expected):
         )
 
 
+def objc_archive_regression(base, env):
+    producer = base / "objc-sdk"
+    producer.mkdir()
+    declaration = (
+        "#import <Foundation/Foundation.h>\n"
+        "@interface SwiftPodsVendorObject : NSObject\n+ (int)value;\n@end\n"
+    )
+    source = producer / "Vendor.m"
+    source.write_text(
+        declaration
+        + "@implementation SwiftPodsVendorObject\n+ (int)value { return 42; }\n@end\n"
+    )
+    run(
+        [
+            "xcrun",
+            "clang",
+            "-target",
+            host_platform.machine() + "-apple-macos13.0",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-c",
+            source,
+            "-o",
+            producer / "Vendor.o",
+        ],
+        producer,
+        producer / "compile.log",
+        env,
+    )
+    run(
+        [
+            "xcrun",
+            "libtool",
+            "-static",
+            "-o",
+            producer / "libVendor.a",
+            producer / "Vendor.o",
+        ],
+        producer,
+        producer / "archive.log",
+        env,
+    )
+    (producer / "BinaryPod.podspec.json").write_text(
+        json.dumps(
+            {
+                "name": "BinaryPod",
+                "version": "1.0",
+                "platforms": {"osx": "13.0"},
+                "vendored_libraries": "libVendor.a",
+                "frameworks": "Foundation",
+                "weak_frameworks": "StoreKit",
+            }
+        )
+    )
+    scenarios = []
+    for linkage in ("library", "static"):
+        work = base / ("objc-" + linkage)
+        work.mkdir()
+        (work / "Sources").mkdir()
+        (work / "Sources/main.mm").write_text(
+            declaration
+            + "int main(void) { return [SwiftPodsVendorObject value] == 42 ? 0 : 1; }\n"
+        )
+        (work / "Podfile").write_text(
+            "platform :osx, '13.0'\n"
+            + ("use_frameworks! :linkage => :static\n" if linkage == "static" else "")
+            + "project 'Demo.xcodeproj'\ntarget 'Demo' do\n"
+            + "  pod 'BinaryPod', :path => '../objc-sdk'\nend\n"
+        )
+        project(work / "Demo.xcodeproj")
+        install(work, env, work / "install.log")
+        derived = build(
+            work, work, "platform=macOS,arch=" + host_platform.machine(), "objc"
+        )
+        products = derived / "Build/Products/Debug"
+        archive = run(
+            ["xcrun", "nm", "-gU", products / "libBinaryPod.a"],
+            work,
+            work / "archive-symbols.log",
+            env,
+        )
+        assert "_OBJC_CLASS_$_SwiftPodsVendorObject" not in archive
+        app = products / "Demo.app/Contents/MacOS/Demo"
+        symbols = run(["xcrun", "nm", "-gU", app], work, work / "app-symbols.log", env)
+        assert (
+            sum(
+                line.endswith(" _OBJC_CLASS_$_SwiftPodsVendorObject")
+                for line in symbols.splitlines()
+            )
+            == 1
+        )
+        run([app], work, work / "run.log", env)
+        scenarios.append(
+            {
+                "platform": "macos",
+                "format": "Objective-C archive",
+                "pod_linkage": linkage,
+            }
+        )
+    return scenarios
+
+
 def main():
     base = ROOT / ".build/native-vendor"
     base.mkdir(exist_ok=True)
@@ -331,7 +434,7 @@ def main():
     env["GEM_HOME"] = str(base / "no-global-gems")
     env["GEM_PATH"] = env["GEM_HOME"]
     env["SWIFTPODS_CACHE_ROOT"] = str(base / "cache")
-    scenarios = []
+    scenarios = objc_archive_regression(base, env)
     mac_destination = "platform=macOS,arch=" + host_platform.machine()
     for raw in (False, True):
         group = base / ("raw" if raw else "xcframework")
