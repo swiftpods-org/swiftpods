@@ -30,7 +30,7 @@ jobs:
           python-version: '3.13.16'
       - uses: ./.github/actions/setup-runtime
       - name: Build and package SwiftPods
-        run: python3 scripts/package.py --destination "$SWIFTPODS_BUILD_ROOT/SwiftPods"
+        run: python3 -m scripts.package --destination "$SWIFTPODS_BUILD_ROOT/SwiftPods"
       - name: Archive the distribution
         working-directory: ${{ env.SWIFTPODS_BUILD_ROOT }}
         run: |

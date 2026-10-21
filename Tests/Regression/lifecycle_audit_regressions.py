@@ -1,0 +1,310 @@
+"""CLI regressions for hook ownership, SDK contexts and shared Git checkouts."""
+
+import json
+import shutil
+import subprocess
+
+from Tests.Integration.native_integration import project, serialize
+from Tests.Integration.native_xcconfig_tests import create
+
+
+def read_project(path):
+    return json.loads(
+        subprocess.check_output(
+            ["plutil", "-convert", "json", "-o", "-", str(path / "project.pbxproj")]
+        )
+    )
+
+
+def write_project(path, graph):
+    (path / "project.pbxproj").write_text("// !$*UTF8*$!\n" + serialize(graph))
+
+
+def target(graph, name="Demo"):
+    return next(
+        value
+        for value in graph["objects"].values()
+        if value.get("isa") == "PBXNativeTarget" and value["name"] == name
+    )
+
+
+def diagnostics(result):
+    return [
+        event.get("code") for event in result["events"] if event["kind"] == "diagnostic"
+    ]
+
+
+def package_hooks_and_deintegration(fixture):
+    for explicit_save in [False, True]:
+        work, selected = create(fixture.root / ("package-hook-" + str(explicit_save)))
+        graph = read_project(selected)
+        objects = graph["objects"]
+        manual = {
+            "A" * 24: {
+                "isa": "XCRemoteSwiftPackageReference",
+                "repositoryURL": "https://example.invalid/Manual.git",
+                "requirement": {"kind": "exactVersion", "version": "1.0.0"},
+            },
+            "B" * 24: {
+                "isa": "XCSwiftPackageProductDependency",
+                "package": "A" * 24,
+                "productName": "Manual",
+            },
+            "C" * 24: {"isa": "PBXBuildFile", "productRef": "B" * 24},
+        }
+        objects.update(manual)
+        objects[graph["rootObject"]]["packageReferences"] = ["A" * 24]
+        target(graph)["packageProductDependencies"] = ["B" * 24]
+        phase = next(
+            objects[key]
+            for key in target(graph)["buildPhases"]
+            if objects[key]["isa"] == "PBXFrameworksBuildPhase"
+        )
+        phase["files"].append("C" * 24)
+        write_project(selected, graph)
+        body = (work / "Podfile").read_text().split("post_install")[0]
+        body = body.replace(
+            "target 'Demo' do\n",
+            "target 'Demo' do\n"
+            " spm 'Net', :git => 'https://example.invalid/Net.git', :exact => '1.0.0', :products => ['Net']\n",
+        )
+        hook = """post_integrate do |installer|
+  installer.aggregate_targets.each do |aggregate|
+    aggregate.user_targets.each do |target|
+      target.frameworks_build_phase.files.each do |file|
+        next unless file.product_ref&.product_name == 'Net'
+        file.settings = { 'ATTRIBUTES' => ['Weak'], 'COMPILER_FLAGS' => nil }
+      end
+    end
+    SAVE_PROJECT
+  end
+end
+""".replace("SAVE_PROJECT", "aggregate.user_project.save" if explicit_save else "")
+        (work / "Podfile").write_text(body + hook)
+        for _ in range(2):
+            fixture.cli(work, "install")
+            graph = read_project(selected)
+            objects = graph["objects"]
+            product = next(
+                key
+                for key, value in objects.items()
+                if value.get("isa") == "XCSwiftPackageProductDependency"
+                and value["productName"] == "Net"
+            )
+            build = next(
+                key
+                for key, value in objects.items()
+                if value.get("productRef") == product
+            )
+            assert objects[build]["settings"] == {
+                "ATTRIBUTES": ["Weak"],
+                "COMPILER_FLAGS": "",
+            }
+        # A real external edit must fail before managed writes and remain intact.
+        objects[build]["settings"]["ATTRIBUTES"].append("ExternalEdit")
+        write_project(selected, graph)
+        failure = fixture.cli(work, "install", succeeds=False)
+        assert "SP-SPM-CONFLICT" in diagnostics(failure)
+        assert failure["project_state"] == "failed_no_managed_changes"
+        assert read_project(selected)["objects"][build]["settings"]["ATTRIBUTES"] == [
+            "Weak",
+            "ExternalEdit",
+        ]
+        objects[build]["settings"]["ATTRIBUTES"].remove("ExternalEdit")
+        write_project(selected, graph)
+        # Removing a consumer can leave an empty ownership record for a project
+        # that the user later deletes. It no longer needs to be opened or edited.
+        archive = work / "Pods/Target Support Files/SwiftPods-Integration.json"
+        records = json.loads(archive.read_text())
+        removed_project = str(work / "Removed.xcodeproj/project.pbxproj")
+        records["_swift_packages"][removed_project] = {
+            "objects": {},
+            "targets": {},
+            "phases": {},
+        }
+        archive.write_text(json.dumps(records))
+        fixture.cli(work, "deintegrate")
+        graph = read_project(selected)
+        objects = graph["objects"]
+        assert all(objects[key] == value for key, value in manual.items())
+        assert objects[graph["rootObject"]]["packageReferences"] == ["A" * 24]
+        assert target(graph)["packageProductDependencies"] == ["B" * 24]
+        assert not any(
+            value.get("productName") == "Net"
+            or value.get("repositoryURL") == "https://example.invalid/Net.git"
+            or value.get("productRef") == product
+            for value in objects.values()
+        )
+        assert not (
+            work / "Pods/Target Support Files/SwiftPods-Integration.json"
+        ).exists()
+    fixture.verified += [
+        "package_hook_changes_survive_reinstall_and_explicit_save",
+        "package_hook_nil_compiler_flags_survive_reinstall_and_deintegration",
+        "external_package_edits_rejected_before_managed_changes",
+        "deintegrate_removes_owned_packages_preserves_manual_packages",
+    ]
+
+
+def late_sdk_context(fixture):
+    work, selected = create(fixture.root / "late-sdk")
+    graph = read_project(selected)
+    for value in graph["objects"].values():
+        if value.get("isa") == "XCBuildConfiguration":
+            for key in ["SDKROOT", "MACOSX_DEPLOYMENT_TARGET"]:
+                value["buildSettings"].pop(key, None)
+    write_project(selected, graph)
+    configs = selected.parent / "Configs"
+    (configs / "Minimum.xcconfig").write_text(
+        "MACOSX_DEPLOYMENT_TARGET = 13.0\nMACOSX_DEPLOYMENT_TARGET[sdk=macosx*] = 14.0\n"
+    )
+    (configs / "Base.xcconfig").write_text(
+        '#include "Minimum.xcconfig"\nSDKROOT = macosx\nGCC_PREPROCESSOR_DEFINITIONS = $(inherited) USER_CONFIG=1\n'
+    )
+    spec = work / "Kit/Kit.podspec.json"
+    data = json.loads(spec.read_text())
+    data["platforms"]["osx"] = "14.0"
+    spec.write_text(json.dumps(data))
+    body = (
+        (work / "Podfile")
+        .read_text()
+        .split("post_install")[0]
+        .replace("platform :osx, '13.0'\n", "")
+    )
+    (work / "Podfile").write_text(
+        body
+        + """post_install do |installer|
+  aggregate = installer.aggregate_targets.first
+  raise 'wrong inferred platform' unless aggregate.platform.deployment_target.to_s == '14.0'
+  values = aggregate.user_targets.first.resolved_build_setting('MACOSX_DEPLOYMENT_TARGET', true)
+  raise 'wrong hook settings' unless values.values.uniq == ['14.0']
+end
+"""
+    )
+    fixture.cli(work, "install")
+    result = subprocess.run(
+        [
+            "xcodebuild",
+            "-project",
+            str(selected),
+            "-target",
+            "Demo",
+            "-configuration",
+            "Debug",
+            "-showBuildSettings",
+            "-json",
+        ],
+        cwd=work,
+        env=fixture.env,
+        capture_output=True,
+        text=True,
+        timeout=90,
+    )
+    (fixture.root / "late-sdk-settings.log").write_text(result.stdout + result.stderr)
+    assert result.returncode == 0
+    assert (
+        json.loads(result.stdout)[0]["buildSettings"]["MACOSX_DEPLOYMENT_TARGET"]
+        == "14.0"
+    )
+    fixture.build(work, "Demo", "late-sdk-build")
+    fixture.verified.append("late_sdk_include_matches_xcode_hooks_and_build")
+
+
+def package_module_scope(fixture):
+    work, selected = create(fixture.root / "package-scope")
+    other = selected.parent / "Other.xcodeproj"
+    project(other)
+    graph = read_project(other)
+    target(graph)["name"] = "Other"
+    for value in graph["objects"].values():
+        if value.get("isa") == "XCBuildConfiguration":
+            value["buildSettings"]["ALWAYS_SEARCH_USER_PATHS"] = "NO"
+    write_project(other, graph)
+    body = (work / "Podfile").read_text().split("post_install")[0]
+    (work / "Podfile").write_text(
+        body
+        + """target 'Other' do
+ project '../Apps/Other.xcodeproj'
+ spm 'Net', :git => 'https://example.invalid/Net.git', :exact => '1.0.0', :products => ['Kit']
+end
+"""
+    )
+    fixture.cli(work, "install")
+    fixture.cli(work, "install")
+    assert any(
+        value.get("productName") == "Kit"
+        and value.get("isa") == "XCSwiftPackageProductDependency"
+        for value in read_project(other)["objects"].values()
+    )
+    for attribute in ["header_dir", "module_name"]:
+        work, _ = create(fixture.root / ("duplicate-" + attribute))
+        spec = work / "Kit/Kit.podspec.json"
+        data = json.loads(spec.read_text())
+        data[attribute] = "Shared"
+        spec.write_text(json.dumps(data))
+        body = (work / "Podfile").read_text().split("post_install")[0]
+        body = body.replace(
+            "target 'Demo' do\n",
+            "use_frameworks! :linkage => :static\ntarget 'Demo' do\n"
+            " spm 'Net', :git => 'https://example.invalid/Net.git', :exact => '1.0.0', :products => ['Shared']\n",
+        )
+        (work / "Podfile").write_text(body)
+        assert "SP-DUPLICATE-SDK" in diagnostics(
+            fixture.cli(work, "install", succeeds=False)
+        )
+    fixture.verified += [
+        "package_duplicate_check_scoped_to_consumer",
+        "package_duplicate_check_uses_actual_module_name",
+    ]
+
+
+def git_alias_cleanup(fixture):
+    work, _ = create(fixture.root / "git-alias")
+    source = work / "Kit"
+    for args in [
+        ["init"],
+        ["add", "."],
+        [
+            "-c",
+            "user.name=SwiftPods Tests",
+            "-c",
+            "user.email=tests@example.invalid",
+            "commit",
+            "-m",
+            "fixture",
+        ],
+        ["tag", "1.0"],
+    ]:
+        subprocess.run(
+            ["git", "-C", str(source), *args], check=True, capture_output=True
+        )
+    body = (work / "Podfile").read_text().split("post_install")[0]
+    (work / "Podfile").write_text(
+        body.replace(
+            ":path => './Kit'", ":git => " + repr(str(source)) + ", :tag => '1.0'"
+        )
+    )
+    # Keep this case's cache independent of the other lifecycle fixtures.
+    previous = fixture.env["SWIFTPODS_CACHE_ROOT"]
+    fixture.env["SWIFTPODS_CACHE_ROOT"] = str(work / "cache")
+    try:
+        fixture.cli(work, "install")
+        entries = fixture.cli(work, "cache", "list", "Kit")["entries"]
+        assert len([entry for entry in entries if entry["kind"] == "git"]) == 2
+        assert all(entry["pods"] == ["Kit"] for entry in entries)
+        fixture.cli(work, "cache", "clean", "Kit")
+        assert fixture.cli(work, "cache", "list")["entries"] == []
+        source.rename(work / "unavailable-origin")
+        shutil.rmtree(work / "Pods/Kit")
+        failure = fixture.cli(work, "install", "--offline", succeeds=False)
+        assert "SP-OFFLINE-MISSING" in diagnostics(failure)
+    finally:
+        fixture.env["SWIFTPODS_CACHE_ROOT"] = previous
+    fixture.verified.append("named_cleanup_removes_git_selector_and_commit_copies")
+
+
+def run(fixture):
+    package_hooks_and_deintegration(fixture)
+    late_sdk_context(fixture)
+    package_module_scope(fixture)
+    git_alias_cleanup(fixture)

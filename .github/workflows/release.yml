@@ -120,11 +120,11 @@ jobs:
           SWIFTPODS_NOTARY_KEY: ${{ secrets.SWIFTPODS_NOTARY_KEY }}
           SWIFTPODS_NOTARY_KEY_ID: ${{ secrets.SWIFTPODS_NOTARY_KEY_ID }}
           SWIFTPODS_NOTARY_ISSUER: ${{ secrets.SWIFTPODS_NOTARY_ISSUER }}
-        run: python3 scripts/ci_signing.py setup
+        run: python3 -m scripts.ci_signing setup
       - name: Build the signed and notarized distribution
         run: |
-          python3 scripts/package.py --destination "$SWIFTPODS_BUILD_ROOT/SwiftPods"
-          python3 scripts/sign_release.py "$SWIFTPODS_BUILD_ROOT/SwiftPods" \
+          python3 -m scripts.package --destination "$SWIFTPODS_BUILD_ROOT/SwiftPods"
+          python3 -m scripts.sign_release "$SWIFTPODS_BUILD_ROOT/SwiftPods" \
             --identity "$SWIFTPODS_SIGNING_IDENTITY" \
             --notarize --keychain-profile "$SWIFTPODS_NOTARY_PROFILE" \
             --keychain "$SWIFTPODS_NOTARY_KEYCHAIN"
@@ -136,7 +136,7 @@ jobs:
             ${{ env.SWIFTPODS_BUILD_ROOT }}/SwiftPods.zip.notary.json
       - name: Remove temporary signing credentials
         if: always()
-        run: python3 scripts/ci_signing.py cleanup
+        run: python3 -m scripts.ci_signing cleanup
       - name: Remove temporary build files
         if: always()
         run: |
@@ -168,7 +168,7 @@ jobs:
         env:
           RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
         run: |
-          python3 scripts/release.py --version "$RELEASE_VERSION" \
+          python3 -m scripts.release --version "$RELEASE_VERSION" \
             --archive "$SWIFTPODS_BUILD_ROOT/release-inputs/release-macos-15/SwiftPods.zip" \
             --archive "$SWIFTPODS_BUILD_ROOT/release-inputs/release-macos-15-intel/SwiftPods.zip" \
             --notarization "$SWIFTPODS_BUILD_ROOT/release-inputs/release-macos-15/SwiftPods.zip.notary.json" \
@@ -179,7 +179,7 @@ jobs:
         env:
           RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
           RELEASE_COMMIT: ${{ needs.metadata.outputs.commit }}
-        run: python3 scripts/publish_release.py "$SWIFTPODS_BUILD_ROOT/release" --version "$RELEASE_VERSION" --commit "$RELEASE_COMMIT"
+        run: python3 -m scripts.publish_release "$SWIFTPODS_BUILD_ROOT/release" --version "$RELEASE_VERSION" --commit "$RELEASE_COMMIT"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: swiftpods-assets
@@ -219,7 +219,7 @@ jobs:
           if [[ -n "$REPLACE_TAG_OBJECT" ]]; then
             options+=(--replace-tag-object "$REPLACE_TAG_OBJECT")
           fi
-          python3 scripts/publish_release.py "$SWIFTPODS_BUILD_ROOT/release" --version "$RELEASE_VERSION" --commit "$RELEASE_COMMIT" --publish "${options[@]}"
+          python3 -m scripts.publish_release "$SWIFTPODS_BUILD_ROOT/release" --version "$RELEASE_VERSION" --commit "$RELEASE_COMMIT" --publish "${options[@]}"
       - name: Remove temporary build files
         if: always()
         run: |
@@ -261,7 +261,7 @@ jobs:
           RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
           REPLACE_EXISTING: ${{ needs.metadata.outputs.replace }}
         run: |
-          python3 scripts/prepare_integrations.py "$SWIFTPODS_BUILD_ROOT/release-assets/release.json"
+          python3 -m scripts.prepare_integrations "$SWIFTPODS_BUILD_ROOT/release-assets/release.json"
           git add Formula/swiftpods.rb lib/fastlane/plugin/swiftpods/release.json
           if ! git diff --cached --quiet; then
             git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'Update Homebrew and Fastlane release pins'

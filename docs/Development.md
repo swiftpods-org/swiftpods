@@ -10,7 +10,7 @@ ruby --version
 git clone https://github.com/swiftpods-org/swiftpods.git
 cd swiftpods
 export SWIFTPODS_RUBY="$(ruby -rrbconfig -e 'print RbConfig.ruby')"
-python3 scripts/package.py --destination "$HOME/.local/opt/swiftpods"
+python3 -m scripts.package --destination "$HOME/.local/opt/swiftpods"
 ```
 
 Add the executable to PATH for the current terminal session and verify it:

@@ -5,308 +5,308 @@
   "suites": [
     {
       "id": "native:sources",
-      "script": "scripts/native_sources_tests.py",
+      "script": "Tests/Integration/native_sources_tests.py",
       "report": "native-sources.json",
       "apple": false,
       "reference": false
     },
     {
       "id": "native:management",
-      "script": "scripts/native_management_tests.py",
+      "script": "Tests/Integration/native_management_tests.py",
       "report": "native-management.json",
       "apple": false,
       "reference": false
     },
     {
       "id": "native:runtime",
-      "script": "scripts/native_runtime_tests.py",
+      "script": "Tests/Integration/native_runtime_tests.py",
       "report": "native-runtime.json",
       "apple": false,
       "reference": false
     },
     {
       "id": "native:source-contract",
-      "script": "scripts/native_source_contract_tests.py",
+      "script": "Tests/Integration/native_source_contract_tests.py",
       "report": "native-source-contract.json",
       "apple": false,
       "reference": false
     },
     {
       "id": "native:compatibility",
-      "script": "scripts/native_compatibility_tests.py",
+      "script": "Tests/Integration/native_compatibility_tests.py",
       "report": "native-compatibility.json",
       "apple": false,
       "reference": false
     },
     {
       "id": "native:contract",
-      "script": "scripts/native_contract_tests.py",
+      "script": "Tests/Integration/native_contract_tests.py",
       "report": "native-contract.json",
       "apple": true,
       "reference": false
     },
     {
       "id": "native:ecosystem",
-      "script": "scripts/native_ecosystem_tests.py",
+      "script": "Tests/Integration/native_ecosystem_tests.py",
       "report": "native-ecosystem.json",
       "apple": true,
       "reference": false
     },
     {
       "id": "native:platforms",
-      "script": "scripts/native_platform_tests.py",
+      "script": "Tests/Integration/native_platform_tests.py",
       "report": "native-platforms.json",
       "apple": true,
       "reference": false
     },
     {
       "id": "native:variants",
-      "script": "scripts/native_variant_tests.py",
+      "script": "Tests/Integration/native_variant_tests.py",
       "report": "native-variants.json",
       "apple": true,
       "reference": false
     },
     {
       "id": "native:configuration",
-      "script": "scripts/native_configuration_tests.py",
+      "script": "Tests/Integration/native_configuration_tests.py",
       "report": "native-configuration.json",
       "apple": true,
       "reference": false
     },
     {
       "id": "native:layout",
-      "script": "scripts/native_layout_tests.py",
+      "script": "Tests/Integration/native_layout_tests.py",
       "report": "native-layout.json",
       "apple": true,
       "reference": false
     },
     {
       "id": "native:batch",
-      "script": "scripts/native_batch_tests.py",
+      "script": "Tests/Integration/native_batch_tests.py",
       "report": "native-batch.json",
       "apple": true,
       "reference": false
     },
     {
       "id": "native:integration",
-      "script": "scripts/native_integration.py",
+      "script": "Tests/Integration/native_integration.py",
       "report": "native-integration.json",
       "apple": true,
       "reference": false
     },
     {
       "id": "native:vendor",
-      "script": "scripts/native_vendor_tests.py",
+      "script": "Tests/Integration/native_vendor_tests.py",
       "report": "native-vendor.json",
       "apple": true,
       "reference": false
     },
     {
       "id": "native:scripts",
-      "script": "scripts/native_script_phase_tests.py",
+      "script": "Tests/Integration/native_script_phase_tests.py",
       "report": "native-script-phases.json",
       "apple": true,
       "reference": false
     },
     {
       "id": "native:supplementary",
-      "script": "scripts/native_supplementary_tests.py",
+      "script": "Tests/Integration/native_supplementary_tests.py",
       "report": "native-supplementary.json",
       "apple": true,
       "reference": false
     },
     {
       "id": "native:ui",
-      "script": "scripts/native_ui_tests.py",
+      "script": "Tests/Integration/native_ui_tests.py",
       "report": "native-ui.json",
       "apple": true,
       "reference": false
     },
     {
       "id": "reference:contract",
-      "script": "scripts/contract_reference.py",
+      "script": "Tests/Reference/contract_reference.py",
       "report": "native-contract-reference.json",
       "apple": false,
       "reference": true
     },
     {
       "id": "reference:compatibility",
-      "script": "scripts/native_compatibility_tests.py",
+      "script": "Tests/Integration/native_compatibility_tests.py",
       "report": "native-compatibility-reference.json",
       "apple": false,
       "reference": true
     },
     {
       "id": "reference:mixed",
-      "script": "scripts/reference_compare.py",
+      "script": "Tests/Reference/reference_compare.py",
       "report": "native-reference.json",
       "apple": true,
       "reference": true
     },
     {
       "id": "reference:variants",
-      "script": "scripts/variant_reference.py",
+      "script": "Tests/Reference/variant_reference.py",
       "report": "native-variant-reference.json",
       "apple": true,
       "reference": true
     },
     {
       "id": "reference:ecosystem",
-      "script": "scripts/native_ecosystem_tests.py",
+      "script": "Tests/Integration/native_ecosystem_tests.py",
       "report": "native-ecosystem-reference.json",
       "apple": true,
       "reference": true
     },
     {
       "id": "reference:scripts",
-      "script": "scripts/script_phase_reference.py",
+      "script": "Tests/Reference/script_phase_reference.py",
       "report": "native-script-reference.json",
       "apple": true,
       "reference": true
     },
     {
       "id": "reference:supplementary",
-      "script": "scripts/supplementary_reference.py",
+      "script": "Tests/Reference/supplementary_reference.py",
       "report": "native-supplementary-reference.json",
       "apple": true,
       "reference": true
     },
     {
       "id": "reference:batch",
-      "script": "scripts/batch_reference.py",
+      "script": "Tests/Reference/batch_reference.py",
       "report": "native-batch-reference.json",
       "apple": true,
       "reference": true
     },
     {
       "id": "reference:configuration",
-      "script": "scripts/configuration_reference.py",
+      "script": "Tests/Reference/configuration_reference.py",
       "report": "native-configuration-reference.json",
       "apple": true,
       "reference": true
     },
     {
       "id": "reference:layout",
-      "script": "scripts/layout_reference.py",
+      "script": "Tests/Reference/layout_reference.py",
       "report": "native-layout-reference.json",
       "apple": true,
       "reference": true
     },
     {
       "id": "reference:ui",
-      "script": "scripts/ui_reference.py",
+      "script": "Tests/Reference/ui_reference.py",
       "report": "native-ui-reference.json",
       "apple": true,
       "reference": true
     },
     {
       "id": "native:mercurial",
-      "script": "scripts/native_mercurial_tests.py",
+      "script": "Tests/Integration/native_mercurial_tests.py",
       "report": "native-mercurial.json",
       "apple": false,
       "reference": false
     },
     {
       "id": "native:benchmarks",
-      "script": "scripts/native_benchmarks.py",
+      "script": "Tests/Benchmarks/native.py",
       "report": "native-benchmarks.json",
       "apple": false,
       "reference": false
     },
     {
       "id": "reference:resolver",
-      "script": "scripts/resolver_reference.py",
+      "script": "Tests/Reference/resolver_reference.py",
       "report": "native-resolver-reference.json",
       "apple": false,
       "reference": true
     },
     {
       "id": "native:swift-binary",
-      "script": "scripts/native_swift_binary_tests.py",
+      "script": "Tests/Integration/native_swift_binary_tests.py",
       "report": "native-swift-binary.json",
       "apple": true,
       "reference": false
     },
     {
       "id": "native:acceptance-harness",
-      "script": "scripts/acceptance_tests.py",
+      "script": "Tests/Tooling/acceptance_tests.py",
       "report": "native-acceptance-harness.json",
       "apple": false,
       "reference": false
     },
     {
       "id": "native:xcconfig",
-      "script": "scripts/native_xcconfig_tests.py",
+      "script": "Tests/Integration/native_xcconfig_tests.py",
       "report": "native-xcconfig.json",
       "apple": true,
       "reference": false
     },
     {
       "id": "reference:xcconfig",
-      "script": "scripts/native_xcconfig_tests.py",
+      "script": "Tests/Integration/native_xcconfig_tests.py",
       "report": "native-xcconfig-reference.json",
       "apple": true,
       "reference": true
     },
     {
       "id": "native:host-platforms",
-      "script": "scripts/native_host_platform_tests.py",
+      "script": "Tests/Integration/native_host_platform_tests.py",
       "report": "native-host-platforms.json",
       "apple": true,
       "reference": false
     },
     {
       "id": "native:lifecycle",
-      "script": "scripts/native_lifecycle_tests.py",
+      "script": "Tests/Integration/native_lifecycle_tests.py",
       "report": "native-lifecycle.json",
       "apple": true,
       "reference": false
     },
     {
       "id": "native:linker-manifest",
-      "script": "scripts/native_linker_manifest_tests.py",
+      "script": "Tests/Integration/native_linker_manifest_tests.py",
       "report": "native-linker-manifest.json",
       "apple": true,
       "reference": false
     },
     {
       "id": "native:ownership-source",
-      "script": "scripts/native_ownership_source_tests.py",
+      "script": "Tests/Integration/native_ownership_source_tests.py",
       "report": "native-ownership-source.json",
       "apple": true,
       "reference": false
     },
     {
       "id": "native:catalog-module",
-      "script": "scripts/native_catalog_module_tests.py",
+      "script": "Tests/Integration/native_catalog_module_tests.py",
       "report": "native-catalog-module.json",
       "apple": true,
       "reference": false
     },
     {
       "id": "native:subspec-files",
-      "script": "scripts/native_subspec_file_tests.py",
+      "script": "Tests/Integration/native_subspec_file_tests.py",
       "report": "native-subspec-files.json",
       "apple": true,
       "reference": false
     },
     {
       "id": "native:resource-isolation",
-      "script": "scripts/native_resource_isolation_tests.py",
+      "script": "Tests/Integration/native_resource_isolation_tests.py",
       "report": "native-resource-isolation.json",
       "apple": true,
       "reference": false
     },
     {
       "id": "native:lint-interface",
-      "script": "scripts/native_lint_interface_tests.py",
+      "script": "Tests/Integration/native_lint_interface_tests.py",
       "report": "native-lint-interface.json",
       "apple": true,
       "reference": false
     },
     {
       "id": "native:platform-inference",
-      "script": "scripts/native_platform_inference_tests.py",
+      "script": "Tests/Integration/native_platform_inference_tests.py",
       "report": "native-platform-inference.json",
       "apple": true,
       "reference": false

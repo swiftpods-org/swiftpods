@@ -77,16 +77,16 @@ class SwiftpodsPluginDistributionTest < Minitest::Test
 
   def test_the_runner_rejects_a_successful_process_that_executes_zero_tests
     repository = File.join(@temporary, 'empty-suite')
-    ['scripts', 'Tests/FastlanePlugin', 'runner-temp'].each do |path|
+    ['Tests/FastlanePlugin', 'runner-temp'].each do |path|
       FileUtils.mkdir_p(File.join(repository, path))
     end
-    FileUtils.cp(File.join(ROOT, 'scripts/fastlane_plugin_tests.rb'), File.join(repository, 'scripts'))
+    FileUtils.cp(File.join(ROOT, 'Tests/FastlanePlugin/run.rb'), File.join(repository, 'Tests/FastlanePlugin'))
     archive = ENV.fetch('SWIFTPODS_PLUGIN_GEM')
     File.write(File.join(repository, 'Tests/FastlanePlugin/empty_test.rb'), "require 'minitest/autorun'\n")
     output, status = Bundler.with_unbundled_env do
       Open3.capture2e(
         { 'SWIFTPODS_PLUGIN_GEM' => archive, 'TMPDIR' => File.join(repository, 'runner-temp') },
-        RbConfig.ruby, File.join(repository, 'scripts/fastlane_plugin_tests.rb')
+        RbConfig.ruby, File.join(repository, 'Tests/FastlanePlugin/run.rb')
       )
     end
     refute status.success?, output

@@ -9,8 +9,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from bootstrap import PROFILE, ROOT, environment, manifest
-from processes import termination_signals
+from scripts.support.bootstrap import PROFILE, ROOT, environment, manifest
+from scripts.support.processes import termination_signals
 
 
 def assemble(destination, scratch):

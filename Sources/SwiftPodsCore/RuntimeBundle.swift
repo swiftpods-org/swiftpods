@@ -32,7 +32,7 @@ public struct RuntimeBundle {
         }
         throw Diagnostic(
             "SP-RUNTIME-MISSING", stage: "runtime",
-            "SwiftPods DSL adapter bundle not found. Run python3 scripts/bootstrap.py in a source checkout, or install SwiftPods with Homebrew."
+            "SwiftPods DSL adapter bundle not found. Install SwiftPods with Homebrew or use a complete SwiftPods distribution."
         )
     }
 

@@ -7,7 +7,7 @@ import json
 import subprocess
 from pathlib import Path
 
-from bootstrap import ROOT, manifest
+from scripts.support.bootstrap import ROOT, manifest
 
 
 def run(*arguments):

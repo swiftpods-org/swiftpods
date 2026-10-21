@@ -53,7 +53,7 @@ jobs:
           path: ${{ env.SWIFTPODS_BUILD_ROOT }}/release-assets
       - name: Pin the assembled CLI release
         if: inputs.release_assets
-        run: python3 scripts/prepare_integrations.py "$SWIFTPODS_BUILD_ROOT/release-assets/release.json"
+        run: python3 -m scripts.prepare_integrations "$SWIFTPODS_BUILD_ROOT/release-assets/release.json"
       - name: Build the plugin package
         run: |
           gem build fastlane-plugin-swiftpods.gemspec --strict --output "$SWIFTPODS_BUILD_ROOT/fastlane-plugin-swiftpods.gem"

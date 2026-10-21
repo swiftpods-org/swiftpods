@@ -10,8 +10,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from evidence import validate as validate_evidence
-from install import extract_archive
+from scripts.install import extract_archive
+from scripts.support.evidence import validate as validate_evidence
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -191,7 +191,7 @@ def prepare(args, destination):
         ):
             raise RuntimeError("Release version/runtime mode differs from package")
         revision = metadata["swiftpods_source"]
-        from reporting import source_digest
+        from scripts.support.reporting import source_digest
 
         if revision["files_digest"] != source_digest():
             raise RuntimeError(
