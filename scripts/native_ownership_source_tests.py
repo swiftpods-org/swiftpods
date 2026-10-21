@@ -4,6 +4,7 @@
 import json
 import shutil
 
+from bootstrap import project_state_directory
 from consumer_build_regressions import update_spec
 from input_contract_regressions import commit, diagnostic, git
 from native_integration import project, serialize
@@ -33,7 +34,9 @@ def local_git_sources(fixture):
         else:
             fixture.cli(fixture.root, "install", "--project-directory", str(work))
         assert (work / "Pods/Kit/Kit.c").read_bytes() == (origin / "Kit.c").read_bytes()
-        report = json.loads((work / ".swiftpods/installation.json").read_text())
+        report = json.loads(
+            (project_state_directory(work) / "installation.json").read_text()
+        )
         checkout = report["specs"][0]["source"]
         assert checkout["git"] == "./Kit" and checkout["commit"] == revision
         locked = (work / "Podfile.lock").read_bytes()
@@ -58,7 +61,9 @@ def local_git_sources(fixture):
             revision = commit(origin, "Explicit update")
             fixture.cli(child, "update", "Kit")
             assert "return 3;" in (work / "Pods/Kit/Kit.c").read_text()
-            report = json.loads((work / ".swiftpods/installation.json").read_text())
+            report = json.loads(
+                (project_state_directory(work) / "installation.json").read_text()
+            )
             assert report["specs"][0]["source"]["commit"] == revision
     fixture.verified += [
         "relative_git_uses_manifest_root_from_ancestor_and_explicit_directory",

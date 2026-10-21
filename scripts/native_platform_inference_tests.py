@@ -4,6 +4,7 @@
 import json
 import subprocess
 
+from bootstrap import project_state_directory
 from input_contract_regressions import diagnostic, save_project
 from native_lifecycle_tests import LifecycleFixture
 from native_linker_manifest_tests import application
@@ -186,7 +187,9 @@ def valid(fixture, kind, source, observations):
         name: oracle(fixture, project, name, label) for name in ["Debug", "Release"]
     }
     fixture.cli(work, "install")
-    report = json.loads((work / ".swiftpods/installation.json").read_text())
+    report = json.loads(
+        (project_state_directory(work) / "installation.json").read_text()
+    )
     assert report["targets"][0]["platform"] == {
         "name": "osx",
         "deployment_target": "13.0",

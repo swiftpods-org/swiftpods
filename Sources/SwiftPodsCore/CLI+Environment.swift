@@ -35,7 +35,7 @@ extension CLIContext {
         guard options.isEmpty else {
             throw Diagnostic("SP-CLI-ARGUMENT", stage: "cli", "Unknown env list option")
         }
-        let parent = directory.appendingPathComponent(".swiftpods/environments")
+        let parent = ProjectStorage(project: directory).file("environments")
         let paths =
             (try? FileManager.default.contentsOfDirectory(
                 at: parent, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? []

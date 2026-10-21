@@ -7,15 +7,16 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from bootstrap import project_state_directory
 from command_option_regressions import snapshot
 
 
 def rejected(fixture, root, work, label, arguments, code):
-    before = snapshot(root)
+    before = snapshot(root), snapshot(project_state_directory(work))
     report = fixture.cli(work, *arguments, succeeds=False)
     diagnostics = report.get("events", []) + [report.get("diagnostic", {})]
     assert any(value.get("code") == code for value in diagnostics), report
-    assert snapshot(root) == before, label
+    assert (snapshot(root), snapshot(project_state_directory(work))) == before, label
     fixture.verified.append("environment_import_" + label + "_preserves_tree")
 
 
@@ -108,7 +109,9 @@ def run_regressions(fixture):
                 outside = root / "outside"
                 if not dangling:
                     outside.mkdir()
-                link = work / component
+                link = project_state_directory(work).joinpath(
+                    *Path(component).parts[1:]
+                )
                 link.parent.mkdir(parents=True, exist_ok=True)
                 link.symlink_to(outside, target_is_directory=True)
                 rejected(
@@ -144,7 +147,7 @@ def run_regressions(fixture):
             work = parent / label
             work.mkdir()
             inputs(work, lock)
-            path = work / component
+            path = project_state_directory(work).joinpath(*Path(component).parts[1:])
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("preserve this file")
             rejected(
@@ -193,10 +196,10 @@ def run_regressions(fixture):
             inputs(work, lock)
             (work / "Gemfile").write_text("raise 'expected fixture import failure'\n")
             if layout != "new-state":
-                (work / ".swiftpods").mkdir()
-                (work / ".swiftpods/keep").write_text("unrelated state")
+                project_state_directory(work).mkdir(parents=True)
+                (project_state_directory(work) / "keep").write_text("unrelated state")
             if layout == "existing-profiles":
-                sibling = work / ".swiftpods/environments/sibling"
+                sibling = project_state_directory(work) / "environments/sibling"
                 sibling.mkdir(parents=True)
                 (sibling / "keep").write_text("unrelated profile")
             rejected(
@@ -245,9 +248,9 @@ def run_regressions(fixture):
                 work / "Gemfile.lock"
             ).read_bytes() == lock
             for path in [
-                work / ".swiftpods",
-                work / ".swiftpods/environments",
-                work / ".swiftpods/environments" / name,
+                project_state_directory(work),
+                project_state_directory(work) / "environments",
+                project_state_directory(work) / "environments" / name,
             ]:
                 assert stat.S_IMODE(path.stat().st_mode) == 0o700
             fixture.verified.append(

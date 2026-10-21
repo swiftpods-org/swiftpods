@@ -8,7 +8,7 @@ import shutil
 import subprocess
 from xml.etree import ElementTree as ET
 
-from bootstrap import ROOT
+from bootstrap import ROOT, project_state_directory
 from native_integration import serialize
 from native_xcconfig_tests import create
 from vendor_fixture import fixture_build_arguments, fixture_derived_data, run, sdk
@@ -242,7 +242,7 @@ def project_recovery(fixture):
     )
     failed = fixture.cli(work, "install", succeeds=False)
     assert failed["project_state"] == "recovery_required"
-    journal = json.loads((work / ".swiftpods/state.json").read_text())
+    journal = json.loads((project_state_directory(work) / "state.json").read_text())
     paths = [entry["path"] for entry in journal["journal"]]
     assert paths.count("\u0301Demo.xcodeproj/project.pbxproj") == 1
     assert not any(path.startswith("/") or "Private" in path for path in paths)

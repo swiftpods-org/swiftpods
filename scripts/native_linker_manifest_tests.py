@@ -4,6 +4,7 @@
 import json
 import shutil
 
+from bootstrap import project_state_directory
 from consumer_build_regressions import update_spec
 from input_contract_regressions import commit, diagnostic, git
 from native_integration import project
@@ -219,10 +220,12 @@ target_definitions:
         sub.mkdir()
         fixture.cli(sub, "install")
         fixture.cli(sub, "install", "--deployment", "--offline")
-        report = json.loads((work / ".swiftpods/installation.json").read_text())
+        report = json.loads(
+            (project_state_directory(work) / "installation.json").read_text()
+        )
         assert report["input_manifest"] == str(path)
         assert report["targets"][0]["name"] == "Demo"
-        assert not (sub / ".swiftpods").exists()
+        assert not project_state_directory(sub).exists()
         if name in ["CocoaPods.podfile", "CocoaPods.podfile.yaml"]:
             original.write_text("raise 'Lower priority manifest must not execute'\n")
             fixture.cli(work, "install", "--deployment")

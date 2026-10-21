@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from bootstrap import ROOT, environment
+from bootstrap import ROOT, environment, project_state_directory
 from reporting import execute
 
 
@@ -351,7 +351,7 @@ pre_install do""", 1)
     installed = run("install", directory=nested)
     assert installed["exit_status"] == 0
     assert not (nested / "Pods").exists()
-    assert not (nested / ".swiftpods").exists()
+    assert not project_state_directory(nested).exists()
     consumer_graph = json.loads(
         subprocess.check_output(
             ["plutil", "-convert", "json", "-o", "-", str(work / "Demo.xcodeproj/project.pbxproj")],
@@ -388,7 +388,7 @@ pre_install do""", 1)
     assert (work / "Podfile.lock").read_bytes() == original_lock
     assert (work / "Demo.xcodeproj/project.pbxproj").read_bytes() == original_project
     assert not (nested / "Pods").exists()
-    assert not (nested / ".swiftpods").exists()
+    assert not project_state_directory(nested).exists()
     graph = run("graph", directory=nested)
     assert graph["freshness"] == "tracked_inputs_match", graph.get("changed_inputs")
     why = run("why", "GameCore")

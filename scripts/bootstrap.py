@@ -19,6 +19,27 @@ PREFIX = ROOT / ".runtime"
 PROFILE = json.loads((ROOT / "Profiles/baseline.json").read_text())
 
 
+def project_state_directory(project):
+    """Locate a fixture's private state independently of the native CLI."""
+    project = Path(project).resolve()
+    repository = next(
+        (path for path in (project, *project.parents) if (path / ".git").exists()),
+        project,
+    )
+    root = repository / ".swiftpods"
+    if repository == project:
+        return root
+    name = bytes(
+        byte
+        if 48 <= byte <= 57 or 65 <= byte <= 90 or 97 <= byte <= 122 or byte in (45, 95)
+        else 45
+        for byte in project.name.encode()
+    )[:48].decode("ascii")
+    relative = project.relative_to(repository).as_posix().encode()
+    key = name + "-" + hashlib.sha256(relative).hexdigest()
+    return root / "projects" / key
+
+
 def environment(destination=None):
     ruby, _ = select_ruby(PROFILE)
     env = clean_environment(os.environ)

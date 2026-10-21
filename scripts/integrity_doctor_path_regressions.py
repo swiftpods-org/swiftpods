@@ -5,6 +5,7 @@ import platform
 import plistlib
 import shutil
 
+from bootstrap import project_state_directory
 from input_contract_regressions import commit, git
 from name_boundary_regressions import diagnostic
 from native_xcconfig_tests import create
@@ -34,7 +35,7 @@ def integrity_paths(fixture):
     lock = (work / "Podfile.lock").read_bytes()
     fixture.cli(work, "integrity", "record")
     assert fixture.cli(work, "integrity", "verify")["status"] == "passed"
-    receipt = work / ".swiftpods/Integrity.lock"
+    receipt = project_state_directory(work) / "Integrity.lock"
     original = receipt.read_bytes()
     metadata = json.loads(original)
     outside = work / "\u0301Outside"
@@ -164,7 +165,7 @@ def doctor_paths(fixture):
             )
         assert (
             not (work / "project-code-ran").exists()
-            and not (work / ".swiftpods").exists()
+            and not project_state_directory(work).exists()
         )
         fixture.verified.append("doctor_path_" + label)
 
@@ -311,7 +312,7 @@ def doctor_paths(fixture):
                 if c["name"] == "application" and c["status"] == "failed"
             ]
             assert bool(failures) == escaping, (label, report)
-            assert not (work / ".swiftpods").exists()
+            assert not project_state_directory(work).exists()
             assert not (work / "project-code-ran").exists()
             fixture.verified.append("doctor_application_" + label)
     work = fixture.root / "doctor-app-external-framework"
@@ -347,7 +348,7 @@ def doctor_paths(fixture):
     assert any(
         c["name"] == "application" and c["status"] == "failed" for c in report["checks"]
     ), report
-    assert not (work / ".swiftpods").exists()
+    assert not project_state_directory(work).exists()
     assert not (work / "project-code-ran").exists()
     fixture.verified.append(
         "doctor_application_rejects_external_embedded_framework_alias"

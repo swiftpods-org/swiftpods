@@ -4,6 +4,7 @@ import json
 import tempfile
 from pathlib import Path
 
+from bootstrap import project_state_directory
 from command_option_regressions import snapshot
 from input_contract_regressions import commit, git
 
@@ -119,8 +120,8 @@ def run_regressions(fixture):
                     work = parent / ("why-" + str(number) + "-" + str(refresh))
                     work.mkdir()
                     (work / "Podfile").write_text(body)
-                    (work / ".swiftpods").mkdir()
-                    (work / ".swiftpods/installation.json").write_text(
+                    project_state_directory(work).mkdir(parents=True)
+                    (project_state_directory(work) / "installation.json").write_text(
                         json.dumps({"specs": [], "targets": []})
                     )
                     before = snapshot(work)

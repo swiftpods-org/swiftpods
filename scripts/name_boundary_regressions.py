@@ -2,6 +2,7 @@
 
 import json
 
+from bootstrap import project_state_directory
 from native_xcconfig_tests import create
 from project_path_regressions import builds, reinstall
 
@@ -97,8 +98,8 @@ def cli_directories(fixture):
             ["--project-directory=" + name] if inline else ["--project-directory", name]
         )
         fixture.cli(base, "install", "--no-integrate", *options)
-        assert (work / ".swiftpods/state.json").is_file()
-        assert not (base / ".swiftpods").exists()
+        assert (project_state_directory(work) / "state.json").is_file()
+        assert not project_state_directory(base).exists()
         lock = (work / "Podfile.lock").read_bytes()
         fixture.cli(
             base, "install", "--no-integrate", "--deployment", "--offline", *options
@@ -120,7 +121,8 @@ def cli_directories(fixture):
             base, "install", "--no-integrate", *options, succeeds=False
         )
         assert diagnostic(rejected, "SP-CLI-ARGUMENT"), rejected
-        assert not (base / ".swiftpods").exists() and not (work / ".swiftpods").exists()
+        assert not project_state_directory(base).exists()
+        assert not project_state_directory(work).exists()
         assert (selected / "project.pbxproj").read_bytes() == before
     fixture.verified.extend(
         [

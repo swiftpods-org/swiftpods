@@ -3,7 +3,7 @@ import Foundation
 import ProcessSupport
 
 public enum CLI {
-    public static let version = "0.1.0"
+    public static let version = "0.1.1"
     public static func run(
         arguments: [String], environment: [String: String] = ProcessInfo.processInfo.environment,
         executable: URL = Bundle.main.executableURL ?? URL(fileURLWithPath: CommandLine.arguments[0])

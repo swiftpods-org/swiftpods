@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from bootstrap import ROOT, environment
+from bootstrap import ROOT, environment, project_state_directory
 from native_integration import project
 from reporting import execute
 
@@ -80,7 +80,9 @@ def main():
     assert (native / "hook-trace.txt").read_text() == (
         reference / "hook-trace.txt"
     ).read_text()
-    native_report = json.loads((native / ".swiftpods/installation.json").read_text())
+    native_report = json.loads(
+        (project_state_directory(native) / "installation.json").read_text()
+    )
     pins = {spec["name"]: spec["version"] for spec in native_report["specs"]}
     assert pins == {"GameCore": "1.2.3.4"}
     assert "GameCore (1.2.3.4)" in (reference / "Podfile.lock").read_text()

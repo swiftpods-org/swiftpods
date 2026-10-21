@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from bootstrap import project_state_directory
 from native_integration import project as xcode_project
 
 EXTRAS = ["--dry-run", "--unknown", "unexpected", "--", "-\u0301unknown", ""]
@@ -36,7 +37,7 @@ def rejected(fixture, parent, cwd, arguments, label, code="SP-CLI-ARGUMENT"):
 
 
 def interrupted(fixture, work, current=False):
-    backup = work / ".swiftpods/backup"
+    backup = project_state_directory(work) / "backup"
     backup.mkdir(parents=True)
     (backup / "0").write_bytes(b"original lock")
     lock = work / "Podfile.lock"
@@ -51,7 +52,7 @@ def interrupted(fixture, work, current=False):
     state = {"status": "recovery_required", "journal": [entry]}
     if current:
         state["fingerprint_version"] = 2
-    (work / ".swiftpods/state.json").write_text(json.dumps(state))
+    (project_state_directory(work) / "state.json").write_text(json.dumps(state))
 
 
 def imported(fixture, cwd, work):
@@ -88,7 +89,7 @@ def check_init(fixture, cwd, work, arguments, label):
     (work / "local.txt").write_text("user source")
     report = fixture.cli(cwd, *arguments)
     assert report["exit_status"] == 0 and (work / "Podfile").is_file()
-    state_file = work / ".swiftpods/state.json"
+    state_file = project_state_directory(work) / "state.json"
     state = json.loads(state_file.read_text())
     entry = next(row for row in state["journal"] if row["path"] == "Podfile")
     assert entry["existed"] is False and entry["before_digest"] == "absent"

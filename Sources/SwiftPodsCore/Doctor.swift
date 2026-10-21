@@ -242,7 +242,7 @@ struct Doctor {
                 }
             }
         }
-        let installed = try? readObject(directory.appendingPathComponent(".swiftpods/installation.json"))
+        let installed = try? readObject(ProjectStorage(project: directory).file("installation.json"))
         if let installed {
             for spec in installed["specs"] as? [[String: Any]] ?? [] {
                 guard let module = spec["module_name"] as? String else { continue }

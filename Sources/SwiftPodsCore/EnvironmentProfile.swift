@@ -47,8 +47,7 @@ struct EnvironmentProfile {
     static func importProfile(
         name: String, gemfile: URL, project: URL, bundle: RuntimeBundle, environment: [String: String], local: Bool
     ) throws -> [String: Any] {
-        let root = try profileRoot(name: name, project: project)
-        let parent = root.deletingLastPathComponent()
+        var root = try profileRoot(name: name, project: project)
         guard !FileManager.default.fileExists(atPath: root.path) else {
             throw Diagnostic("SP-ENV-EXISTS", stage: "environment", "Environment already exists")
         }
@@ -72,13 +71,12 @@ struct EnvironmentProfile {
         defer {
             if !published {
                 if createdRoot { try? FileManager.default.removeItem(at: root) }
-                for directory in createdParents.reversed()
-                where (try? FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty) == true {
-                    try? FileManager.default.removeItem(at: directory)
-                }
+                for directory in createdParents.reversed() { _ = rmdir(directory.path) }
             }
         }
-        for directory in [parent.deletingLastPathComponent(), parent] {
+        createdParents = try ProjectStorage(project: project).prepare()
+        root = try profileRoot(name: name, project: project)
+        for directory in [root.deletingLastPathComponent()] {
             if try createDirectory(directory, exclusive: false) { createdParents.append(directory) }
         }
         _ = try createDirectory(root, exclusive: true)
@@ -111,7 +109,9 @@ struct EnvironmentProfile {
 
     private static func profileRoot(name: String, project: URL) throws -> URL {
         guard validName(name) else { throw Diagnostic("SP-ENV-NAME", stage: "environment", "Invalid environment name") }
-        let state = project.standardizedFileURL.resolvingSymlinksInPath().appendingPathComponent(".swiftpods")
+        let storage = ProjectStorage(project: project)
+        try storage.validate(code: "SP-ENV-PATH", stage: "environment")
+        let state = storage.existingDirectory
         let parent = state.appendingPathComponent("environments")
         let root = parent.appendingPathComponent(name)
         for directory in [state, parent, root] {

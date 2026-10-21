@@ -8,6 +8,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from bootstrap import project_state_directory
+
 
 def runtime_boundaries(parent, binary, env, bundle):
     observations = {}
@@ -92,7 +94,7 @@ def runtime_boundaries(parent, binary, env, bundle):
             assert (result.returncode == 0) == (code is None), log
             assert actual == code, (case, report, log)
             assert not marker.exists(), "A bundled Ruby probe executed before rejection"
-            assert not (project / ".swiftpods").exists()
+            assert not project_state_directory(project).exists()
             observations[case] = {
                 "exit_status": result.returncode,
                 "diagnostic": actual,

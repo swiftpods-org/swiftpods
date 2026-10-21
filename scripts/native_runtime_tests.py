@@ -15,7 +15,7 @@ import time
 import zipfile
 from pathlib import Path
 
-from bootstrap import ROOT, environment
+from bootstrap import ROOT, environment, project_state_directory
 from bundle_path_regressions import runtime_boundaries
 from reporting import execute
 
@@ -99,7 +99,9 @@ end
                 time.sleep(0.05)
             else:
                 raise AssertionError("Cancelled child survived: " + str(pid))
-        state = json.loads(work.joinpath(".swiftpods/state.json").read_text())
+        state = json.loads(
+            project_state_directory(work).joinpath("state.json").read_text()
+        )
         assert state["status"] == "recovery_required" and state["exit_status"] == 130
         cli("recover")
         assert not work.joinpath("Pods").exists()

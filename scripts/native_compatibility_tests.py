@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 from batch_fixture import user_project
-from bootstrap import ROOT, environment
+from bootstrap import ROOT, environment, project_state_directory
 from glob_character_class_regressions import character_class_parity
 from glob_scalar_regressions import scalar_parity
 from input_contract_regressions import inheritance_case
@@ -553,7 +553,7 @@ def main():
             "Specifying multiple" in event.get("message", "")
             for event in rejected["events"]
         ), rejected
-        assert not (work / ".swiftpods").exists()
+        assert not project_state_directory(work).exists()
         if args.gem_home:
             result = subprocess.run(
                 [

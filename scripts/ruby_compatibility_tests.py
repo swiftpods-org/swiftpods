@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from bootstrap import PROFILE, ROOT
+from bootstrap import PROFILE, ROOT, project_state_directory
 from reporting import execute
 from ruby_runtime import clean_environment, select_ruby
 
@@ -109,7 +109,7 @@ end
         if "SWIFTPODS_RUBY_COMPATIBILITY" in entry.get("buildSettings", {})
     ]
     assert markers and set(markers) == {version}, markers
-    state = json.loads(work.joinpath(".swiftpods/state.json").read_text())
+    state = json.loads(project_state_directory(work).joinpath("state.json").read_text())
     assert state["status"] == "complete" and state["exit_status"] == 0, state
     print(
         f"Ruby {version}: Podfile, podspec, SPM declarations, installation, hooks, offline deployment passed",

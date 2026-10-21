@@ -5,6 +5,7 @@ import json
 import shutil
 import subprocess
 
+from bootstrap import project_state_directory
 from consumer_build_regressions import update_spec
 from input_contract_regressions import commit, diagnostic, git
 from native_integration import serialize
@@ -42,7 +43,9 @@ def mercurial(fixture):
         child = work / "Sub"
         child.mkdir()
         fixture.cli(child, "install")
-        report = json.loads((work / ".swiftpods/installation.json").read_text())
+        report = json.loads(
+            (project_state_directory(work) / "installation.json").read_text()
+        )
         assert report["specs"][0]["source"] == {"hg": "./Kit", "revision": revision}
         assert (work / "Pods/Kit/Kit.c").read_bytes() == (origin / "Kit.c").read_bytes()
         locked = (work / "Podfile.lock").read_bytes()

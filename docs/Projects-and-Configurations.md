@@ -199,6 +199,13 @@ perform recovery or change the journal, backups or project files.
 If no journal exists, recovery returns `SP-RECOVER-NOT-NEEDED` without creating
 private project state.
 
+Private installation state is stored in `.swiftpods/` at the nearest Git repository
+root. Multiple Podfiles use separate directories inside `.swiftpods/projects/`,
+with independent process locks, reports and recovery backups. Add `/.swiftpods/`
+to the repository's `.gitignore`. Outside Git, state stays beside the Podfile.
+Existing per-project state is moved to the repository directory on the next
+mutation; inspection commands can read it without moving files.
+
 Environment import requires a readable Gemfile and lock file. Invalid inputs fail
 with `SP-ENV-INPUT` before private state is created. `.swiftpods`, its `environments`
 directory and profile directories must be real directories; symlinks fail with

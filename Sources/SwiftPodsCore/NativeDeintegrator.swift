@@ -168,7 +168,7 @@ enum NativeDeintegrator {
         }
         try FileManager.default.removeItem(at: archive)
         changed.append(archive)
-        let state = project.appendingPathComponent(".swiftpods/installation.json")
+        let state = ProjectStorage(project: project).file("installation.json")
         if FileManager.default.fileExists(atPath: state.path) {
             try FileManager.default.removeItem(at: state)
             changed.append(state)

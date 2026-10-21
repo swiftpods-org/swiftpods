@@ -2,7 +2,7 @@ import Foundation
 
 struct ArtifactIntegrity {
     let project: URL
-    var path: URL { project.appendingPathComponent(".swiftpods/Integrity.lock") }
+    var path: URL { ProjectStorage(project: project).file("Integrity.lock") }
 
     private func artifactPath(_ relative: String) throws -> URL {
         let components = (relative as NSString).pathComponents
