@@ -5,10 +5,10 @@ import argparse
 import json
 import random
 import subprocess
-import tempfile
 from pathlib import Path
 
-from bootstrap import ROOT, environment
+from bootstrap import environment
+from local_build import debug_binary, fixture_directory, results_directory
 from reference_compare import reference_environment
 from reporting import execute
 
@@ -47,7 +47,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gem-home", type=Path, required=True)
     args = parser.parse_args()
-    parent = Path(tempfile.mkdtemp(prefix="resolver-reference-", dir=ROOT / ".build"))
+    parent = fixture_directory("resolver-reference-")
     print("Resolver differential fixtures:", parent, flush=True)
     generator = random.Random(1431)
     cases = []
@@ -224,7 +224,7 @@ def main():
         )
         result = subprocess.run(
             [
-                str(ROOT / ".build/debug/swiftpods"),
+                str(debug_binary()),
                 "outdated",
                 "--no-integrate",
                 "--json",
@@ -287,7 +287,7 @@ def main():
             "exact cycle diagnostic text: reference internal ArgumentError on the merged cycle is retained in reference.log",
         ],
     }
-    (ROOT / "test-results/native-resolver-reference.json").write_text(
+    (results_directory() / "native-resolver-reference.json").write_text(
         json.dumps(report, indent=2) + "\n"
     )
     print(json.dumps(report, indent=2))

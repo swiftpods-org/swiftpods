@@ -3,18 +3,18 @@
 
 import contextlib
 import io
-import json
 import os
-from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
-import package
 import check
 import evidence
+import package
+from local_build import WORKSPACE_ENV, results_directory
 
 
 class PackageStorageTests(unittest.TestCase):
@@ -156,20 +156,24 @@ class PackageCheckStorageTests(unittest.TestCase):
     def test_failed_evidence_export_removes_the_built_package(self):
         self.check_storage(failure="export")
 
-    def check_storage(self, failure):
+    def test_explicit_evidence_export_survives_temporary_cleanup(self):
+        self.check_storage(failure=None, export_evidence=True)
+
+    def check_storage(self, failure, export_evidence=False):
         with tempfile.TemporaryDirectory(prefix="swiftpods-check-test-") as owner:
             owner = Path(owner)
             transient = owner / "temporary"
             transient.mkdir()
             root = owner / "source"
-            report = root / "test-results/check.json"
-            report.parent.mkdir(parents=True)
-            report.write_text('{"status": "passed"}\n')
+            report = None
+            archive = owner / "evidence.zip"
             built = None
             exported = False
 
             def main(workspace):
-                nonlocal built
+                nonlocal built, report
+                report = results_directory() / "check.json"
+                report.write_text('{"status": "passed"}\n')
                 built = workspace / "SwiftPods"
                 self.assertTrue(built.is_relative_to(transient))
                 built.mkdir()
@@ -186,15 +190,20 @@ class PackageCheckStorageTests(unittest.TestCase):
                 self.assertTrue((built / "artifact").is_file())
                 if failure == "export":
                     raise RuntimeError("export failed")
+                if export_evidence:
+                    self.assertEqual(destination, archive.resolve())
+                    destination.write_bytes(b"exported evidence")
                 exported = True
 
             with contextlib.ExitStack() as patches:
+                patches.enter_context(patch.dict(os.environ))
+                os.environ.pop(WORKSPACE_ENV, None)
                 patches.enter_context(patch.object(tempfile, "tempdir", str(transient)))
                 patches.enter_context(patch.object(check, "ROOT", root))
                 patches.enter_context(patch.object(check, "main", main))
                 patches.enter_context(patch.object(check, "execute", execute))
                 patches.enter_context(patch.object(evidence, "export", export))
-                patches.enter_context(patch.object(sys, "argv", ["check.py", "--full", "--package"]))
+                patches.enter_context(patch.object(sys, "argv", ["check.py", "--full", "--package"] + (["--evidence-destination", str(archive)] if export_evidence else [])))
                 if failure:
                     with self.assertRaises(RuntimeError):
                         check.run_checks()
@@ -204,8 +213,8 @@ class PackageCheckStorageTests(unittest.TestCase):
             self.assertFalse(built.exists())
             self.assertEqual(list(transient.iterdir()), [])
             self.assertEqual(exported, failure is None)
-            if failure == "export":
-                self.assertEqual(json.loads(report.read_text())["status"], "failed")
+            self.assertFalse(report.exists())
+            self.assertEqual(archive.exists(), export_evidence)
 
 
 if __name__ == "__main__":

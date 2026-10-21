@@ -9,14 +9,17 @@ import re
 import shutil
 import subprocess
 import tempfile
-import uuid
 from pathlib import Path
 
+from local_build import WORKSPACE_ENV, results_directory, workspace, workspace_root
 from ruby_runtime import clean_environment, select_ruby
 
 ROOT = Path(__file__).resolve().parents[1]
-PREFIX = ROOT / ".runtime"
 PROFILE = json.loads((ROOT / "Profiles/baseline.json").read_text())
+
+
+def runtime_prefix():
+    return workspace_root() / "runtime"
 
 
 def project_state_directory(project):
@@ -43,7 +46,9 @@ def project_state_directory(project):
 def environment(destination=None):
     ruby, _ = select_ruby(PROFILE)
     env = clean_environment(os.environ)
-    env.update(SWIFTPODS_RUBY=str(ruby), SWIFTPODS_BUNDLE=str(destination or PREFIX))
+    env.update(
+        SWIFTPODS_RUBY=str(ruby), SWIFTPODS_BUNDLE=str(destination or runtime_prefix())
+    )
     return env
 
 
@@ -117,7 +122,9 @@ def manifest(destination):
     for name in ["native-units.json"] + [
         suite["report"] for suite in registry["suites"]
     ]:
-        path = ROOT / "test-results" / name
+        if not os.environ.get(WORKSPACE_ENV):
+            break
+        path = results_directory() / name
         if not path.exists():
             continue
         report = json.loads(path.read_text())
@@ -188,21 +195,26 @@ def manifest(destination):
 
 def main():
     select_ruby(PROFILE)
-    staging = Path(tempfile.mkdtemp(prefix=".native-runtime-", dir=ROOT))
-    try:
+    prefix = runtime_prefix()
+    with tempfile.TemporaryDirectory(
+        prefix=".native-runtime-", dir=prefix.parent
+    ) as temporary:
+        staging = Path(temporary) / "runtime"
         shutil.copytree(ROOT / "Runtime", staging / "host")
         (staging / "licenses").mkdir()
         manifest(staging)
-        if PREFIX.exists():
-            backup = ROOT / ".build" / "previous-runtime"
-            backup.mkdir(parents=True, exist_ok=True)
-            PREFIX.rename(backup / uuid.uuid4().hex)
-        staging.rename(PREFIX)
-    finally:
-        if staging.exists():
-            shutil.rmtree(staging)
-    print("Prepared native Swift engine adapter:", PREFIX)
+        backup = Path(temporary) / "previous"
+        if prefix.exists():
+            prefix.rename(backup)
+        try:
+            staging.rename(prefix)
+        except BaseException:
+            if backup.exists():
+                backup.rename(prefix)
+            raise
+    print("Prepared native Swift engine adapter:", prefix)
 
 
 if __name__ == "__main__":
-    main()
+    with workspace():
+        main()

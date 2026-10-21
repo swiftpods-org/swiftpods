@@ -74,5 +74,5 @@ def prepare(home):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--gem-home", type=Path, default=ROOT / ".build/reference-gems")
+    parser.add_argument("--gem-home", type=Path, required=True)
     print(prepare(parser.parse_args().gem_home))

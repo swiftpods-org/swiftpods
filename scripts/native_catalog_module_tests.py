@@ -8,10 +8,11 @@ import subprocess
 from bootstrap import project_state_directory
 from consumer_build_regressions import update_spec
 from input_contract_regressions import commit, diagnostic, git
+from local_build import results_directory
 from native_integration import serialize
 from native_lifecycle_tests import LifecycleFixture
 from native_linker_manifest_tests import application, fixture_project, podfile
-from reporting import ROOT, execute
+from reporting import execute
 from vendor_fixture import fixture_derived_data, run
 from workspace_resource_regressions import add_consumer, read_project
 
@@ -322,7 +323,7 @@ def main():
     compiler_settings(fixture)
     module_products(fixture)
     yaml_booleans(fixture)
-    (ROOT / "test-results/native-catalog-module.json").write_text(
+    (results_directory() / "native-catalog-module.json").write_text(
         json.dumps(
             {
                 "status": "passed",

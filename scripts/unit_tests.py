@@ -4,24 +4,14 @@
 import json
 import re
 
+from local_build import results_directory, swift_command
 from processes import run_logged
 from reporting import ROOT, execute
 
 
 def main():
-    command = [
-        "swift",
-        "test",
-        "-Xswiftc",
-        "-warnings-as-errors",
-        "-Xcc",
-        "-Wall",
-        "-Xcc",
-        "-Wextra",
-        "-Xcc",
-        "-Werror",
-    ]
-    log = ROOT / "test-results/native-units.log"
+    command = swift_command("test")
+    log = results_directory() / "native-units.log"
     status = run_logged(command, ROOT, log)
     text = log.read_text(errors="replace")
     if status or re.search(r"(?im)^.*\bwarning:", text):
@@ -32,7 +22,7 @@ def main():
     ]
     if not counts:
         raise RuntimeError("No executed Swift test count in " + str(log))
-    (ROOT / "test-results/native-units.json").write_text(
+    (results_directory() / "native-units.json").write_text(
         json.dumps(
             {
                 "status": "passed",

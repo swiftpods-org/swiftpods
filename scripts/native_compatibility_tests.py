@@ -6,14 +6,14 @@ import json
 import re
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 from batch_fixture import user_project
-from bootstrap import ROOT, environment, project_state_directory
+from bootstrap import environment, project_state_directory
 from glob_character_class_regressions import character_class_parity
 from glob_scalar_regressions import scalar_parity
 from input_contract_regressions import inheritance_case
+from local_build import debug_binary, fixture_directory, results_directory
 from name_boundary_regressions import name_parity
 from reference_compare import reference_environment
 from reporting import execute
@@ -105,14 +105,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gem-home", type=Path)
     args = parser.parse_args()
-    parent = Path(tempfile.mkdtemp(prefix="native-compatibility-", dir=ROOT / ".build"))
+    parent = fixture_directory("native-compatibility-")
     print("Compatibility regressions:", parent, flush=True)
     native_env = environment()
     native_env["SWIFTPODS_CACHE_ROOT"] = str(parent / "native-cache")
     ruby, reference_env = (
         reference_environment(args.gem_home, parent) if args.gem_home else (None, None)
     )
-    binary = ROOT / ".build/debug/swiftpods"
+    binary = debug_binary()
 
     def native(work, *arguments, success=True):
         result = subprocess.run(
@@ -859,7 +859,7 @@ def main():
                 "parity": False,
             },
         ]
-    (ROOT / "test-results" / name).write_text(json.dumps(report, indent=2) + "\n")
+    (results_directory() / name).write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2))
 
 

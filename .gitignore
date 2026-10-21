@@ -1,11 +1,8 @@
 .build/
 /.swiftpods/
 .swiftpm/
-.runtime/
 .bundle/
 *.gem
-dist/
-test-results/
 .DS_Store
 __pycache__/
 *.pyc

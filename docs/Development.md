@@ -10,20 +10,20 @@ ruby --version
 git clone https://github.com/swiftpods-org/swiftpods.git
 cd swiftpods
 export SWIFTPODS_RUBY="$(ruby -rrbconfig -e 'print RbConfig.ruby')"
-python3 scripts/bootstrap.py
-swift build -c release -Xswiftc -warnings-as-errors -Xcc -Wall -Xcc -Wextra -Xcc -Werror
+python3 scripts/package.py --destination "$HOME/.local/opt/swiftpods"
 ```
 
 Add the executable to PATH for the current terminal session and verify it:
 
 ```sh
-export PATH="$PWD/.build/release:$PATH"
+export PATH="$HOME/.local/opt/swiftpods/bin:$PATH"
 swiftpods runtime verify --json
 ```
 
-Keep the source checkout and its generated `.runtime` directory together.
-The executable locates the adapter in that checkout. Set `SWIFTPODS_RUBY` in
-other terminal sessions when selecting the same Ruby installation.
+Compiler output is created in a system temporary directory and removed after
+the build. The exported directory contains the executable and its adapter.
+Set `SWIFTPODS_RUBY` in other terminal sessions when selecting the same Ruby
+installation.
 
 You can now run `swiftpods install` from your Xcode project directory.
 If Ruby is unavailable, install it separately, for example with `brew install ruby`.

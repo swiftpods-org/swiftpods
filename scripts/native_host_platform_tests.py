@@ -8,10 +8,10 @@ import platform
 import signal
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
-from bootstrap import ROOT, environment
+from bootstrap import environment
+from local_build import fixture_directory, results_directory
 from native_supplementary_tests import install
 from reporting import execute
 from vendor_fixture import fixture_build_arguments, fixture_derived_data, run
@@ -247,9 +247,7 @@ def main():
             raise RuntimeError(
                 "Catalyst UI execution requires macOS developer mode: sudo DevToolsSecurity -enable"
             )
-    parent = Path(
-        tempfile.mkdtemp(prefix="native-host-platforms-", dir=ROOT / ".build")
-    )
+    parent = fixture_directory("native-host-platforms-")
     print("Host platform fixtures:", parent, flush=True)
     env = environment()
     env["SWIFTPODS_CACHE_ROOT"] = str(parent / "cache")
@@ -361,7 +359,7 @@ def main():
         report["unverified"].append(
             "Catalyst UI execution requires --execute-ui and macOS developer mode"
         )
-    (ROOT / "test-results" / report_name()).write_text(
+    (results_directory() / report_name()).write_text(
         json.dumps(report, indent=2) + "\n"
     )
     print(json.dumps(report, indent=2))

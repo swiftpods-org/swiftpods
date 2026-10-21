@@ -4,10 +4,10 @@
 import argparse
 import json
 import subprocess
-import tempfile
 from pathlib import Path
 
-from bootstrap import ROOT, environment
+from bootstrap import environment
+from local_build import fixture_directory, results_directory
 from native_supplementary_tests import install
 from reporting import execute, option_value
 from ui_test_fixture import build, create, declarative, podfile, simulator
@@ -91,7 +91,7 @@ def main():
     args = parser.parse_args()
     bundle = args.bundle.resolve() if args.bundle else None
     binary = bundle / "bin/swiftpods" if bundle else None
-    parent = Path(tempfile.mkdtemp(prefix="native-ui-", dir=ROOT / ".build"))
+    parent = fixture_directory("native-ui-")
     print("UI fixtures:", parent, flush=True)
     env = environment(bundle)
     env.update(
@@ -200,7 +200,7 @@ def main():
     else:
         report["verified"].append("three library linkage modes")
     name = "native-packaged-ui.json" if bundle else "native-ui.json"
-    ROOT.joinpath("test-results", name).write_text(json.dumps(report, indent=2) + "\n")
+    results_directory().joinpath(name).write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2))
 
 

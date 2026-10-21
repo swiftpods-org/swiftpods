@@ -4,10 +4,9 @@
 import json
 import shutil
 import subprocess
-import tempfile
-from pathlib import Path
 
-from bootstrap import ROOT, environment
+from bootstrap import environment
+from local_build import debug_binary, fixture_directory, results_directory
 from reporting import execute
 
 
@@ -15,7 +14,7 @@ def main():
     hg = shutil.which("hg")
     if not hg:
         raise RuntimeError("Mercurial is required: install hg before the full corpus")
-    parent = Path(tempfile.mkdtemp(prefix="native-hg-", dir=ROOT / ".build"))
+    parent = fixture_directory("native-hg-")
     repo = parent / "repository"
     repo.mkdir()
 
@@ -52,7 +51,7 @@ def main():
 
     def cli(*args, project=work):
         result = subprocess.run(
-            [str(ROOT / ".build/debug/swiftpods"), *args, "--json"],
+            [str(debug_binary()), *args, "--json"],
             cwd=project,
             env=env,
             capture_output=True,
@@ -111,7 +110,7 @@ def main():
         ],
         "unverified": ["authenticated remote Mercurial transport"],
     }
-    (ROOT / "test-results/native-mercurial.json").write_text(
+    (results_directory() / "native-mercurial.json").write_text(
         json.dumps(report, indent=2) + "\n"
     )
     print(json.dumps(report, indent=2))

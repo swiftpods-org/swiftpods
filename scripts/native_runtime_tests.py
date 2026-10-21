@@ -9,25 +9,25 @@ import os
 import signal
 import stat
 import subprocess
-import tempfile
 import threading
 import time
 import zipfile
 from pathlib import Path
 
-from bootstrap import ROOT, environment, project_state_directory
+from bootstrap import environment, project_state_directory
 from bundle_path_regressions import runtime_boundaries
+from local_build import debug_binary, fixture_directory, results_directory
 from reporting import execute
 
 
 def main():
-    parent = Path(tempfile.mkdtemp(prefix="native-runtime-", dir=ROOT / ".build"))
+    parent = fixture_directory("native-runtime-")
     print("Runtime fixtures:", parent, flush=True)
     work = parent / "project"
     work.mkdir()
     env = environment()
     env["SWIFTPODS_CACHE_ROOT"] = str(parent / "cache")
-    binary = ROOT / ".build/debug/swiftpods"
+    binary = debug_binary()
     runtime_paths = runtime_boundaries(
         parent, binary, env, Path(env["SWIFTPODS_BUNDLE"])
     )
@@ -245,7 +245,7 @@ end
         "runtime_path_boundaries": runtime_paths,
     }
     report["verified"].extend("bundle_path_" + case for case in runtime_paths)
-    ROOT.joinpath("test-results/native-runtime.json").write_text(
+    results_directory().joinpath("native-runtime.json").write_text(
         json.dumps(report, indent=2) + "\n"
     )
     print(json.dumps(report, indent=2))

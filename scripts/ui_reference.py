@@ -4,10 +4,10 @@
 import argparse
 import json
 import subprocess
-import tempfile
 from pathlib import Path
 
-from bootstrap import ROOT, environment
+from bootstrap import environment
+from local_build import fixture_directory, results_directory
 from native_supplementary_tests import install
 from native_ui_tests import graph_contract
 from reference_compare import reference_environment
@@ -19,7 +19,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gem-home", type=Path, required=True)
     args = parser.parse_args()
-    parent = Path(tempfile.mkdtemp(prefix="ui-reference-", dir=ROOT / ".build"))
+    parent = fixture_directory("ui-reference-")
     print("UI reference fixtures:", parent, flush=True)
     for name in ["native", "reference"]:
         group = parent / name
@@ -73,7 +73,7 @@ def main():
             "complete DSL/API parity",
         ],
     }
-    ROOT.joinpath("test-results/native-ui-reference.json").write_text(
+    results_directory().joinpath("native-ui-reference.json").write_text(
         json.dumps(report, indent=2) + "\n"
     )
     print(json.dumps(report, indent=2))

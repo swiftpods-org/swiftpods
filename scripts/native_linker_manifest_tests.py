@@ -7,10 +7,11 @@ import shutil
 from bootstrap import project_state_directory
 from consumer_build_regressions import update_spec
 from input_contract_regressions import commit, diagnostic, git
+from local_build import results_directory
 from native_integration import project
 from native_lifecycle_tests import LifecycleFixture
 from native_xcconfig_tests import create
-from reporting import ROOT, execute
+from reporting import execute
 from vendor_fixture import fixture_derived_data, run
 from workspace_resource_regressions import read_project
 
@@ -329,7 +330,7 @@ def main():
     manifest_selection(fixture)
     platform_graph(fixture)
     missing_project_cleanup(fixture)
-    (ROOT / "test-results/native-linker-manifest.json").write_text(
+    (results_directory() / "native-linker-manifest.json").write_text(
         json.dumps(
             {
                 "status": "passed",

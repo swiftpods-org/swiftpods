@@ -6,10 +6,10 @@ import json
 import platform
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 
-from bootstrap import ROOT, environment
+from bootstrap import environment
+from local_build import debug_binary, fixture_directory, results_directory
 from native_integration import project, serialize
 from reporting import execute
 from swift_binary_producer import compiler_identity, produce, validate
@@ -26,7 +26,7 @@ def main():
         args.producer_manifest or args.producer_toolchain
     ):
         parser.error("Producer metadata requires --producer-framework")
-    parent = Path(tempfile.mkdtemp(prefix="native-swift-binary-", dir=ROOT / ".build"))
+    parent = fixture_directory("native-swift-binary-")
     print("Swift binary fixtures:", parent, flush=True)
     architecture = platform.machine()
     consumer_toolchain = subprocess.check_output(
@@ -103,7 +103,7 @@ def main():
             + "target 'Demo' do\n pod 'SwiftBinaryWrapper', :path => './SwiftBinaryWrapper'\nend\n"
         )
         install = subprocess.run(
-            [str(ROOT / ".build/debug/swiftpods"), "install", "--json"],
+            [str(debug_binary()), "install", "--json"],
             cwd=work,
             env=env,
             capture_output=True,
@@ -201,7 +201,7 @@ def main():
         ],
     }
     report["producer"] = producer
-    (ROOT / "test-results/native-swift-binary.json").write_text(
+    (results_directory() / "native-swift-binary.json").write_text(
         json.dumps(report, indent=2) + "\n"
     )
     print(json.dumps(report, indent=2))

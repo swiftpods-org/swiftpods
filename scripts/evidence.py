@@ -9,6 +9,7 @@ import tempfile
 import zipfile
 from pathlib import Path, PurePosixPath
 
+from local_build import results_directory, workspace_root
 from reporting import ROOT, contract_digest, source_digest, source_revision
 
 
@@ -139,7 +140,7 @@ def validate_external_artifacts(archive, index, acceptance):
 def export(destination):
     from acceptance import collect
 
-    report_path = ROOT / "test-results/check.json"
+    report_path = results_directory() / "check.json"
     report = json.loads(report_path.read_text())
     if (
         report.get("status") != "passed"
@@ -165,7 +166,7 @@ def export(destination):
     bundles = {}
     for entry in report["reports"]:
         name = entry["report"]
-        path = ROOT / "test-results" / name
+        path = results_directory() / name
         files["reports/" + name] = path.read_bytes()
         value = json.loads(files["reports/" + name])
         if value.get("log"):
@@ -177,10 +178,18 @@ def export(destination):
             )
         fixture = Path(value["fixture"]) if value.get("fixture") else None
         if fixture:
-            if not fixture.resolve().is_relative_to((ROOT / ".build").resolve()):
-                raise RuntimeError("Fixture logs must belong to this checkout")
+            if not fixture.resolve().is_relative_to(
+                (workspace_root() / "fixtures").resolve()
+            ):
+                raise RuntimeError(
+                    "Fixture logs must belong to the verification workspace"
+                )
             for log in sorted(fixture.rglob("*.log")):
-                if log.is_file() and not log.is_symlink():
+                if (
+                    log.is_file()
+                    and not log.is_symlink()
+                    and log.resolve().is_relative_to(fixture.resolve())
+                ):
                     files[
                         "fixtures/"
                         + name.removesuffix(".json")
@@ -214,7 +223,7 @@ def export(destination):
                 "Missing or unsuccessful acceptance stage: " + str(index)
             )
         files["logs/stages/" + str(index) + ".log"] = log.read_bytes()
-    supplemental = ROOT / "test-results/native-homebrew.json"
+    supplemental = results_directory() / "native-homebrew.json"
     if supplemental.is_file():
         value = json.loads(supplemental.read_text())
         if (
@@ -378,7 +387,5 @@ def validate(path, metadata=None, manifest_sha256=None):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--destination", type=Path, default=ROOT / "test-results/evidence.zip"
-    )
+    parser.add_argument("--destination", type=Path, required=True)
     export(parser.parse_args().destination)

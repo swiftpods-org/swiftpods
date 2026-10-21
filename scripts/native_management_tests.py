@@ -4,15 +4,15 @@
 import json
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 
-from bootstrap import ROOT, environment
+from bootstrap import environment
+from local_build import debug_binary, fixture_directory, results_directory
 from reporting import execute
 
 
 def main():
-    parent = Path(tempfile.mkdtemp(prefix="native-management-", dir=ROOT / ".build"))
+    parent = fixture_directory("native-management-")
     print("Management fixtures:", parent, flush=True)
     env = environment()
     env.update(
@@ -22,7 +22,7 @@ def main():
     )
     work = parent / "project"
     work.mkdir()
-    binary = ROOT / ".build/debug/swiftpods"
+    binary = debug_binary()
 
     def cli(*arguments, success=True):
         result = subprocess.run(
@@ -250,7 +250,7 @@ end
             "remote SSH authentication",
         ],
     }
-    ROOT.joinpath("test-results/native-management.json").write_text(
+    results_directory().joinpath("native-management.json").write_text(
         json.dumps(report, indent=2) + "\n"
     )
     print(json.dumps(report, indent=2))

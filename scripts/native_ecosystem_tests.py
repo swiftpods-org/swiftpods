@@ -7,11 +7,11 @@ import json
 import shlex
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 
 from batch_fixture import user_project
-from bootstrap import ROOT, environment
+from bootstrap import environment
+from local_build import debug_binary, fixture_directory, results_directory
 from native_integration import serialize
 from reference_compare import reference_environment
 from reporting import execute
@@ -27,11 +27,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gem-home", type=Path)
     args = parser.parse_args()
-    parent = Path(tempfile.mkdtemp(prefix="native-ecosystem-", dir=ROOT / ".build"))
+    parent = fixture_directory("native-ecosystem-")
     print("Ecosystem fixtures:", parent, flush=True)
     env = environment()
     env["SWIFTPODS_CACHE_ROOT"] = str(parent / "cache")
-    binary = ROOT / ".build/debug/swiftpods"
+    binary = debug_binary()
 
     def cli(work, *arguments, success=True):
         result = subprocess.run(
@@ -591,7 +591,7 @@ def main():
             "BridgeSupport.aggregate_declarations",
         ],
     }
-    ROOT.joinpath("test-results", name).write_text(json.dumps(report, indent=2) + "\n")
+    results_directory().joinpath(name).write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2))
 
 

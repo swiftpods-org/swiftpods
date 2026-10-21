@@ -5,10 +5,10 @@ import argparse
 import json
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 
 from bootstrap import ROOT, environment, project_state_directory
+from local_build import debug_binary, fixture_directory, results_directory
 from native_integration import project
 from reporting import execute
 
@@ -45,7 +45,7 @@ def main():
         help="Separately prepared reference-only gems; never used by production",
     )
     args = parser.parse_args()
-    parent = Path(tempfile.mkdtemp(prefix="reference-compare-", dir=ROOT / ".build"))
+    parent = fixture_directory("reference-compare-")
     reference = parent / "reference"
     native = parent / "native"
     for directory in (reference, native):
@@ -56,7 +56,7 @@ def main():
     native_log = parent / "native.log"
     with native_log.open("wb") as log:
         result = subprocess.run(
-            [str(ROOT / ".build/debug/swiftpods"), "install", "--json"],
+            [str(debug_binary()), "install", "--json"],
             cwd=native,
             env=native_env,
             stdout=log,
@@ -108,7 +108,7 @@ def main():
             "reference matrix beyond this fixture",
         ],
     }
-    (ROOT / "test-results/native-reference.json").write_text(
+    (results_directory() / "native-reference.json").write_text(
         json.dumps(report, indent=2) + "\n"
     )
     print(json.dumps(report, indent=2))

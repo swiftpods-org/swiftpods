@@ -4,11 +4,11 @@
 import argparse
 import json
 import subprocess
-import tempfile
 from pathlib import Path
 
 from batch_fixture import build, create
-from bootstrap import ROOT, environment
+from bootstrap import environment
+from local_build import debug_binary, fixture_directory, results_directory
 from native_integration import serialize
 from native_supplementary_tests import install
 from reporting import execute
@@ -99,7 +99,7 @@ def exercise(parent, linkage, binary=None, bundle=None, multiple=False, mobile=F
             item["buildSettings"]["BATCH_USER"] = "preserved"
     path.write_text("// !$*UTF8*$!\n" + serialize(graph))
     result = subprocess.run(
-        [str(binary or ROOT / ".build/debug/swiftpods"), "deintegrate", "--json"],
+        [str(binary or debug_binary()), "deintegrate", "--json"],
         cwd=work,
         env=env,
         capture_output=True,
@@ -181,7 +181,7 @@ def main():
     args = parser.parse_args()
     bundle = args.bundle.resolve() if args.bundle else None
     binary = bundle / "bin/swiftpods" if bundle else None
-    parent = Path(tempfile.mkdtemp(prefix="native-batch-", dir=ROOT / ".build"))
+    parent = fixture_directory("native-batch-")
     print("Batch fixtures:", parent, flush=True)
     scenarios = [
         exercise(parent / label, linkage, binary, bundle, multiple, mobile)
@@ -226,8 +226,8 @@ def main():
         report["bundle_digest"] = json.loads(
             bundle.joinpath("compatibility.json").read_text()
         )["bundle_digest"]
-    ROOT.joinpath(
-        "test-results/native-batch" + ("-distribution" if bundle else "") + ".json"
+    results_directory().joinpath(
+        "native-batch" + ("-distribution" if bundle else "") + ".json"
     ).write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2))
 

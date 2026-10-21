@@ -6,10 +6,11 @@ import subprocess
 
 from bootstrap import project_state_directory
 from input_contract_regressions import diagnostic, save_project
+from local_build import results_directory
 from native_lifecycle_tests import LifecycleFixture
 from native_linker_manifest_tests import application
 from native_xcconfig_tests import create
-from reporting import ROOT, execute
+from reporting import execute
 from vendor_fixture import run
 from workspace_resource_regressions import read_project
 
@@ -261,7 +262,7 @@ def main():
             scenario()
         except (AssertionError, RuntimeError, subprocess.SubprocessError) as error:
             failures.append({"scenario": label, "error": str(error)})
-    (ROOT / "test-results/native-platform-inference.json").write_text(
+    (results_directory() / "native-platform-inference.json").write_text(
         json.dumps(
             {
                 "status": "failed" if failures else "passed",

@@ -6,11 +6,11 @@ import platform as host_platform
 import plistlib
 import shutil
 import subprocess
-import tempfile
 import time
 from pathlib import Path
 
 from bootstrap import ROOT, environment
+from local_build import debug_binary, fixture_directory, results_directory
 from native_integration import project
 from reporting import execute
 from vendor_fixture import run, sdk
@@ -193,7 +193,7 @@ def fixture(base, products, platform, raw=False, transitive=False):
 
 def install(work, env, log):
     result = subprocess.run(
-        [str(ROOT / ".build/debug/swiftpods"), "install", "--json"],
+        [str(debug_binary()), "install", "--json"],
         cwd=work,
         env=env,
         capture_output=True,
@@ -421,9 +421,7 @@ def objc_archive_regression(base, env):
 
 
 def main():
-    base = ROOT / ".build/native-vendor"
-    base.mkdir(exist_ok=True)
-    base = Path(tempfile.mkdtemp(prefix="run-", dir=base))
+    base = fixture_directory("native-vendor-")
     print("Vendor fixtures:", base, flush=True)
     products = [
         ("VendorStatic", sdk(base, "VendorStatic"), False),
@@ -449,7 +447,7 @@ def main():
         lock = work.joinpath("Podfile.lock").read_bytes()
         run(
             [
-                ROOT / ".build/debug/swiftpods",
+                debug_binary(),
                 "install",
                 "--deployment",
                 "--offline",
@@ -517,7 +515,7 @@ def main():
             spec["vendored_frameworks"].append("Missing.framework")
             spec_path.write_text(json.dumps(spec))
             rejected = subprocess.run(
-                [str(ROOT / ".build/debug/swiftpods"), "install", "--json"],
+                [str(debug_binary()), "install", "--json"],
                 cwd=work,
                 env=env,
                 capture_output=True,
@@ -615,7 +613,7 @@ def main():
             "all third-party SDKs",
         ],
     }
-    ROOT.joinpath("test-results/native-vendor.json").write_text(
+    results_directory().joinpath("native-vendor.json").write_text(
         json.dumps(report, indent=2) + "\n"
     )
     print(json.dumps(report, indent=2))

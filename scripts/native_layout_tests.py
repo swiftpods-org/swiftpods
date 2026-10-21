@@ -4,11 +4,11 @@
 import argparse
 import json
 import subprocess
-import tempfile
 from pathlib import Path
 
-from bootstrap import ROOT, environment
+from bootstrap import environment
 from layout_fixture import contract, enable
+from local_build import fixture_directory, results_directory
 from native_supplementary_tests import build, install
 from reporting import execute, option_value
 from supplementary_fixture import create
@@ -200,7 +200,7 @@ def main():
     args = parser.parse_args()
     bundle = args.bundle.resolve() if args.bundle else None
     binary = bundle / "bin/swiftpods" if bundle else None
-    parent = Path(tempfile.mkdtemp(prefix="native-layout-", dir=ROOT / ".build"))
+    parent = fixture_directory("native-layout-")
     print("Layout fixtures:", parent, flush=True)
     scenarios = [
         mac(parent / label, linkage, binary, bundle)
@@ -248,7 +248,7 @@ def main():
             ],
         )
     name = "native-packaged-layout.json" if bundle else "native-layout.json"
-    ROOT.joinpath("test-results", name).write_text(json.dumps(report, indent=2) + "\n")
+    results_directory().joinpath(name).write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2))
 
 

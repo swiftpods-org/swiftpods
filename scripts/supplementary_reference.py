@@ -4,10 +4,10 @@
 import argparse
 import json
 import subprocess
-import tempfile
 from pathlib import Path
 
-from bootstrap import ROOT, environment
+from bootstrap import environment
+from local_build import fixture_directory, results_directory
 from native_supplementary_tests import build, install
 from reference_compare import reference_environment
 from reporting import execute
@@ -18,9 +18,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gem-home", type=Path, required=True)
     args = parser.parse_args()
-    base = Path(
-        tempfile.mkdtemp(prefix="supplementary-reference-", dir=ROOT / ".build")
-    )
+    base = fixture_directory("supplementary-reference-")
     for name in ["native", "reference"]:
         parent = base / name
         parent.mkdir()
@@ -148,7 +146,7 @@ def main():
             "native_target_for_spec",
         ]
     ]
-    ROOT.joinpath("test-results/native-supplementary-reference.json").write_text(
+    results_directory().joinpath("native-supplementary-reference.json").write_text(
         json.dumps(report, indent=2) + "\n"
     )
     print(json.dumps(report, indent=2))

@@ -4,10 +4,11 @@
 import json
 
 from consumer_build_regressions import update_spec
+from local_build import results_directory
 from native_integration import serialize
 from native_lifecycle_tests import LifecycleFixture
 from native_linker_manifest_tests import application, fixture_project, podfile
-from reporting import ROOT, execute
+from reporting import execute
 from vendor_fixture import run
 from workspace_resource_regressions import read_project
 
@@ -202,7 +203,7 @@ def main():
             "reselection_isolates_sources_resources_and_header_visibility_" + mode
         )
     custom_module_map(fixture)
-    (ROOT / "test-results/native-subspec-files.json").write_text(
+    (results_directory() / "native-subspec-files.json").write_text(
         json.dumps(
             {
                 "status": "passed",

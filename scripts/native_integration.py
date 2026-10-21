@@ -6,10 +6,9 @@ import platform
 import plistlib
 import shutil
 import subprocess
-import tempfile
-from pathlib import Path
 
 from bootstrap import ROOT, environment, project_state_directory
+from local_build import debug_binary, fixture_directory, results_directory
 from reporting import execute
 
 
@@ -99,7 +98,6 @@ def project(path, platform="osx", *, scoped_variants=False):
         "CODE_SIGNING_ALLOWED": "NO",
         "CLANG_CXX_LANGUAGE_STANDARD": "c++17",
         "SWIFT_VERSION": "5.0",
-        "ENABLE_USER_SCRIPT_SANDBOXING": "YES",
         "GCC_TREAT_WARNINGS_AS_ERRORS": "YES",
         "SWIFT_TREAT_WARNINGS_AS_ERRORS": "YES",
         "GCC_PREPROCESSOR_DEFINITIONS": ["$(inherited)", "FIXTURE_USER_FLAG=1"],
@@ -293,9 +291,7 @@ end
 
 
 def exercise(variant, *, multiple_projects=False, scoped_variants=False, cli=None):
-    base = ROOT / ".build/native-integration"
-    base.mkdir(exist_ok=True)
-    fixture = Path(tempfile.mkdtemp(prefix="run-", dir=base))
+    fixture = fixture_directory("native-integration-")
     shutil.copytree(ROOT / "Tests/Fixtures/MixedLanguages", fixture / "project")
     work = fixture / "project"
     vendor_fixture(work)
@@ -330,7 +326,7 @@ pre_install do""", 1)
     env["SWIFTPODS_CACHE_ROOT"] = str(fixture / "cache")
     env["GEM_HOME"] = str(fixture / "no-global-gems")
     env["GEM_PATH"] = env["GEM_HOME"]
-    cli = cli or ROOT / ".build/debug/swiftpods"
+    cli = cli or debug_binary()
 
     def run(*args, success=True, directory=work):
         result = subprocess.run(
@@ -493,7 +489,7 @@ def main():
             "signing",
         ],
     }
-    (ROOT / "test-results/native-integration.json").write_text(
+    (results_directory() / "native-integration.json").write_text(
         json.dumps(report, indent=2) + "\n"
     )
     print(json.dumps(report, indent=2))

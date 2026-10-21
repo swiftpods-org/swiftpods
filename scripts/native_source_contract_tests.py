@@ -7,25 +7,22 @@ import http.server
 import json
 import shutil
 import subprocess
-import tempfile
 import threading
 import zipfile
-from pathlib import Path
 
-from bootstrap import ROOT, environment
+from bootstrap import environment
+from local_build import debug_binary, fixture_directory, results_directory
 from reporting import execute
 
 
 def main():
-    parent = Path(
-        tempfile.mkdtemp(prefix="native-source-contract-", dir=ROOT / ".build")
-    )
+    parent = fixture_directory("native-source-contract-")
     print("Source contract fixtures:", parent, flush=True)
     work = parent / "project"
     work.mkdir()
     env = environment()
     env["SWIFTPODS_CACHE_ROOT"] = str(parent / "cache")
-    binary = ROOT / ".build/debug/swiftpods"
+    binary = debug_binary()
 
     def cli(*args, success=True):
         result = subprocess.run(
@@ -198,7 +195,7 @@ def main():
             "remote VCS authentication",
         ],
     }
-    ROOT.joinpath("test-results/native-source-contract.json").write_text(
+    results_directory().joinpath("native-source-contract.json").write_text(
         json.dumps(report, indent=2) + "\n"
     )
     print(json.dumps(report, indent=2))

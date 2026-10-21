@@ -5,10 +5,10 @@ import argparse
 import json
 import platform
 import subprocess
-import tempfile
 from pathlib import Path
 
-from bootstrap import ROOT, environment
+from bootstrap import environment
+from local_build import debug_binary, fixture_directory, results_directory
 from native_integration import project, serialize
 from reference_compare import reference_environment
 from reporting import execute
@@ -159,7 +159,7 @@ def invalid_block_comments(parent, env):
         )
         original = (selected / "project.pbxproj").read_bytes()
         result = subprocess.run(
-            [str(ROOT / ".build/debug/swiftpods"), "install", "--json"],
+            [str(debug_binary()), "install", "--json"],
             cwd=work,
             env=env,
             capture_output=True,
@@ -244,7 +244,7 @@ def invalid_assignments(parent, env):
             invalid.write_text("SDKROOT = macosx\nVALUE " + operation + " child\n")
             original = (selected / "project.pbxproj").read_bytes()
             result = subprocess.run(
-                [str(ROOT / ".build/debug/swiftpods"), "install", "--json"],
+                [str(debug_binary()), "install", "--json"],
                 cwd=work,
                 env=env,
                 capture_output=True,
@@ -338,7 +338,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gem-home", type=Path)
     args = parser.parse_args()
-    parent = Path(tempfile.mkdtemp(prefix="native-xcconfig-", dir=ROOT / ".build"))
+    parent = fixture_directory("native-xcconfig-")
     print("External xcconfig fixtures:", parent, flush=True)
     env = environment()
     env["SWIFTPODS_CACHE_ROOT"] = str(parent / "cache")
@@ -351,7 +351,7 @@ def main():
         scalar_values(work)
         if engine == "native":
             command, selected_env = (
-                [str(ROOT / ".build/debug/swiftpods"), "install", "--json"],
+                [str(debug_binary()), "install", "--json"],
                 env,
             )
         else:
@@ -425,7 +425,7 @@ def main():
             )
         if engine == "native":
             subprocess.run(
-                [str(ROOT / ".build/debug/swiftpods"), "deintegrate", "--json"],
+                [str(debug_binary()), "deintegrate", "--json"],
                 cwd=work,
                 env=env,
                 check=True,
@@ -479,7 +479,7 @@ def main():
     if args.gem_home:
         report["reference"] = "1.17.0"
     name = "native-xcconfig-reference.json" if args.gem_home else "native-xcconfig.json"
-    (ROOT / "test-results" / name).write_text(json.dumps(report, indent=2) + "\n")
+    (results_directory() / name).write_text(json.dumps(report, indent=2) + "\n")
 
 
 if __name__ == "__main__":

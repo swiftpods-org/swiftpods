@@ -8,11 +8,10 @@ import http.server
 import json
 import platform
 import subprocess
-import tempfile
 import threading
 from pathlib import Path
 
-from bootstrap import ROOT, environment
+from bootstrap import environment
 from build_setting_definition_regressions import (
     run_regressions as build_setting_definition_regressions,
 )
@@ -42,6 +41,7 @@ from input_contract_regressions import run as input_contract_regressions
 from integrity_doctor_path_regressions import run_regressions as integrity_doctor_paths
 from lifecycle_audit_regressions import run as audit_regressions
 from lint_input_regressions import run as lint_input_regressions
+from local_build import debug_binary, fixture_directory, results_directory
 from metadata_repository_regressions import run as metadata_regressions
 from name_boundary_regressions import run_regressions as name_boundary_regressions
 from native_integration import project, serialize
@@ -82,12 +82,10 @@ def read_project(path):
 
 class LifecycleFixture:
     def __init__(self):
-        self.root = Path(
-            tempfile.mkdtemp(prefix="native-lifecycle-", dir=ROOT / ".build")
-        )
+        self.root = fixture_directory("native-lifecycle-")
         self.env = environment()
         self.env["SWIFTPODS_CACHE_ROOT"] = str(self.root / "cache")
-        self.binary = ROOT / ".build/debug/swiftpods"
+        self.binary = debug_binary()
         self.sequence = 0
         self.verified = []
 
@@ -540,7 +538,7 @@ def main():
     value_contract_regressions(fixture)
     structured_input_regressions(fixture)
     swift_package_regressions(fixture)
-    (ROOT / "test-results/native-lifecycle.json").write_text(
+    (results_directory() / "native-lifecycle.json").write_text(
         json.dumps(
             {
                 "status": "passed",

@@ -4,7 +4,7 @@ import json
 import platform
 import subprocess
 
-from bootstrap import ROOT
+from local_build import debug_binary
 from processes import run_logged
 from vendor_fixture import fixture_build_arguments, fixture_derived_data, run
 
@@ -36,7 +36,7 @@ def diagnostics(report):
 
 def cli(work, parent, label, env, *arguments):
     log = parent / (label + ".log")
-    run([ROOT / ".build/debug/swiftpods", *arguments, "--json"], work, log, env=env)
+    run([debug_binary(), *arguments, "--json"], work, log, env=env)
 
 
 def xcode_settings(work, selected, parent, env, configuration):
@@ -204,7 +204,7 @@ def rejected(work, selected, parent, env, label, code, file=None, line=None):
     spec = work / "Kit/Kit.podspec.json"
     spec_bytes = spec.read_bytes()
     result = subprocess.run(
-        [str(ROOT / ".build/debug/swiftpods"), "install", "--json"],
+        [str(debug_binary()), "install", "--json"],
         cwd=work,
         env=env,
         capture_output=True,

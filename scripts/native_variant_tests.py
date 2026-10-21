@@ -4,10 +4,10 @@
 import argparse
 import json
 import subprocess
-import tempfile
 from pathlib import Path
 
-from bootstrap import ROOT, environment
+from bootstrap import environment
+from local_build import debug_binary, fixture_directory, results_directory
 from native_supplementary_tests import install
 from reporting import execute, option_value
 from variant_fixture import (
@@ -35,8 +35,8 @@ def main():
     parser.add_argument("--bundle", type=Path)
     args = parser.parse_args()
     bundle = args.bundle.resolve() if args.bundle else None
-    binary = bundle / "bin/swiftpods" if bundle else ROOT / ".build/debug/swiftpods"
-    parent = Path(tempfile.mkdtemp(prefix="native-variants-", dir=ROOT / ".build"))
+    binary = bundle / "bin/swiftpods" if bundle else debug_binary()
+    parent = fixture_directory("native-variants-")
     print("Variant fixtures:", parent, flush=True)
     sdk_path = sdk(parent, "VariantBinary", platforms=("macosx",))
     work = parent / "project"
@@ -127,7 +127,7 @@ def main():
         manifest = json.loads(bundle.joinpath("compatibility.json").read_text())
         report.update(bundle=str(bundle), bundle_digest=manifest["bundle_digest"])
     name = "native-packaged-variants.json" if bundle else "native-variants.json"
-    ROOT.joinpath("test-results", name).write_text(json.dumps(report, indent=2) + "\n")
+    results_directory().joinpath(name).write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2))
 
 

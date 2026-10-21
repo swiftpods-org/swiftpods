@@ -6,14 +6,15 @@ import json
 import os
 import re
 import sys
-import tempfile
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from acceptance import collect
+from local_build import results_directory
+from local_build import workspace as build_workspace
 from processes import run_logged, termination_signals
-from reporting import ROOT, execute, write_report
+from reporting import ROOT, execute, option_value, write_report
 from ruby_runtime import clean_environment, select_ruby
 
 
@@ -29,10 +30,8 @@ class VerificationStages:
     def run(self, command, report=None, env=None):
         print("Running:", " ".join(map(str, command)), flush=True)
         with self.lock:
-            log = (
-                ROOT
-                / "test-results"
-                / ("native-check-" + str(len(self.stages)) + ".log")
+            log = results_directory() / (
+                "native-check-" + str(len(self.stages)) + ".log"
             )
             stage = {
                 "command": list(map(str, command)),
@@ -54,7 +53,7 @@ class VerificationStages:
             with self.lock:
                 stage["error"] = str(error) or type(error).__name__
                 write_report(
-                    ROOT / "test-results/check.json",
+                    results_directory() / "check.json",
                     {
                         "status": "failed",
                         "stages": self.stages,
@@ -70,7 +69,7 @@ class VerificationStages:
             stage["exit_status"] = status
             if status or warning:
                 write_report(
-                    ROOT / "test-results/check.json",
+                    results_directory() / "check.json",
                     {
                         "status": "failed",
                         "stages": self.stages,
@@ -133,7 +132,7 @@ def main(workspace):
         help="Explicitly incomplete native smoke check",
     )
     parser.add_argument(
-        "--reference-gem-home", type=Path, default=ROOT / ".build/reference-gems"
+        "--reference-gem-home", type=Path, default=workspace / "reference-gems"
     )
     parser.add_argument(
         "--package",
@@ -143,6 +142,11 @@ def main(workspace):
         help="Check a temporary package, or export it to an explicitly supplied path",
     )
     parser.add_argument("--external-evidence", type=Path)
+    parser.add_argument(
+        "--evidence-destination",
+        type=Path,
+        help="Export verification evidence before temporary reports are removed",
+    )
     parser.add_argument("--require-stable", action="store_true")
     parser.add_argument(
         "--signing-identity",
@@ -165,6 +169,8 @@ def main(workspace):
         parser.error("--jobs must be between 1 and 8")
     if args.full and args.skip_apple:
         parser.error("--full cannot skip required Apple checks")
+    if args.evidence_destination and not (args.full and args.package):
+        parser.error("--evidence-destination requires --full and --package")
     if args.require_stable and (not args.full or not args.package):
         parser.error("--require-stable requires --full and --package")
     if (
@@ -181,6 +187,7 @@ def main(workspace):
     stages, reports, run = verification.stages, verification.reports, verification.run
 
     run([sys.executable, "scripts/package_tests.py"])
+    run([sys.executable, "scripts/local_build_tests.py"])
     run([sys.executable, "scripts/bootstrap.py"])
     run([sys.executable, "scripts/unit_tests.py"], "native-units.json")
     run([sys.executable, "scripts/ruby_runtime_tests.py"])
@@ -237,7 +244,7 @@ def main(workspace):
     aggregate.update(
         stages=stages, full=args.full, apple_integration_omitted=args.skip_apple
     )
-    (ROOT / "test-results/check.json").write_text(
+    (results_directory() / "check.json").write_text(
         json.dumps(aggregate, indent=2) + "\n"
     )
     if args.require_stable and aggregate["stable_acceptance"] != "established":
@@ -249,8 +256,8 @@ def main(workspace):
 
 @termination_signals()
 def run_checks():
-    with tempfile.TemporaryDirectory(prefix="swiftpods-check-") as temporary:
-        execute(lambda: main(Path(temporary)), "check.json")
+    with build_workspace() as temporary:
+        execute(lambda: main(temporary), "check.json")
         if "--full" in sys.argv and any(
             argument == "--package" or argument.startswith("--package=")
             for argument in sys.argv[1:]
@@ -258,9 +265,14 @@ def run_checks():
             from evidence import export
 
             try:
-                export(ROOT / "test-results/evidence.zip")
+                destination = option_value("--evidence-destination")
+                export(
+                    Path(destination).resolve()
+                    if destination
+                    else results_directory() / "evidence.zip"
+                )
             except BaseException as error:
-                path = ROOT / "test-results/check.json"
+                path = results_directory() / "check.json"
                 report = json.loads(path.read_text())
                 report.update(
                     status="failed", error="Evidence export failed: " + str(error)

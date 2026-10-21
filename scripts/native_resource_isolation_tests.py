@@ -7,6 +7,7 @@ import plistlib
 import shutil
 
 from consumer_build_regressions import update_spec
+from local_build import results_directory
 from native_integration import project
 from native_lifecycle_tests import LifecycleFixture
 from native_linker_manifest_tests import fixture_project, podfile
@@ -390,7 +391,7 @@ def main():
     for mode in ["library", "static", "dynamic"]:
         supplementary(fixture, mode)
         conditional_odr(fixture, mode, observations)
-    (ROOT / "test-results/native-resource-isolation.json").write_text(
+    (results_directory() / "native-resource-isolation.json").write_text(
         json.dumps(
             {
                 "status": "passed",

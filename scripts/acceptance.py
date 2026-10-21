@@ -4,6 +4,7 @@ import hashlib
 import json
 from pathlib import Path
 
+from local_build import results_directory
 from reporting import ROOT, contract_digest, source_digest, source_revision
 
 
@@ -53,7 +54,7 @@ def collect(names, external=None):
     reports, content = [], {}
     host = toolchain = executable = None
     for name in names:
-        path = ROOT / "test-results" / name
+        path = results_directory() / name
         if not path.is_file():
             raise RuntimeError("Missing required evidence: " + name)
         report = json.loads(path.read_text())

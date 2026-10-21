@@ -6,10 +6,9 @@ import platform as host_platform
 import plistlib
 import shutil
 import subprocess
-import tempfile
-from pathlib import Path
 
-from bootstrap import ROOT, environment
+from bootstrap import environment
+from local_build import debug_binary, fixture_directory, results_directory
 from reporting import execute
 from vendor_fixture import run, sdk
 
@@ -34,7 +33,7 @@ DESTINATIONS = [
 
 
 def main():
-    parent = Path(tempfile.mkdtemp(prefix="native-platforms-", dir=ROOT / ".build"))
+    parent = fixture_directory("native-platforms-")
     print("Platform fixtures:", parent, flush=True)
     binary = sdk(
         parent,
@@ -77,7 +76,7 @@ def main():
             work.joinpath("Podfile").write_text(text)
             installed = subprocess.run(
                 [
-                    str(ROOT / ".build/debug/swiftpods"),
+                    str(debug_binary()),
                     "install",
                     "--no-integrate",
                     "--json",
@@ -216,7 +215,7 @@ def main():
             "test/app host matrices outside existing macOS/iOS fixtures",
         ],
     }
-    ROOT.joinpath("test-results/native-platforms.json").write_text(
+    results_directory().joinpath("native-platforms.json").write_text(
         json.dumps(report, indent=2) + "\n"
     )
     print(json.dumps(report, indent=2))

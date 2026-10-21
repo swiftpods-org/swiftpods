@@ -3,18 +3,15 @@
 
 import json
 import subprocess
-import tempfile
-from pathlib import Path
 
 from bootstrap import environment
-from reporting import ROOT, execute
+from local_build import debug_binary, fixture_directory, results_directory
+from reporting import execute
 
 
 class Fixture:
     def __init__(self):
-        self.root = Path(
-            tempfile.mkdtemp(prefix="native-lint-interface-", dir=ROOT / ".build")
-        )
+        self.root = fixture_directory("native-lint-interface-")
         self.env = environment()
         self.env["SWIFTPODS_CACHE_ROOT"] = str(self.root / "cache")
         self.verified = []
@@ -45,7 +42,7 @@ class Fixture:
     def lint(self, spec, flags, passed, label):
         result = subprocess.run(
             [
-                str(ROOT / ".build/debug/swiftpods"),
+                str(debug_binary()),
                 "lib",
                 "lint",
                 str(spec),
@@ -225,7 +222,7 @@ def main():
         "observations": fixture.observations,
         "fixture": str(fixture.root),
     }
-    (ROOT / "test-results/native-lint-interface.json").write_text(
+    (results_directory() / "native-lint-interface.json").write_text(
         json.dumps(report, indent=2) + "\n"
     )
     if failures:

@@ -5,11 +5,10 @@ import json
 import plistlib
 import shutil
 import subprocess
-import tempfile
-from pathlib import Path
 
 from batch_fixture import user_project
 from bootstrap import ROOT, environment
+from local_build import debug_binary, fixture_directory, results_directory
 from processes import run_captured
 from reporting import execute
 
@@ -21,7 +20,7 @@ def graph(path):
 
 
 def main():
-    parent = Path(tempfile.mkdtemp(prefix="native-contract-", dir=ROOT / ".build"))
+    parent = fixture_directory("native-contract-")
     print("Contract fixtures:", parent, flush=True)
     work = parent / "project"
     work.mkdir()
@@ -33,7 +32,7 @@ def main():
         GIT_COMMITTER_NAME="Fixture",
         GIT_COMMITTER_EMAIL="fixture@swiftpods.org",
     )
-    binary = ROOT / ".build/debug/swiftpods"
+    binary = debug_binary()
     sequence = 0
 
     def cli(*args, success=True, directory=work):
@@ -441,7 +440,7 @@ end
             "arbitrary private plugin APIs",
         ],
     }
-    ROOT.joinpath("test-results/native-contract.json").write_text(
+    results_directory().joinpath("native-contract.json").write_text(
         json.dumps(report, indent=2) + "\n"
     )
     print(json.dumps(report, indent=2))

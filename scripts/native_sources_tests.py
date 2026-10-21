@@ -6,17 +6,16 @@ import hashlib
 import http.server
 import json
 import subprocess
-import tempfile
 import threading
 import zipfile
-from pathlib import Path
 
-from bootstrap import ROOT, environment
+from bootstrap import environment
+from local_build import debug_binary, fixture_directory, results_directory
 from reporting import execute
 
 
 def main():
-    parent = Path(tempfile.mkdtemp(prefix="native-sources-", dir=ROOT / ".build"))
+    parent = fixture_directory("native-sources-")
     web = parent / "web"
     web.mkdir()
     with zipfile.ZipFile(web / "source.zip", "w") as archive:
@@ -73,7 +72,7 @@ def main():
     (work / "Podfile.json").write_text(json.dumps(manifest))
     env = environment()
     env["SWIFTPODS_CACHE_ROOT"] = str(parent / "cache")
-    cli = ROOT / ".build/debug/swiftpods"
+    cli = debug_binary()
 
     def run(*args, success=True):
         result = subprocess.run(
@@ -275,7 +274,7 @@ def main():
                 "full compatibility matrix",
             ],
         }
-        (ROOT / "test-results/native-sources.json").write_text(
+        (results_directory() / "native-sources.json").write_text(
             json.dumps(report, indent=2) + "\n"
         )
         print(json.dumps(report, indent=2))

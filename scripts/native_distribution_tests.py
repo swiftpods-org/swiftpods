@@ -6,11 +6,11 @@ import json
 import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 from bootstrap import ROOT, environment
 from bundle_path_regressions import runtime_boundaries
+from local_build import fixture_directory, results_directory
 from reporting import execute
 
 
@@ -47,7 +47,7 @@ def main():
             for row in archives
         )
         assert all(row.get("platform") and row.get("architecture") for row in matrix)
-    parent = Path(tempfile.mkdtemp(prefix="native-distribution-", dir=ROOT / ".build"))
+    parent = fixture_directory("native-distribution-")
     relocated = parent / "relocated" / "SwiftPods"
     relocated.parent.mkdir()
     shutil.copytree(bundle, relocated, symlinks=True)
@@ -80,9 +80,7 @@ def main():
     released = json.loads((release / "release.json").read_text())
     assert released["development"] and not released["publishable"]
     assert all(
-        asset["url"].startswith(
-            "https://github.com/swiftpods-org/swiftpods/releases/"
-        )
+        asset["url"].startswith("https://github.com/swiftpods-org/swiftpods/releases/")
         for asset in released["assets"]
     )
     sha = hashlib.sha256((release / "release.json").read_bytes()).hexdigest()
@@ -152,7 +150,7 @@ def main():
         result.stderr
     )
     assert not rejected.exists(), "Failed preparation exposed a partial release"
-    (ROOT / "test-results/native-distribution.json").write_text(
+    (results_directory() / "native-distribution.json").write_text(
         json.dumps(
             {
                 "status": "passed",

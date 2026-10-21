@@ -4,10 +4,9 @@
 import json
 import platform
 import subprocess
-import tempfile
-from pathlib import Path
 
-from bootstrap import ROOT, environment
+from bootstrap import environment
+from local_build import debug_binary, fixture_directory, results_directory
 from reporting import execute
 from supplementary_fixture import create, declarative, podfile
 from vendor_fixture import fixture_build_arguments, run
@@ -15,7 +14,7 @@ from vendor_fixture import fixture_build_arguments, run
 
 def install(work, env, *args, binary=None):
     result = subprocess.run(
-        [str(binary or ROOT / ".build/debug/swiftpods"), "install", *args, "--json"],
+        [str(binary or debug_binary()), "install", *args, "--json"],
         cwd=work,
         env=env,
         capture_output=True,
@@ -228,7 +227,7 @@ def exercise(parent, linkage):
             )
         )
         denied = subprocess.run(
-            [str(ROOT / ".build/debug/swiftpods"), "install", "--json"],
+            [str(debug_binary()), "install", "--json"],
             cwd=work,
             env=env,
             capture_output=True,
@@ -258,9 +257,7 @@ def exercise(parent, linkage):
 
 
 def main():
-    base = ROOT / ".build/native-supplementary"
-    base.mkdir(exist_ok=True)
-    base = Path(tempfile.mkdtemp(prefix="run-", dir=base))
+    base = fixture_directory("native-supplementary-")
     print("Supplementary fixtures:", base, flush=True)
     scenarios = [
         exercise(base / (linkage or "library"), linkage)
@@ -293,7 +290,7 @@ def main():
             "complete reference parity",
         ],
     }
-    ROOT.joinpath("test-results/native-supplementary.json").write_text(
+    results_directory().joinpath("native-supplementary.json").write_text(
         json.dumps(report, indent=2) + "\n"
     )
     print(json.dumps(report, indent=2))

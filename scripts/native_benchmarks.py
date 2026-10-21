@@ -5,16 +5,15 @@ import json
 import shutil
 import statistics
 import subprocess
-import tempfile
 import time
-from pathlib import Path
 
-from bootstrap import ROOT, environment
+from bootstrap import environment
+from local_build import debug_binary, fixture_directory, results_directory
 from reporting import execute
 
 
 def main():
-    parent = Path(tempfile.mkdtemp(prefix="native-benchmark-", dir=ROOT / ".build"))
+    parent = fixture_directory("native-benchmark-")
     repo, catalog = parent / "source", parent / "catalog"
     repo.mkdir()
     catalog.mkdir()
@@ -72,7 +71,7 @@ def main():
         selected = dict(env, SWIFTPODS_CACHE_ROOT=str(cache))
         started = time.monotonic()
         result = subprocess.run(
-            [str(ROOT / ".build/debug/swiftpods"), *args, "--no-integrate", "--json"],
+            [str(debug_binary()), *args, "--no-integrate", "--json"],
             cwd=path,
             env=selected,
             capture_output=True,
@@ -172,7 +171,7 @@ def main():
     report["verified"].append(
         "no-op preserves all measured build input bytes and timestamps"
     )
-    (ROOT / "test-results/native-benchmarks.json").write_text(
+    (results_directory() / "native-benchmarks.json").write_text(
         json.dumps(report, indent=2) + "\n"
     )
     print(json.dumps(report, indent=2))

@@ -4,11 +4,11 @@
 import argparse
 import json
 import subprocess
-import tempfile
 from pathlib import Path
 
-from bootstrap import ROOT, environment
+from bootstrap import environment
 from configuration_fixture import build, create, podfile, products, simulator_run
+from local_build import debug_binary, fixture_directory, results_directory
 from native_integration import serialize
 from native_supplementary_tests import install
 from reporting import execute, option_value
@@ -20,8 +20,8 @@ def main():
     parser.add_argument("--bundle", type=Path)
     args = parser.parse_args()
     bundle = args.bundle.resolve() if args.bundle else None
-    binary = bundle / "bin/swiftpods" if bundle else ROOT / ".build/debug/swiftpods"
-    parent = Path(tempfile.mkdtemp(prefix="native-configuration-", dir=ROOT / ".build"))
+    binary = bundle / "bin/swiftpods" if bundle else debug_binary()
+    parent = fixture_directory("native-configuration-")
     print("Configuration fixtures:", parent, flush=True)
     binaries = products(parent)
     env = environment(bundle)
@@ -213,7 +213,7 @@ def main():
     name = (
         "native-packaged-configuration.json" if bundle else "native-configuration.json"
     )
-    ROOT.joinpath("test-results", name).write_text(json.dumps(report, indent=2) + "\n")
+    results_directory().joinpath(name).write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2))
 
 

@@ -8,7 +8,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from bootstrap import PROFILE, ROOT, project_state_directory
+from bootstrap import PROFILE, project_state_directory, runtime_prefix
+from local_build import debug_binary, results_directory
 from reporting import execute
 from ruby_runtime import clean_environment, select_ruby
 
@@ -52,12 +53,12 @@ end
     env = clean_environment(os.environ)
     env.update(
         SWIFTPODS_RUBY=str(ruby),
-        SWIFTPODS_BUNDLE=str(ROOT / ".runtime"),
+        SWIFTPODS_BUNDLE=str(runtime_prefix()),
         SWIFTPODS_CACHE_ROOT=str(work / "cache"),
         BUNDLER_SETUP="/unavailable/bundler/setup.rb",
         RUBYOPT="-runavailable_swiftpods_library",
     )
-    binary = ROOT / ".build/debug/swiftpods"
+    binary = debug_binary()
 
     def cli(*arguments):
         result = subprocess.run(
@@ -128,12 +129,10 @@ def main():
     )
     args = parser.parse_args()
     rubies = args.ruby or [select_ruby(PROFILE)[0]]
-    with tempfile.TemporaryDirectory(
-        prefix="ruby-compatibility-", dir=ROOT / ".build"
-    ) as temporary:
+    with tempfile.TemporaryDirectory(prefix="ruby-compatibility-") as temporary:
         results = [verify(ruby.resolve(), Path(temporary)) for ruby in rubies]
     report = {"status": "passed", "engine": "swift", "interpreters": results}
-    ROOT.joinpath("test-results/ruby-compatibility.json").write_text(
+    results_directory().joinpath("ruby-compatibility.json").write_text(
         json.dumps(report, indent=2) + "\n"
     )
 

@@ -5,10 +5,10 @@ import argparse
 import json
 import re
 import subprocess
-import tempfile
 from pathlib import Path
 
 from bootstrap import ROOT, environment
+from local_build import fixture_directory, results_directory
 from reference_compare import reference_environment
 from reporting import execute
 
@@ -96,7 +96,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gem-home", type=Path, required=True)
     args = parser.parse_args()
-    parent = Path(tempfile.mkdtemp(prefix="contract-reference-", dir=ROOT / ".build"))
+    parent = fixture_directory("contract-reference-")
     schema = json.loads(ROOT.joinpath("Runtime/attributes.json").read_text())
     attributes = {name: "Fixture" for name in schema}
     attributes.update(
@@ -267,7 +267,7 @@ def main():
         + ["attribute:" + name for name in attributes],
         "unverified": ["all build effects for every attribute and platform"],
     }
-    ROOT.joinpath("test-results/native-contract-reference.json").write_text(
+    results_directory().joinpath("native-contract-reference.json").write_text(
         json.dumps(report, indent=2) + "\n"
     )
     print(json.dumps(report, indent=2))

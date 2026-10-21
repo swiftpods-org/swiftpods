@@ -22,9 +22,10 @@ import check as check_tools
 import evidence as evidence_tools
 import install as installer
 import reporting
-from release_tests import ReleaseTests
 import swift_binary_producer as swift_producer
+from local_build import WORKSPACE_ENV, results_directory
 from processes import run_logged
+from release_tests import ReleaseTests
 from reporting import ROOT, execute
 from vendor_fixture import run as fixture_command
 
@@ -58,7 +59,8 @@ class EvidenceTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
-        (self.root / "test-results").mkdir()
+        self.enterContext(patch.dict(os.environ, {WORKSPACE_ENV: str(self.root)}))
+        (self.root / "reports").mkdir()
         (self.root / "Profiles").mkdir()
         self.binary = self.root / "swiftpods"
         self.binary.write_bytes(b"fixture executable")
@@ -102,7 +104,7 @@ class EvidenceTests(unittest.TestCase):
             self.addCleanup(replacement.stop)
 
     def write(self, name, value):
-        (self.root / "test-results" / name).write_text(json.dumps(value))
+        (self.root / "reports" / name).write_text(json.dumps(value))
 
     def improvement(self):
         difference = {
@@ -174,6 +176,21 @@ class EvidenceTests(unittest.TestCase):
         with patch.object(reporting, "ROOT", self.root):
             before = reporting.source_digest()
             license_file.write_text("updated license")
+            self.assertNotEqual(reporting.source_digest(), before)
+
+    def testFinderMetadataDoesNotInvalidateSourceEvidence(self):
+        scripts = self.root / "scripts"
+        scripts.mkdir()
+        source = scripts / "fixture.py"
+        source.write_text("print('original')\n")
+        with patch.object(reporting, "ROOT", self.root):
+            before = reporting.source_digest()
+            metadata = scripts / ".DS_Store"
+            metadata.write_bytes(b"Finder window state")
+            self.assertEqual(reporting.source_digest(), before)
+            metadata.write_bytes(b"Updated Finder window state")
+            self.assertEqual(reporting.source_digest(), before)
+            source.write_text("print('changed')\n")
             self.assertNotEqual(reporting.source_digest(), before)
 
     def testPluginChangesInvalidateSourceEvidence(self):
@@ -469,6 +486,70 @@ class EvidenceTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "package identity changed"):
                 evidence_tools.export(self.root / "repackaged.zip")
 
+    def testEvidenceExportReadsTemporaryFixtureLogsAndRejectsUnownedDirectories(self):
+        bundle = self.root / "Bundle"
+        binary = bundle / "bin/swiftpods"
+        binary.parent.mkdir(parents=True)
+        binary.write_bytes(self.binary.read_bytes())
+        files = {
+            "bin/swiftpods": {"sha256": evidence_tools.digest(binary.read_bytes())}
+        }
+        digest = evidence_tools.digest(json.dumps(files, sort_keys=True).encode())
+        manifest = {
+            "files": files,
+            "bundle_digest": digest,
+            "build_host": self.report["host"],
+        }
+        (bundle / "compatibility.json").write_text(json.dumps(manifest))
+        self.report.update(
+            bundle_digest=digest,
+            executable={
+                "path": str(binary),
+                "sha256": files["bin/swiftpods"]["sha256"],
+            },
+        )
+        fixture = self.root / "fixtures/case"
+        fixture.mkdir(parents=True)
+        (fixture / "compile.log").write_text("compiler output")
+        outside = self.root / "outside"
+        outside.mkdir()
+        (outside / "private.log").write_text("outside fixture")
+        (fixture / "escape.log").symlink_to(outside / "private.log")
+
+        def reports(path):
+            for name in self.names:
+                self.write(
+                    name,
+                    dict(
+                        self.report,
+                        **({"fixture": str(path)} if name == "fixture.json" else {}),
+                    ),
+                )
+            report = dict(self.report, **acceptance.collect(self.names))
+            report.update(full=True, apple_integration_omitted=False, stages=[])
+            self.write("check.json", report)
+
+        with (
+            patch.object(evidence_tools, "ROOT", self.root),
+            patch.object(evidence_tools, "source_digest", return_value="source"),
+            patch.object(evidence_tools, "contract_digest", return_value="contract"),
+            patch.object(evidence_tools, "source_revision", return_value=self.revision),
+            patch.object(
+                evidence_tools, "required_reports", return_value=set(self.names)
+            ),
+        ):
+            reports(fixture)
+            archive = self.root / "exported.zip"
+            evidence_tools.export(archive)
+            with zipfile.ZipFile(archive) as value:
+                self.assertEqual(
+                    value.read("fixtures/fixture/compile.log"), b"compiler output"
+                )
+                self.assertNotIn("fixtures/fixture/escape.log", value.namelist())
+            reports(outside)
+            with self.assertRaisesRegex(RuntimeError, "verification workspace"):
+                evidence_tools.export(self.root / "invalid.zip")
+
     def testBundleArgumentSpellingsSelectPackagedBinaryAndReport(self):
         bundle = self.root / "packaged release"
         binary = bundle / "bin/swiftpods"
@@ -521,7 +602,7 @@ class EvidenceTests(unittest.TestCase):
                     RuntimeError, "requires a distribution path"
                 ):
                     reporting.execute(lambda: self.fail("fixture must not run"), name)
-            result = json.loads((self.root / "test-results" / name).read_text())
+            result = json.loads((self.root / "reports" / name).read_text())
             self.assertEqual(result["status"], "failed")
             self.assertEqual(result["error"], "--bundle requires a distribution path")
 
@@ -541,13 +622,13 @@ class EvidenceTests(unittest.TestCase):
                 reporting.execute(
                     lambda: self.fail("fixture must not run"), "fixture.json"
                 )
-        report = json.loads((self.root / "test-results/fixture.json").read_text())
+        report = json.loads((self.root / "reports/fixture.json").read_text())
         self.assertEqual(report["status"], "failed")
         self.assertEqual(report["error"], "missing Ruby")
 
     def testMalformedPartialReportDoesNotHideOriginalFixtureFailure(self):
         def failing_fixture():
-            (self.root / "test-results/fixture.json").write_text("{incomplete")
+            (self.root / "reports/fixture.json").write_text("{incomplete")
             raise RuntimeError("fixture failed")
 
         with (
@@ -556,7 +637,7 @@ class EvidenceTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, "fixture failed"):
                 reporting.execute(failing_fixture, "fixture.json")
-        report = json.loads((self.root / "test-results/fixture.json").read_text())
+        report = json.loads((self.root / "reports/fixture.json").read_text())
         self.assertEqual(report["status"], "failed")
         self.assertEqual(report["error"], "fixture failed")
 
@@ -651,13 +732,22 @@ class EvidenceTests(unittest.TestCase):
                 os.environ, {"RUBYOPT": "untrusted preload", "GEM_HOME": "user gems"}
             ),
         ):
-            check_tools.main()
-        self.assertEqual(commands[0][0][1], "scripts/bootstrap.py")
-        self.assertEqual(commands[1][0][1], "scripts/unit_tests.py")
-        self.assertEqual(commands[2][0], [self.binary, "scripts/ruby_adapter_tests.rb"])
-        self.assertEqual(commands[3][0][1], "fixture.py")
-        self.assertNotIn("RUBYOPT", commands[2][1])
-        self.assertNotIn("GEM_HOME", commands[2][1])
+            check_tools.main(self.root / "workspace")
+        scripts = [str(command[1]) for command, _ in commands]
+        expected = [
+            "scripts/bootstrap.py",
+            "scripts/unit_tests.py",
+            "scripts/ruby_runtime_tests.py",
+            "scripts/ruby_adapter_tests.rb",
+            "scripts/ruby_compatibility_tests.py",
+            "fixture.py",
+        ]
+        positions = [scripts.index(script) for script in expected]
+        self.assertEqual(positions, sorted(positions))
+        adapter, adapter_env = commands[scripts.index("scripts/ruby_adapter_tests.rb")]
+        self.assertEqual(adapter, [self.binary, "scripts/ruby_adapter_tests.rb"])
+        self.assertNotIn("RUBYOPT", adapter_env)
+        self.assertNotIn("GEM_HOME", adapter_env)
 
     def testStageCancellationAllowsNestedFixtureToStopItsOwnProcessGroup(self):
         state = self.root / "nested.json"
@@ -697,7 +787,7 @@ class EvidenceTests(unittest.TestCase):
         self.assertEqual(errors, ["Verification cancelled"])
         with self.assertRaises(ProcessLookupError):
             os.kill(json.loads(state.read_text())["pid"], 0)
-        result = json.loads((self.root / "test-results/check.json").read_text())
+        result = json.loads((self.root / "reports/check.json").read_text())
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["stages"][0]["error"], "Verification cancelled")
 
@@ -877,7 +967,7 @@ class EvidenceTests(unittest.TestCase):
             self.write("fixture.json", report)
             with self.assertRaises(RuntimeError):
                 acceptance.collect(self.names)
-        (self.root / "test-results/fixture.json").unlink()
+        (self.root / "reports/fixture.json").unlink()
         with self.assertRaises(RuntimeError):
             acceptance.collect(self.names)
 
@@ -1163,7 +1253,7 @@ def main():
     )
     if not result.wasSuccessful():
         raise RuntimeError("Acceptance evidence tests failed")
-    (ROOT / "test-results/native-acceptance-harness.json").write_text(
+    (results_directory() / "native-acceptance-harness.json").write_text(
         json.dumps(
             {
                 "status": "passed",

@@ -3,6 +3,7 @@
 import datetime
 import hashlib
 import json
+import os
 import platform
 import re
 import subprocess
@@ -10,6 +11,15 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+
+from local_build import (
+    WORKSPACE_ENV,
+    debug_binary,
+    prepare_debug,
+    results_directory,
+    workspace,
+    workspace_root,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -66,7 +76,11 @@ def source_digest():
         root = ROOT / name
         paths = [root] if root.is_file() else sorted(root.rglob("*"))
         for path in paths:
-            if path.is_file() and "__pycache__" not in path.parts:
+            if (
+                path.is_file()
+                and "__pycache__" not in path.parts
+                and path.name != ".DS_Store"
+            ):
                 files[path.relative_to(ROOT).as_posix()] = hashlib.sha256(
                     path.read_bytes()
                 ).hexdigest()
@@ -117,7 +131,6 @@ def option_value(name, arguments=None):
 
 
 def binary_identity():
-    path = ROOT / ".build/debug/swiftpods"
     bundle = option_value("--bundle")
     if bundle is not None:
         if not bundle:
@@ -125,6 +138,8 @@ def binary_identity():
         path = Path(bundle).resolve() / "bin/swiftpods"
     elif Path(sys.argv[0]).name == "native_distribution_tests.py" and len(sys.argv) > 1:
         path = Path(sys.argv[1]).resolve() / "bin/swiftpods"
+    else:
+        path = debug_binary()
     return (
         {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
         if path.is_file()
@@ -202,7 +217,39 @@ def write_report(path, value):
 
 
 def execute(main, name):
-    path = ROOT / "test-results" / name
+    standalone = not os.environ.get(WORKSPACE_ENV)
+    with workspace():
+        prepare = (
+            standalone
+            and name not in ("check.json", "native-units.json")
+            and option_value("--bundle") is None
+            and Path(sys.argv[0]).name != "native_distribution_tests.py"
+        )
+        try:
+            return execute_in_workspace(main, name, prepare=prepare)
+        except BaseException:
+            if standalone or name == "check.json":
+                show_failure_logs()
+            raise
+
+
+def show_failure_logs():
+    """Print diagnostic context before temporary reports are removed."""
+    directories = [results_directory(), workspace_root() / "fixtures"]
+    for directory in directories:
+        for path in sorted(directory.rglob("*.log")):
+            if not path.is_file() or path.is_symlink():
+                continue
+            if not path.resolve().is_relative_to(directory.resolve()):
+                continue
+            excerpt = failure_excerpt(path.read_text(errors="replace"))
+            if excerpt:
+                print(str(path), file=sys.stderr, flush=True)
+                print(excerpt, file=sys.stderr, flush=True)
+
+
+def execute_in_workspace(main, name, *, prepare=False):
+    path = results_directory() / name
     path.parent.mkdir(exist_ok=True)
     started = time.monotonic()
     metadata = {
@@ -216,6 +263,8 @@ def execute(main, name):
     # A failure in any of those probes must not leave a previous pass behind.
     write_report(path, metadata)
     try:
+        if prepare:
+            prepare_debug()
         metadata.update(snapshot_metadata())
         write_report(path, metadata)
         main()

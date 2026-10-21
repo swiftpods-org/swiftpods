@@ -9,11 +9,10 @@ import json
 import os
 import shutil
 import subprocess
-import tempfile
 import threading
 from pathlib import Path
 
-from bootstrap import ROOT
+from local_build import fixture_directory, results_directory
 from release import homebrew_formula
 from reporting import execute
 
@@ -27,7 +26,7 @@ def main():
     brew = shutil.which("brew")
     if not brew:
         raise RuntimeError("Homebrew is required for this check")
-    parent = Path(tempfile.mkdtemp(prefix="native-homebrew-", dir=ROOT / ".build"))
+    parent = fixture_directory("native-homebrew-")
     env = {
         key: value
         for key, value in os.environ.items()
@@ -186,7 +185,7 @@ def main():
             "other architectures or macOS versions",
         ],
     }
-    (ROOT / "test-results/native-homebrew.json").write_text(
+    (results_directory() / "native-homebrew.json").write_text(
         json.dumps(report, indent=2) + "\n"
     )
     print(json.dumps(report, indent=2))

@@ -7,10 +7,11 @@ import shutil
 from bootstrap import project_state_directory
 from consumer_build_regressions import update_spec
 from input_contract_regressions import commit, diagnostic, git
+from local_build import results_directory
 from native_integration import project, serialize
 from native_lifecycle_tests import LifecycleFixture
 from native_linker_manifest_tests import application, fixture_project, podfile
-from reporting import ROOT, execute
+from reporting import execute
 from vendor_fixture import run
 from workspace_resource_regressions import add_consumer, read_project
 
@@ -336,7 +337,7 @@ def main():
     support_configuration_cleanup(fixture)
     workspace_migration(fixture)
     selected_graph(fixture)
-    (ROOT / "test-results/native-ownership-source.json").write_text(
+    (results_directory() / "native-ownership-source.json").write_text(
         json.dumps(
             {
                 "status": "passed",
