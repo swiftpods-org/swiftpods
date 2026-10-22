@@ -6,7 +6,32 @@ extension NativeXcode {
             || roots.contains { (vendorSDKs[variantKey($0, platform)] ?? []).contains { $0.dynamic } }
     }
 
-    func consumerProductLinkerFlags(_ roots: Set<String>, platform: String) -> [String] {
+    func isDynamicLibrary(_ root: String, platform: String) -> Bool {
+        let key = variantKey(root, platform)
+        return libraryTargets[key]
+            .flatMap { graph.objects[$0]?["productReference"] as? String }
+            .map(isDynamicProduct) ?? (variantPlan?.variants[key]?.mode == "dynamic")
+    }
+
+    /// Static SDKs already linked into a dynamic dependency must not be linked again.
+    func consumerVendorSDKs(_ roots: Set<String>, platform: String) throws -> [NativeVendorSDK] {
+        var absorbed = Set<URL>()
+        for root in roots.sorted() where isDynamicLibrary(root, platform: platform) {
+            guard let variant = variantPlan?.variants[variantKey(root, platform)] else { continue }
+            let dependencies = try dependencyRoots(variant.actualRequests).union([root])
+            for dependency in dependencies {
+                for sdk in vendorSDKs[variantKey(dependency, platform)] ?? [] where !sdk.dynamic {
+                    absorbed.insert(sdk.url)
+                }
+            }
+        }
+        var seen = Set<URL>()
+        return roots.sorted().flatMap { vendorSDKs[variantKey($0, platform)] ?? [] }.filter {
+            !absorbed.contains($0.url) && seen.insert($0.url).inserted
+        }
+    }
+
+    func consumerProductLinkerFlags(_ roots: Set<String>, platform: String) throws -> [String] {
         var flags: [String] = []
         for product in products
         where productRoots[product] != nil && matchesProduct(product, roots: roots, platform: platform) {
@@ -27,9 +52,7 @@ extension NativeXcode {
                 flags.append(NativeBuildSetting.quoted(path.setting))
             }
         }
-        var seen = Set<URL>()
-        for sdk in roots.sorted().flatMap({ vendorSDKs[variantKey($0, platform)] ?? [] })
-        where seen.insert(sdk.url).inserted {
+        for sdk in try consumerVendorSDKs(roots, platform: platform) {
             if sdk.isFramework {
                 flags += ["-framework", NativeBuildSetting.quoted(String(sdk.productName.dropLast(10)))]
             } else {
@@ -39,21 +62,26 @@ extension NativeXcode {
         return flags
     }
 
-    func linkerSources(_ target: String, graph: NativePBX) -> [URL] {
-        (graph.objects[target]?["buildPhases"] as? [String] ?? []).filter {
+    func linkerHasCXXSources(_ target: String, graph: NativePBX) -> Bool {
+        let builds = (graph.objects[target]?["buildPhases"] as? [String] ?? []).filter {
             graph.objects[$0]?["isa"] as? String == "PBXSourcesBuildPhase"
-        }.flatMap { graph.objects[$0]?["files"] as? [String] ?? [] }.compactMap { build in
+        }.flatMap { graph.objects[$0]?["files"] as? [String] ?? [] }
+        return builds.contains { build in
             guard let reference = graph.objects[build]?["fileRef"] as? String,
-                let path = graph.objects[reference]?["path"] as? String
-            else { return nil }
-            return URL(fileURLWithPath: NativeBuildSetting.decodedLiteral(path))
+                let source = graph.objects[reference]
+            else { return false }
+            if let type = source["explicitFileType"] as? String ?? source["lastKnownFileType"] as? String {
+                return ["sourcecode.cpp.cpp", "sourcecode.cpp.objcpp"].contains(type)
+            }
+            guard let path = source["path"] as? String else { return false }
+            return NativeBuildSettings.isCXXSource(URL(fileURLWithPath: NativeBuildSetting.decodedLiteral(path)))
         }
     }
 
     /// A static archive cannot resolve its system libraries or load categories
     /// until an executable, bundle or dynamic framework links it.
     func consumerLinkerFlags(
-        _ roots: Set<String>, platform: String, sources: [URL], settings: [String: Any]
+        _ roots: Set<String>, platform: String, sources: [URL], settings: [String: Any], hasCXXSources: Bool? = nil
     ) throws -> [String] {
         var libraries = Set<String>()
         var frameworks = Set<String>()
@@ -63,8 +91,11 @@ extension NativeXcode {
             guard let spec = resolution.specs[root], let variant = variantPlan?.variants[variantKey(root, platform)]
             else { continue }
             let sdks = vendorSDKs[variant.key] ?? []
-            objc = objc || variant.mode != "dynamic" || sdks.contains { !$0.dynamic }
-            guard variant.mode != "dynamic" else { continue }
+            // Binary-only pods produce an archive even when use_frameworks!
+            // requests dynamic linkage. Follow the generated product's type.
+            let dynamic = isDynamicLibrary(root, platform: platform)
+            objc = objc || !dynamic || sdks.contains { !$0.dynamic }
+            guard !dynamic else { continue }
             let attributes = try NativeVariantPlan.attributes(spec, names: variant.names, platform: platform)
             libraries.formUnion(nativeStrings(attributes["libraries"]))
             frameworks.formUnion(nativeStrings(attributes["frameworks"]))
@@ -75,7 +106,8 @@ extension NativeXcode {
                 String.init))
         var flags = objc && !existing.contains("-ObjC") ? ["-ObjC"] : []
         flags += NativeBuildSettings.libraryFlags(
-            libraries.sorted(), sources: sources, settings: settings, linkingWithClang: true
+            libraries.sorted(), sources: sources, settings: settings, linkingWithClang: true,
+            hasCXXSources: hasCXXSources
         ).filter { !existing.contains($0) }
         flags += frameworks.sorted().flatMap { ["-framework", NativeBuildSetting.quoted($0)] }
         flags += weakFrameworks.subtracting(frameworks).sorted().flatMap {

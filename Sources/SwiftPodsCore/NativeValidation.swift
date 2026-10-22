@@ -58,10 +58,7 @@ struct NativeValidation {
                 let spec = try NativeSpec(data: data)
                 try spec.validateProfile()
                 var warnings = try Self.metadata(spec, privateSpec: flags.contains("--private"))
-                if !flags.contains("--allow-warnings"), !warnings.isEmpty {
-                    throw Diagnostic(
-                        "SP-LINT-WARNINGS", stage: "lint", warnings.joined(separator: "; "), file: path.path)
-                }
+                try Self.validateWarnings(warnings, allow: flags.contains("--allow-warnings"), file: path)
                 var built: [String] = []
                 var interfaces: [String] = []
                 var tested: [String] = []
@@ -165,9 +162,8 @@ struct NativeValidation {
                                         + (flags.contains("--allow-warnings") ? "NO" : "YES"),
                                     "SYMROOT=" + workspace.appendingPathComponent("products").path,
                                 ], directory: workspace, environment: environment)
-                            warnings += String(decoding: build.output + build.error, as: UTF8.self).components(
-                                separatedBy: .newlines
-                            ).filter { $0.contains("warning:") }
+                            let buildWarnings = Self.warnings(in: build)
+                            warnings += buildWarnings
                             let log = workspace.appendingPathComponent("build.log")
                             try (build.output + build.error).write(to: log)
                             guard build.status == 0 else {
@@ -177,6 +173,7 @@ struct NativeValidation {
                                         + Self.failureOutput(build),
                                     file: path.path)
                             }
+                            try Self.validateWarnings(buildWarnings, allow: flags.contains("--allow-warnings"), file: path)
                             try NativeLintConsumer.writeProbe(in: workspace, spec: spec, platform: platform)
                             let consumer = try ToolProcess.run(
                                 "/usr/bin/xcrun",
@@ -194,9 +191,8 @@ struct NativeValidation {
                                 ], directory: workspace, environment: environment)
                             try (consumer.output + consumer.error).write(
                                 to: workspace.appendingPathComponent("consumer.log"))
-                            warnings += String(decoding: consumer.output + consumer.error, as: UTF8.self).components(
-                                separatedBy: .newlines
-                            ).filter { $0.contains("warning:") }
+                            let consumerWarnings = Self.warnings(in: consumer)
+                            warnings += consumerWarnings
                             guard consumer.status == 0 else {
                                 throw Diagnostic(
                                     "SP-LINT-CONSUMER", stage: "lint",
@@ -204,6 +200,7 @@ struct NativeValidation {
                                         + Self.failureOutput(consumer),
                                     file: path.path)
                             }
+                            try Self.validateWarnings(consumerWarnings, allow: flags.contains("--allow-warnings"), file: path)
                             if !built.contains(platform) { built.append(platform) }
                             interfaces.append(platform + ":" + selection.name)
                             if !flags.contains("--skip-tests") {
@@ -229,6 +226,8 @@ struct NativeValidation {
                                         "/usr/bin/xcrun", arguments, directory: workspace, environment: environment)
                                     try (run.output + run.error).write(
                                         to: workspace.appendingPathComponent(scheme + ".test.log"))
+                                    let testWarnings = Self.warnings(in: run)
+                                    warnings += testWarnings
                                     guard run.status == 0 else {
                                         throw Diagnostic(
                                             "SP-LINT-TEST", stage: "lint",
@@ -236,6 +235,8 @@ struct NativeValidation {
                                                 + Self.failureOutput(run),
                                             file: path.path)
                                     }
+                                    try Self.validateWarnings(
+                                        testWarnings, allow: flags.contains("--allow-warnings"), file: path)
                                     tested.append(platform + ":" + scheme)
                                 }
                             }
@@ -270,6 +271,17 @@ struct NativeValidation {
         }
         return ["status": errors.isEmpty ? "passed" : "failed", "specifications": reports, "errors": errors]
     }
+    private static func warnings(in result: ToolOutput) -> [String] {
+        String(decoding: result.output + result.error, as: UTF8.self).components(separatedBy: .newlines)
+            .filter { $0.contains("warning:") }
+    }
+
+    private static func validateWarnings(_ warnings: [String], allow: Bool, file: URL) throws {
+        guard !allow, !warnings.isEmpty else { return }
+        throw Diagnostic(
+            "SP-LINT-WARNINGS", stage: "lint", warnings.prefix(12).joined(separator: "\n"), file: file.path)
+    }
+
     static func failureOutput(_ result: ToolOutput) -> String {
         let text = String(decoding: result.output + result.error, as: UTF8.self)
         let errors = text.components(separatedBy: .newlines).filter {

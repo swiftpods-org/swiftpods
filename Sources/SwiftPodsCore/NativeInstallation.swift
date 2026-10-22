@@ -130,12 +130,15 @@ extension NativeCommandSession {
         let cache = URL(fileURLWithPath: bundle.cacheRootPath(from: environment))
         let declaredSources = nativeStrings(manifest["sources"])
         let defaults = try NativeRepositories(cache: cache).records().compactMap { $0["url"] as? String }
-        let catalog = try NativeSources(
-            project: project, cache: cache,
-            sources: declaredSources.isEmpty ? defaults + ["https://cdn.cocoapods.org/"] : declaredSources,
-            dsl: dsl, offline: environment["SWIFTPODS_OFFLINE"] == "1",
-            refreshRepositories: options.contains("--repo-update")
-                || (action != "install" && !options.contains("--no-repo-update")), hardened: hardened)
+        func makeCatalog(refresh: Bool) throws -> NativeSources {
+            try NativeSources(
+                project: project, cache: cache,
+                sources: declaredSources.isEmpty ? defaults + ["https://cdn.cocoapods.org/"] : declaredSources,
+                dsl: dsl, offline: environment["SWIFTPODS_OFFLINE"] == "1",
+                refreshRepositories: refresh, hardened: hardened)
+        }
+        let catalog = try makeCatalog(
+            refresh: options.contains("--repo-update") || (action != "install" && !options.contains("--no-repo-update")))
         let requestedUpdates = Set(
             args.filter { !CommandOptions.hasOptionPrefix($0) }.map { NativePodName.root($0) })
         if action == "update",
@@ -147,7 +150,41 @@ extension NativeCommandSession {
                 file: unknown)
         }
         let changedRoots = try lock.changedRoots(direct)
-        let updateRoots = lock.unlocked(requestedUpdates.union(changedRoots))
+        let selectedUpdates = requestedUpdates.union(changedRoots)
+        var dependencyGraph = lock.dependencies
+        if !selectedUpdates.isEmpty && !lock.versions.isEmpty {
+            let pinned = try makeCatalog(refresh: false)
+            pinned.pinnedCheckouts = lock.checkoutOptions
+            pinned.lockedRepositories = lock.repositories
+            pinned.installationOptions = declaredOptions
+            let external = try lock.externalSources.sorted(by: { $0.key < $1.key }).map { name, options in
+                var dependency = try NativeDependency(["name": name])
+                dependency.options = options
+                for key in ["submodules", "flatten"] {
+                    if let value = options[key] as? String, ["true", "false"].contains(value) {
+                        dependency.options[key] = value == "true"
+                    }
+                }
+                return dependency
+            }
+            try pinned.register(external)
+            dependencyGraph = try lock.recoveredDependencies(direct) { request, version in
+                do {
+                    var previous = request
+                    previous.options = [:]
+                    let version = try PodVersion(version)
+                    guard let candidate = try pinned.candidates(previous).first(where: { $0.version == version })
+                    else { return nil }
+                    return try pinned.materialize(candidate)
+                } catch {
+                    // An old source may have disappeared. The update still resolves
+                    // against its current sources and enforces their own integrity.
+                    try NativeCancellation.check()
+                    return nil
+                }
+            }
+        }
+        let updateRoots = lock.unlocked(selectedUpdates, dependencies: dependencyGraph)
         catalog.pinnedCheckouts = lock.checkoutOptions.filter { !changedRoots.contains($0.key) }
         catalog.updating = action == "update" || !changedRoots.isEmpty
         catalog.updateRoots = action == "update" && requestedUpdates.isEmpty ? [] : updateRoots

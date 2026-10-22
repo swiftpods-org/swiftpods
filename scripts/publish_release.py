@@ -69,6 +69,20 @@ def validate(directory, version, commit):
     return paths, manifest_sha256
 
 
+def existing_release(tag):
+    try:
+        return json.loads(subprocess.check_output(
+            ["gh", "api", f"repos/{REPOSITORY}/releases/tags/{tag}"],
+            text=True, stderr=subprocess.PIPE,
+        ))
+    except subprocess.CalledProcessError as error:
+        # Missing is a valid retry state after deletion. Authentication and
+        # transport failures must still stop publication before any changes.
+        if re.search(r"\bHTTP 404\b", error.stderr or ""):
+            return None
+        raise
+
+
 def replace_release(tag, commit, expected_tag_object):
     if not re.fullmatch(r"[0-9a-f]{40}", expected_tag_object):
         raise RuntimeError("Replacement requires the exact previous tag object")
@@ -77,33 +91,34 @@ def replace_release(tag, commit, expected_tag_object):
             ["gh", "api", f"repos/{REPOSITORY}/git/ref/tags/{tag}"], text=True
         )
     )
-    if reference["object"]["sha"] != expected_tag_object:
+    current = reference["object"]["sha"]
+    if current not in (expected_tag_object, commit):
         raise RuntimeError("Remote tag changed before release replacement")
-    existing = json.loads(
-        subprocess.check_output(
-            ["gh", "api", f"repos/{REPOSITORY}/releases/tags/{tag}"], text=True
-        )
-    )
-    if existing.get("immutable"):
+    existing = existing_release(tag)
+    if existing and existing.get("immutable"):
         raise RuntimeError("An immutable release cannot be replaced")
-    subprocess.run(
-        ["gh", "release", "delete", tag, "--repo", REPOSITORY, "--yes"],
-        check=True,
-    )
-    subprocess.run(
-        [
-            "gh",
-            "api",
-            "--method",
-            "PATCH",
-            f"repos/{REPOSITORY}/git/refs/tags/{tag}",
-            "-f",
-            "sha=" + commit,
-            "-F",
-            "force=true",
-        ],
-        check=True,
-    )
+    # Keep the old release available if retargeting fails. A retry can observe
+    # either the expected old tag or the exact destination commit of this run.
+    if current != commit:
+        subprocess.run(
+            [
+                "gh",
+                "api",
+                "--method",
+                "PATCH",
+                f"repos/{REPOSITORY}/git/refs/tags/{tag}",
+                "-f",
+                "sha=" + commit,
+                "-F",
+                "force=true",
+            ],
+            check=True,
+        )
+    if existing:
+        subprocess.run(
+            ["gh", "release", "delete", tag, "--repo", REPOSITORY, "--yes"],
+            check=True,
+        )
 
 
 def publish(directory, version, commit, replace_tag_object=None):

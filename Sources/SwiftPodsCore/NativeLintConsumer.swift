@@ -15,6 +15,8 @@ enum NativeLintConsumer {
             "CLANG_ENABLE_MODULES": "YES", "CLANG_ENABLE_OBJC_ARC": "YES",
             "SWIFT_VERSION": "5.0", "CODE_SIGNING_ALLOWED": "NO",
             "ENABLE_DEBUG_DYLIB": "NO", "SKIP_INSTALL": "YES",
+            // This synthetic consumer has no application intents to extract.
+            "LM_SKIP_METADATA_EXTRACTION": "YES",
         ]
         func configurations(_ name: String, settings: [String: Any]) -> String {
             let ids = ["Debug", "Release"].map {
@@ -129,15 +131,25 @@ enum NativeLintConsumer {
         }
         let selection = try NativeLibraryFiles(
             spec: installed, names: names, platform: platform, root: URL(fileURLWithPath: directory))
+        let vendor = try NativeLintVendorInterface(selection: selection, platform: platform)
         let cxxSources: Set<String> = ["cc", "cpp", "cxx", "c++", "C", "mm", "M"]
         let cxxHeaders: Set<String> = ["hh", "hpp", "hxx", "ipp", "tpp"]
         let objectiveCPlusPlus =
             selection.files.contains { cxxSources.contains($0.pathExtension) }
             || selection.publicHeaders.contains { cxxHeaders.contains($0.pathExtension) }
+        let modules = try (attributes["module_map"] as? String).map {
+            try NativeClangModuleMap(String(contentsOf: URL(fileURLWithPath: directory).appendingPathComponent($0), encoding: .utf8)).modules
+        } ?? []
+        let primary = modules.first { $0.name == spec.moduleName }
+        let language = primary?.language(cxx: objectiveCPlusPlus) ?? (objectiveCPlusPlus ? .mm : .m)
+        var clangProbes = vendor.clang
+        for module in modules where swift || module.name != primary?.name {
+            clangProbes[module.language(cxx: objectiveCPlusPlus), default: ""] += module.importDirective
+        }
         let modular = attributes["module_map"] as? Bool != false && settings["DEFINES_MODULE"] as? String == "YES"
         let contents: String
-        if swift || modular {
-            contents = swift ? "import \(spec.moduleName)\n" : "@import \(spec.moduleName);\n"
+        if swift || modular || primary != nil {
+            contents = swift ? "import \(spec.moduleName)\n" : primary?.importDirective ?? "@import \(spec.moduleName);\n"
         } else {
             contents = try selection.publicHeaders.sorted(by: { $0.path < $1.path }).map {
                 let headerDirectory =
@@ -148,16 +160,37 @@ enum NativeLintConsumer {
         }
         let graph = try NativePBX(workspace.appendingPathComponent("Lint.xcodeproj/project.pbxproj"), existing: true)
         let file = NativePBX.identifier("lint:probe")
-        let filename = swift ? "Probe.swift" : objectiveCPlusPlus ? "Probe.mm" : "Probe.m"
+        let filename = swift ? "Probe.swift" : "Probe." + language.rawValue
         graph.objects[file]?["path"] = filename
         graph.objects[file]?["lastKnownFileType"] =
             swift
             ? "sourcecode.swift"
-            : objectiveCPlusPlus ? "sourcecode.cpp.objcpp" : "sourcecode.c.objc"
+            : language.fileType
+        let additionalProbes = NativeClangModuleMap.Language.allCases.map {
+            ("VendorProbe." + $0.rawValue, clangProbes[$0] ?? "", $0.fileType)
+        } + [("VendorProbe.swift", vendor.swift, "sourcecode.swift")]
+        for (filename, contents, type) in additionalProbes where !contents.isEmpty {
+            let reference = graph.add("lint:vendor:" + filename, [
+                "isa": "PBXFileReference", "path": filename, "sourceTree": "SOURCE_ROOT", "lastKnownFileType": type,
+            ])
+            let build = graph.add("lint:vendor-build:" + filename, ["isa": "PBXBuildFile", "fileRef": reference])
+            let phase = NativePBX.identifier("lint:sources")
+            let files = graph.objects[phase]?["files"] as? [String] ?? []
+            graph.objects[phase]?["files"] = files + [build]
+            try Data(contents.utf8).write(to: workspace.appendingPathComponent(filename))
+        }
         for id in Array(graph.objects.keys) where graph.objects[id]?["isa"] as? String == "XCBuildConfiguration" {
             var values = graph.objects[id]?["buildSettings"] as? [String: Any] ?? [:]
             if let version = settings["SWIFT_VERSION"] { values["SWIFT_VERSION"] = version }
-            if objectiveCPlusPlus && !swift && values["PRODUCT_NAME"] as? String == "Lint" {
+            if values["PRODUCT_NAME"] as? String == "Lint" {
+                let consumer = try NativeBuildSettings.resolvedScopes(graph.objects[id]!, graph: graph, targetName: "Lint").targetScope
+                for key in ["CLANG_CXX_LANGUAGE_STANDARD", "CLANG_CXX_LIBRARY"] {
+                    if try consumer.expandedValue(key) == nil, let value = try scope.expandedValue(key) {
+                        values[key] = value
+                    }
+                }
+            }
+            if (language.cxx && !swift || clangProbes.keys.contains(where: \.cxx)) && values["PRODUCT_NAME"] as? String == "Lint" {
                 values["CLANG_DISABLE_CXX_MODULES"] = "NO"
                 var flags = nativeStrings(values["OTHER_CPLUSPLUSFLAGS"])
                 if flags.isEmpty { flags = ["$(inherited)"] }

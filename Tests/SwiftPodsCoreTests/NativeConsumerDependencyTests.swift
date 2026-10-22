@@ -102,7 +102,7 @@ final class NativeConsumerDependencyTests: XCTestCase {
 
                 engine.selectConsumer(consumer)
                 XCTAssertFalse(
-                    engine.consumerProductLinkerFlags(["Kit", "Peer"], platform: "osx").contains("-framework"))
+                    try engine.consumerProductLinkerFlags(["Kit", "Peer"], platform: "osx").contains("-framework"))
                 let reachable = NativeProjectProjection.reachable(engine.graph.objects, from: [aggregate])
                 for product in engine.products {
                     let producer = try XCTUnwrap(

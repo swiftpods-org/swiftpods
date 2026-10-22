@@ -21,6 +21,17 @@ extension NativeSources {
         let cacheLock = try NativeCacheLock(cache: cache, key: identity)
         defer { cacheLock.release() }
         let refresh = fresh || (pod == nil && refreshRepositories)
+        // A verified commit is immutable even when an update asks for it again.
+        // Replacing it would invalidate paths held by another active consumer.
+        if refresh, !offline,
+            selector.range(of: #"\A[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?\z"#, options: .regularExpression) != nil,
+            let metadata = try? NativeGitCache.verify(directory),
+            metadata["origin_identity"] as? String == digest(Data(location.utf8)),
+            (metadata["commit"] as? String)?.lowercased() == selector.lowercased()
+        {
+            if let pod { try NativeGitCache.addOwners([pod], directory: directory, metadata: metadata) }
+            return try cacheCommit(directory, location: location, refreshed: true)
+        }
         if FileManager.default.fileExists(atPath: directory.path), !refresh || offline {
             let metadata = try NativeGitCache.verify(directory)
             guard metadata["origin_identity"] as? String == digest(Data(location.utf8)),
@@ -31,8 +42,7 @@ extension NativeSources {
                     "SP-CACHE-INTEGRITY", stage: "cache", "Cached checkout does not match its source revision")
             }
             if let pod { try NativeGitCache.addOwners([pod], directory: directory, metadata: metadata) }
-            try cacheCommit(directory, location: location)
-            return directory
+            return try cacheCommit(directory, location: location)
         }
         guard !offline else {
             throw Diagnostic("SP-OFFLINE-MISSING", stage: "download", "Git source is not cached: \(location)")
@@ -62,8 +72,7 @@ extension NativeSources {
                 "commit": commit, "origin_identity": digest(Data(location.utf8)), "submodules": submodules,
                 "pod_names": pod.map { [$0] } ?? [],
             ])
-        try cacheCommit(directory, location: location, refreshed: true)
-        return directory
+        return try cacheCommit(directory, location: location, refreshed: true)
     }
 
     private func gitCommit(_ selector: String, in directory: URL) throws -> String {
@@ -110,7 +119,8 @@ extension NativeSources {
         if source["submodules"] as? Bool == true { identity["submodules"] = "true" }
         return identity
     }
-    func cacheCommit(_ directory: URL, location: String, refreshed: Bool = false) throws {
+    @discardableResult
+    func cacheCommit(_ directory: URL, location: String, refreshed: Bool = false) throws -> URL {
         let location = gitLocation(location)
         let metadata = try NativeGitCache.verify(directory)
         guard let commit = metadata["commit"] as? String,
@@ -124,7 +134,7 @@ extension NativeSources {
                     Data(
                         (location + "\n" + commit + (metadata["submodules"] as? Bool == true ? "\nsubmodules" : ""))
                             .utf8)))
-        guard destination.standardizedFileURL.path != directory.standardizedFileURL.path else { return }
+        guard destination.standardizedFileURL.path != directory.standardizedFileURL.path else { return directory }
         let cacheLock = try NativeCacheLock(cache: cache, key: destination.lastPathComponent)
         defer { cacheLock.release() }
         if FileManager.default.fileExists(atPath: destination.path) {
@@ -138,7 +148,7 @@ extension NativeSources {
             if let existing {
                 try NativeGitCache.addOwners(
                     metadata["pod_names"] as? [String] ?? [], directory: destination, metadata: existing)
-                return
+                return destination
             }
         }
         let staging = destination.deletingLastPathComponent().appendingPathComponent(".commit-" + UUID().uuidString)
@@ -146,5 +156,6 @@ extension NativeSources {
         try FileManager.default.copyItem(at: directory, to: staging)
         try FileManager.default.moveItem(at: staging, to: destination)
         try NativeGitCache.write(destination, metadata: metadata)
+        return destination
     }
 }

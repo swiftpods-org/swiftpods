@@ -234,9 +234,17 @@ extension NativeXcode {
                     settings["EXCLUDED_SOURCE_FILE_NAMES"] = exclusions
                 }
                 var linker = nativeStrings(settings["OTHER_LDFLAGS"]).filter { $0 != "$(SWIFTPODS_CONFIG_LDFLAGS)" }
+                var configurationValues = user.objects[config]!
+                configurationValues["buildSettings"] = settings
+                let linkerScope = try NativeBuildSettings.resolvedScopes(
+                    configurationValues, graph: user, targetName: name).targetScope
+                var linkerSettings = settings
+                for key in ["LINK_WITH_STANDARD_LIBRARIES", "CLANG_CXX_LIBRARY", "LD", "LDPLUSPLUS"] {
+                    linkerSettings[key] = try linkerScope.expandedValue(key)
+                }
                 let dependencyFlags = try consumerLinkerFlags(
-                    enabled, platform: platform["name"] ?? "ios", sources: linkerSources(targetID, graph: user),
-                    settings: settings)
+                    enabled, platform: platform["name"] ?? "ios", sources: [],
+                    settings: linkerSettings, hasCXXSources: linkerHasCXXSources(targetID, graph: user))
                 if !dependencyFlags.isEmpty {
                     if linker.isEmpty { linker = ["$(inherited)"] }
                     linker += dependencyFlags
@@ -255,7 +263,7 @@ extension NativeXcode {
                     if linker.isEmpty { linker = ["$(inherited)"] }
                     linker.append("-fobjc-arc")
                 }
-                let productFlags = consumerProductLinkerFlags(enabled, platform: platform["name"] ?? "ios")
+                let productFlags = try consumerProductLinkerFlags(enabled, platform: platform["name"] ?? "ios")
                 if !productFlags.isEmpty {
                     if linker.isEmpty { linker = ["$(inherited)"] }
                     linker += productFlags

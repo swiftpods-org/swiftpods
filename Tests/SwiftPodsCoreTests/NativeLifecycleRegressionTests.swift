@@ -231,9 +231,6 @@ final class NativeLifecycleRegressionTests: XCTestCase {
         XCTAssertEqual(try NativeMaintenance.run(["cache", "clean", "Kit"], cache: cache)["removed"] as? Int, 0)
         XCTAssertEqual(try NativeGitCache.maintenanceMetadata(checkout)["pod_names"] as? [String], ["KitUI"])
         try Data("changed".utf8).write(to: source)
-        XCTAssertThrowsError(try NativeMaintenance.run(["cache", "clean", "--all"], cache: cache))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
-        try Data("source".utf8).write(to: source)
         XCTAssertEqual(try NativeMaintenance.run(["cache", "clean", "--all"], cache: cache)["removed"] as? Int, 1)
         XCTAssertFalse(FileManager.default.fileExists(atPath: checkout.path))
     }

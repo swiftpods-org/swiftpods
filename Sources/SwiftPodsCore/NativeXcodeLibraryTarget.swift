@@ -120,6 +120,10 @@ extension NativeXcode {
             ["$(inherited)"] + nativeStrings(settings["OTHER_LDFLAGS"])
             + NativeBuildSettings.libraryFlags(
                 nativeStrings(attributes["libraries"]), sources: all, settings: settings, linkingWithClang: dynamic)
+        if dynamic && sdks.contains(where: { !$0.dynamic }) {
+            let flags = nativeStrings(settings["OTHER_LDFLAGS"])
+            if !flags.contains("-ObjC") { settings["OTHER_LDFLAGS"] = flags + ["-ObjC"] }
+        }
         // Recursive pod-root search would expose headers from every
         // XCFramework slice, bypassing Xcode's destination selection.
         let headerDirectories = Set(

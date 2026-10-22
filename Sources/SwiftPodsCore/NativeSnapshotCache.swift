@@ -2,6 +2,14 @@ import Foundation
 
 /// Snapshot content and checkout provenance are immutable; pod ownership is not.
 enum NativeSnapshotCache {
+    /// Selector and revision copies share owners only for the same VCS checkout.
+    static func ownershipIdentity(_ metadata: [String: Any]) throws -> String? {
+        guard let checkout = metadata["checkout"] as? [String: String],
+            checkout["svn"] != nil || checkout["hg"] != nil
+        else { return nil }
+        return try provenance(metadata)
+    }
+
     static func write(_ directory: URL, metadata: [String: Any]) throws {
         var metadata = metadata
         let fingerprint = try FileFingerprint.tree(directory, requireContainedLinks: true)

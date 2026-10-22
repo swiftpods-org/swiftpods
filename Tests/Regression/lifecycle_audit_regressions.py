@@ -1,11 +1,13 @@
 """CLI regressions for hook ownership, SDK contexts and shared Git checkouts."""
 
+import hashlib
 import json
 import shutil
 import subprocess
 
 from Tests.Integration.native_integration import project, serialize
 from Tests.Integration.native_xcconfig_tests import create
+from Tests.Regression.source_revision_regressions import concurrent_source_refresh
 
 
 def read_project(path):
@@ -308,3 +310,85 @@ def run(fixture):
     late_sdk_context(fixture)
     package_module_scope(fixture)
     git_alias_cleanup(fixture)
+    snapshot_alias_cleanup(fixture)
+    concurrent_source_refresh(fixture)
+
+
+def snapshot_alias_cleanup(fixture):
+    for vcs in ["hg", "svn"]:
+        for refresh in ["none", "same", "new"]:
+            _snapshot_alias_cleanup(fixture, vcs, refresh)
+
+
+def _snapshot_alias_cleanup(fixture, vcs, refresh):
+    root = fixture.root / (vcs + "-shared-alias-" + refresh)
+    source = root / "source"
+    source.mkdir(parents=True)
+    (source / "Library.c").write_text("int library(void) { return 7; }\n")
+    for name in ["A", "B"]:
+        (source / (name + ".podspec.json")).write_text(json.dumps({
+            "name": name, "version": "1.0", "source_files": "*.c", "platforms": {"osx": "13.0"},
+        }))
+    if vcs == "hg":
+        subprocess.run(["hg", "init", str(source)], check=True, capture_output=True)
+        subprocess.run(["hg", "--cwd", str(source), "add"], check=True, capture_output=True)
+        subprocess.run(["hg", "--cwd", str(source), "commit", "-u", "Fixture", "-m", "source"],
+                       check=True, capture_output=True)
+        origin = str(source)
+    else:
+        repository = root / "origin"
+        subprocess.run(["svnadmin", "create", str(repository)], check=True, capture_output=True)
+        origin = repository.as_uri()
+        subprocess.run(["svn", "import", str(source), origin, "-m", "source"], check=True, capture_output=True)
+    cache = root / "cache"
+    previous = fixture.env["SWIFTPODS_CACHE_ROOT"]
+    fixture.env["SWIFTPODS_CACHE_ROOT"] = str(cache)
+    try:
+        for name in ["A", "B"]:
+            work = root / name
+            work.mkdir()
+            (work / "Podfile").write_text(
+                "install! 'swiftpods', :integrate_targets => false\nplatform :osx, '13.0'\n"
+                "target 'App' do\n pod " + repr(name) + ", :" + vcs + " => " + repr(origin) + "\nend\n")
+            fixture.cli(work, "install")
+        receipts = list((cache / "snapshots").glob("*.origin.json"))
+        assert len(receipts) == 2
+        assert all(json.loads(path.read_text())["pod_names"] == ["A", "B"] for path in receipts)
+        if refresh != "none":
+            # Simulate older installations: peers were present only on the selector copy.
+            selector = hashlib.sha256(json.dumps({vcs: origin}, sort_keys=True, indent=2,
+                                                 separators=(",", " : ")).encode()).hexdigest()
+            assert (cache / "snapshots" / (selector + ".origin.json")).exists()
+            for path in receipts:
+                if path.name == selector + ".origin.json":
+                    continue
+                metadata = json.loads(path.read_text())
+                metadata["pod_names"] = ["A"]
+                path.write_text(json.dumps(metadata))
+            if refresh == "new":
+                if vcs == "hg":
+                    (source / "Library.c").write_text("int library(void) { return 9; }\n")
+                    subprocess.run(["hg", "--cwd", str(source), "commit", "-u", "Fixture", "-m", "next"],
+                                   check=True, capture_output=True)
+                else:
+                    checkout = root / "svn-working"
+                    subprocess.run(["svn", "checkout", origin, str(checkout)], check=True, capture_output=True)
+                    (checkout / "Library.c").write_text("int library(void) { return 9; }\n")
+                    subprocess.run(["svn", "commit", str(checkout), "-m", "next"], check=True, capture_output=True)
+            fixture.cli(root / "A", "update", "A", "--no-repo-update")
+        # Prove offline availability without registering B on the original revision alias.
+        control = root / "control-cache"
+        shutil.copytree(cache, control)
+        fixture.env["SWIFTPODS_CACHE_ROOT"] = str(control)
+        fixture.cli(root / "B", "install", "--offline", "--deployment")
+        fixture.env["SWIFTPODS_CACHE_ROOT"] = str(cache)
+        fixture.cli(root / "A", "cache", "clean", "A")
+        lock = (root / "B/Podfile.lock").read_bytes()
+        shutil.rmtree(root / "B/Pods")
+        fixture.cli(root / "B", "install", "--offline", "--deployment")
+        assert (root / "B/Podfile.lock").read_bytes() == lock
+        fixture.cli(root / "B", "cache", "clean", "B")
+        assert fixture.cli(root / "B", "cache", "list")["entries"] == []
+        fixture.verified.append(vcs + "_named_cleanup_preserves_other_pods_pinned_offline_snapshot_" + refresh)
+    finally:
+        fixture.env["SWIFTPODS_CACHE_ROOT"] = previous

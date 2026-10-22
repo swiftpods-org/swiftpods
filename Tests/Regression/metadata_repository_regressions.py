@@ -360,8 +360,217 @@ def local_publication(fixture):
     ]
 
 
+def publication_snapshot(fixture):
+    root = fixture.root / "publication-snapshot"
+    origin = root / "origin"
+    origin.mkdir(parents=True)
+    (origin / "README").write_text("Isolated specification repository\n")
+    initialize(origin)
+    library = root / "Library"
+    library.mkdir()
+    (library / "Kit.c").write_text("int kit(void) { return 7; }\n")
+    initialize(library)
+    git(library, "tag", "1.0")
+    previous = fixture.env["SWIFTPODS_CACHE_ROOT"]
+    fixture.env["SWIFTPODS_CACHE_ROOT"] = str(root / "cache")
+    try:
+        fixture.cli(root, "repo", "add", "snapshot", str(origin))
+        checkout = root / "cache/repositories/snapshot"
+        git(checkout, "config", "user.name", "SwiftPods Tests")
+        git(checkout, "config", "user.email", "tests@example.invalid")
+        for label, version, first_valid, full in [
+            ("invalid-first", "1.0", False, False),
+            ("valid-first-quick", "1.1", True, False),
+            ("valid-first-full", "1.2", True, True),
+        ]:
+            work = root / label
+            work.mkdir()
+            spec = work / "Kit.podspec"
+            condition = "count == 0" if first_valid else "count > 0"
+            spec.write_text(
+                "count = File.file?('reads') ? File.read('reads').to_i : 0\n"
+                "File.write('reads', (count + 1).to_s)\n"
+                "Pod::Spec.new do |s|\n s.name = 'Kit'\n s.version = " + repr(version)
+                + "\n s.summary = 'Verified snapshot.' if " + condition
+                + "\n s.homepage = 'https://swiftpods.org'\n s.authors = 'Tests'\n s.license = 'MIT'"
+                + "\n s.platforms = { :osx => '13.0' }\n s.source_files = '*.c'"
+                + "\n s.source = { :git => " + repr(str(library)) + ", :tag => '1.0' }\nend\n"
+            )
+            before = git(checkout, "rev-parse", "HEAD")
+            result = fixture.cli(
+                work, "repo", "push", "snapshot", str(spec), "--local-only",
+                *([] if full else ["--quick"]), succeeds=first_valid,
+            )
+            assert (work / "reads").read_text() == "1", result
+            published = checkout / "Kit" / version / "Kit.podspec.json"
+            if not first_valid:
+                assert "SP-REPO-LINT" in diagnostics(result), result
+                assert not published.exists()
+                assert git(checkout, "rev-parse", "HEAD") == before
+            else:
+                assert json.loads(published.read_text())["summary"] == "Verified snapshot."
+                publication = next(event["data"] for event in result["events"]
+                                   if event["kind"] == "publication")
+                assert publication["validation"]["specifications"][0]["path"] == str(spec)
+            assert git(checkout, "status", "--porcelain") == ""
+            fixture.verified.append("publication_uses_one_evaluated_snapshot_" + label)
+    finally:
+        fixture.env["SWIFTPODS_CACHE_ROOT"] = previous
+
+
 def run(fixture):
     versions(fixture)
     project_root_and_sdk(fixture)
     repository_receipts(fixture)
     local_publication(fixture)
+    publication_snapshot(fixture)
+    multi_platform_lock(fixture)
+    publication_identity(fixture)
+    publication_paths(fixture)
+
+
+def multi_platform_lock(fixture):
+    for legacy in [False, True]:
+        _multi_platform_lock(fixture, legacy)
+
+
+def _multi_platform_lock(fixture, legacy):
+    work = fixture.root / ("multi-platform-lock-" + ("legacy" if legacy else "current"))
+    library = work / "Library"
+    library.mkdir(parents=True)
+    (library / "Kit.c").write_text("int kit(void) { return 7; }\n")
+    revision = initialize(library)
+    catalog = work / "specs"
+
+    def specs(version):
+        for name in ["A", "B", "C", "D", "E"]:
+            data = {"name": name, "version": version, "source_files": "*.c",
+                    "source": {"git": str(library), "commit": revision},
+                    "platforms": {"ios": "15.4", "osx": "13.0"}}
+            if name == "A":
+                data.update(ios={"dependencies": {"B": ["= " + version]}},
+                            osx={"dependencies": {"C": ["= " + version]}})
+            if name == "D":
+                data["dependencies"] = {"E": [">= 1.0"]}
+            path = catalog / name / version / (name + ".podspec.json")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(data))
+
+    specs("1.0")
+    (work / "Podfile").write_text(
+        "install! 'swiftpods', :integrate_targets => false\nsource " + repr(str(catalog))
+        + "\ntarget 'Phone' do\n platform :ios, '15.4'\n pod 'A'\nend\n"
+        + "target 'Desktop' do\n platform :osx, '13.0'\n pod 'A'\n pod 'D'\nend\n")
+    previous = fixture.env["SWIFTPODS_CACHE_ROOT"]
+    fixture.env["SWIFTPODS_CACHE_ROOT"] = str(work / "cache")
+    try:
+        fixture.cli(work, "install")
+        locked = (work / "Podfile.lock").read_text()
+        assert "    - 'B (= 1.0)'" in locked and "    - 'C (= 1.0)'" in locked, locked
+        if legacy:
+            # The former writer retained A's iOS edges and omitted its macOS edges.
+            (work / "Podfile.lock").write_text(locked.replace("    - 'C (= 1.0)'\n", ""))
+            # A clean CI checkout has the lockfile, but no installed podspecs.
+            shutil.rmtree(work / "Pods")
+        specs("2.0")
+        report = fixture.cli(work, "update", "A", "--no-repo-update")
+        installed = next(event for event in report["events"] if event["kind"] == "installation")
+        assert {spec["name"]: spec["version"] for spec in installed["specs"]} == {
+            "A": "2.0", "B": "2.0", "C": "2.0", "D": "1.0", "E": "1.0"}
+        fixture.cli(work, "install", "--deployment", "--offline")
+        fixture.verified.append("targeted_update_unlocks_every_platform_and_preserves_unrelated_pins_"
+                                + ("legacy_lock" if legacy else "current_lock"))
+    finally:
+        fixture.env["SWIFTPODS_CACHE_ROOT"] = previous
+
+
+def publication_identity(fixture):
+    work = fixture.root / "publication-identity"
+    seed = work / "seed"
+    seed.mkdir(parents=True)
+    (seed / "README").write_text("Local bare publication fixture\n")
+    initialize(seed)
+    origin = work / "origin.git"
+    git(work, "clone", "--bare", str(seed), str(origin))
+    previous = fixture.env.copy()
+    try:
+        for key in list(fixture.env):
+            if key.startswith(("GIT_AUTHOR_", "GIT_COMMITTER_", "GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")) or key in ["GIT_CONFIG_COUNT", "EMAIL"]:
+                fixture.env.pop(key)
+        fixture.env.update(SWIFTPODS_CACHE_ROOT=str(work / "cache"), GIT_CONFIG_GLOBAL="/dev/null",
+                           GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_COUNT="1",
+                           GIT_CONFIG_KEY_0="user.useConfigOnly", GIT_CONFIG_VALUE_0="true")
+        fixture.cli(work, "repo", "add", "private", str(origin))
+        checkout = work / "cache/repositories/private"
+        git(checkout, "config", "user.name", "Local Publisher")
+        git(checkout, "config", "user.email", "publisher@example.invalid")
+        spec = work / "Kit.podspec.json"
+        for version, author in [("1.0", "Local Publisher <publisher@example.invalid>"),
+                                ("1.1", "Explicit Author <author@example.invalid>")]:
+            if version == "1.1":
+                fixture.env.update(GIT_AUTHOR_NAME="Explicit Author", GIT_AUTHOR_EMAIL="author@example.invalid")
+            spec.write_text(json.dumps({"name": "Kit", "version": version, "summary": "Publication identity fixture.",
+                                        "homepage": "https://swiftpods.org", "authors": "Tests", "license": "MIT",
+                                        "source": {"git": str(seed), "tag": "1.0"}}))
+            fixture.cli(work, "repo", "push", "private", str(spec), "--quick")
+            assert git(origin, "log", "-1", "--format=%an <%ae>") == author
+            assert git(origin, "log", "-1", "--format=%cn <%ce>") == "Local Publisher <publisher@example.invalid>"
+            assert git(checkout, "status", "--porcelain") == ""
+            assert git(origin, "rev-parse", "HEAD") == git(checkout, "rev-parse", "HEAD")
+        fixture.verified.append("remote_publication_retains_repository_identity_and_explicit_author_override")
+    finally:
+        fixture.env = previous
+
+
+def publication_paths(fixture):
+    previous = fixture.env.copy()
+    try:
+        for local in [True, False]:
+            for link in ["parent", "checkout", "none"]:
+                linked = link != "none"
+                root = fixture.root / ("publication-path-" + str(local) + "-" + link)
+                seed = root / "seed"
+                seed.mkdir(parents=True)
+                outside = root / "outside-cache"
+                outside.mkdir()
+                if link == "parent":
+                    (seed / "Kit").symlink_to(outside, target_is_directory=True)
+                else:
+                    (seed / "README").write_text("Safe publication fixture\n")
+                initial = initialize(seed)
+                origin = root / "origin.git"
+                git(root, "clone", "--bare", str(seed), str(origin))
+                fixture.env["SWIFTPODS_CACHE_ROOT"] = str(root / "cache")
+                fixture.cli(root, "repo", "add", "private", str(origin))
+                checkout = root / "cache/repositories/private"
+                git(checkout, "config", "user.name", "Fixture")
+                git(checkout, "config", "user.email", "fixture@example.invalid")
+                if link == "checkout":
+                    target = checkout.with_name("actual-checkout")
+                    checkout.rename(target)
+                    checkout.symlink_to(target.name, target_is_directory=True)
+                record = checkout.with_suffix(".json").read_bytes()
+                spec = root / "Kit.podspec.json"
+                spec.write_text(json.dumps({
+                    "name": "Kit", "version": "1.0", "source_files": "*.c", "platforms": {"osx": "13.0"},
+                    "summary": "Publication path fixture.", "homepage": "https://swiftpods.org", "authors": "Tests",
+                    "license": {"type": "MIT", "text": "Fixture license"}, "source": {"git": str(seed), "tag": "1.0"},
+                }))
+                result = fixture.cli(root, "repo", "push", "private", str(spec), "--quick",
+                                     *(["--local-only"] if local else []), succeeds=not linked)
+                assert list(outside.iterdir()) == []
+                if linked:
+                    assert "SP-REPO-PATH" in diagnostics(result), result
+                    assert git(checkout, "rev-parse", "HEAD") == initial
+                    assert git(origin, "rev-parse", "HEAD") == initial
+                    assert checkout.with_suffix(".json").read_bytes() == record
+                else:
+                    assert (checkout / "Kit/1.0/Kit.podspec.json").exists()
+                    assert git(checkout, "rev-parse", "HEAD") != initial
+                    assert (git(origin, "rev-parse", "HEAD") == initial) == local
+                assert git(checkout, "status", "--porcelain") == ""
+                assert not list(checkout.parent.glob(".publish-*"))
+                fixture.verified.append("publication_path_" + ("local" if local else "remote")
+                                        + ("_rejects_" + link + "_symlink_without_writes" if linked else "_publishes_regular_path"))
+    finally:
+        fixture.env = previous

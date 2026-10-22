@@ -132,7 +132,35 @@ final class ContentStore {
         }
     }
     func clean(_ name: String?) throws -> Int {
-        let entries = try list()
+        let origins = root.appendingPathComponent("origins")
+        let objects = root.appendingPathComponent("objects")
+        if name == nil {
+            let count = ((try? FileManager.default.contentsOfDirectory(atPath: origins.path)) ?? []).count
+            for directory in [origins, objects] {
+                if (try? FileManager.default.attributesOfItem(atPath: directory.path)) != nil {
+                    try FileManager.default.removeItem(at: directory)
+                }
+            }
+            return count
+        }
+        for directory in [origins, objects] {
+            if let type = (try? FileManager.default.attributesOfItem(atPath: directory.path)[.type]) as? FileAttributeType,
+                type != .typeDirectory
+            {
+                throw Diagnostic("SP-CACHE-INTEGRITY", stage: "cache", "Invalid cache directory", file: directory.path)
+            }
+        }
+        let indices = (try? FileManager.default.contentsOfDirectory(at: origins, includingPropertiesForKeys: nil)) ?? []
+        var entries: [[String: Any]] = []
+        for index in indices {
+            guard (try? FileManager.default.attributesOfItem(atPath: index.path)[.type]) as? FileAttributeType == .typeRegular,
+                var entry = try? readObject(index), let origin = entry["origin"] as? [String: Any],
+                index.lastPathComponent == (try identity(origin)) + ".json",
+                let hash = entry["sha256"] as? String, (try? object(hash)) != nil
+            else { continue }
+            entry["id"] = index.deletingPathExtension().lastPathComponent
+            entries.append(entry)
+        }
         let selected = entries.filter {
             name == nil || ($0["origin"] as? [String: Any])?["pod"] as? String == name
         }
@@ -144,7 +172,12 @@ final class ContentStore {
             entries.filter { entry in !selected.contains { $0["id"] as? String == entry["id"] as? String } }.compactMap
             { $0["sha256"] as? String })
         for hash in Set(selected.compactMap { $0["sha256"] as? String }).subtracting(remaining) {
-            try FileManager.default.removeItem(at: object(hash))
+            // An unreadable origin may still share this object. --all can discard it.
+            guard entries.count == indices.count else { continue }
+            let path = try object(hash)
+            if (try? FileManager.default.attributesOfItem(atPath: path.path)) != nil {
+                try FileManager.default.removeItem(at: path)
+            }
         }
         return selected.count
     }

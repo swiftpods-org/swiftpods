@@ -5,6 +5,7 @@ import contextlib
 import hashlib
 import io
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -13,6 +14,53 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from scripts import publish_release, release, sign_release
+
+
+class GitHubReplacement:
+    """Model remote mutations, including a lost response after applying a change."""
+
+    def __init__(self, commit, failure):
+        self.commit = commit
+        self.failure = failure
+        self.tag = "a" * 40
+        self.release = {"immutable": False, "draft": False}
+        self.commands = []
+
+    def read(self, command, **options):
+        endpoint = command[2]
+        if "/git/ref/tags/" in endpoint:
+            return json.dumps({"object": {"sha": self.tag}})
+        if "/releases/tags/" in endpoint:
+            if self.release is None:
+                raise subprocess.CalledProcessError(1, command, stderr="gh: Not Found (HTTP 404)")
+            return json.dumps(self.release)
+        if "/commits/" in endpoint:
+            return self.tag
+        raise AssertionError(command)
+
+    def fail(self, stage, command):
+        if self.failure == stage:
+            self.failure = None
+            raise subprocess.CalledProcessError(1, command, stderr="gh: Service Unavailable (HTTP 503)")
+
+    def run(self, command, **options):
+        self.commands.append(command)
+        if command[:4] == ["gh", "api", "--method", "PATCH"]:
+            self.fail("retag", command)
+            self.tag = self.commit
+        elif command[:3] == ["gh", "release", "delete"]:
+            self.release = None
+            self.fail("delete", command)
+        elif command[:3] == ["gh", "release", "create"]:
+            self.fail("create-before", command)
+            self.release = {"immutable": False, "draft": True}
+            self.fail("create-after", command)
+        elif command[:3] == ["gh", "release", "edit"]:
+            self.fail("edit", command)
+            self.release["draft"] = False
+        else:
+            raise AssertionError(command)
+        return subprocess.CompletedProcess(command, 0)
 
 
 class SigningIdentityTests(unittest.TestCase):
@@ -326,7 +374,7 @@ class ReleaseTests(unittest.TestCase):
             publish_release.publish(
                 self.directory, self.args.version, self.commit, "a" * 40
             )
-        delete, retag, create, publish = [call.args[0] for call in run.call_args_list]
+        retag, delete, create, publish = [call.args[0] for call in run.call_args_list]
         self.assertEqual(delete[:4], ["gh", "release", "delete", "v0.1.0"])
         self.assertNotIn("--cleanup-tag", delete)
         self.assertIn("repos/swiftpods-org/swiftpods/git/refs/tags/v0.1.0", retag)
@@ -335,6 +383,58 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(create[:4], ["gh", "release", "create", "v0.1.0"])
         self.assertIn("--draft", create)
         self.assertIn("--draft=false", publish)
+
+    def test_replacement_can_retry_each_partial_failure(self):
+        self.prepare()
+        for stage in ["retag", "delete", "create-before", "create-after", "edit"]:
+            with self.subTest(stage=stage):
+                remote = GitHubReplacement(self.commit, stage)
+                with (
+                    patch.object(publish_release.subprocess, "check_output", side_effect=remote.read),
+                    patch.object(publish_release.subprocess, "run", side_effect=remote.run),
+                ):
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        publish_release.publish(self.directory, self.args.version, self.commit, "a" * 40)
+                    if stage == "retag":
+                        self.assertEqual(remote.release, {"immutable": False, "draft": False})
+                        self.assertEqual(remote.tag, "a" * 40)
+                    if stage in ["delete", "create-before"]:
+                        self.assertIsNone(remote.release)
+                    if stage in ["create-after", "edit"]:
+                        self.assertTrue(remote.release["draft"])
+                    publish_release.publish(self.directory, self.args.version, self.commit, "a" * 40)
+                self.assertEqual(remote.tag, self.commit)
+                self.assertEqual(remote.release, {"immutable": False, "draft": False})
+
+    def test_replacement_retry_preserves_an_unexpected_tag_change(self):
+        self.prepare()
+        remote = GitHubReplacement(self.commit, "create-after")
+        with (
+            patch.object(publish_release.subprocess, "check_output", side_effect=remote.read),
+            patch.object(publish_release.subprocess, "run", side_effect=remote.run),
+        ):
+            with self.assertRaises(subprocess.CalledProcessError):
+                publish_release.publish(self.directory, self.args.version, self.commit, "a" * 40)
+            remote.tag = "c" * 40
+            previous = list(remote.commands)
+            with self.assertRaisesRegex(RuntimeError, "Remote tag changed"):
+                publish_release.publish(self.directory, self.args.version, self.commit, "a" * 40)
+            self.assertEqual(remote.commands, previous)
+            self.assertTrue(remote.release["draft"])
+
+    def test_replacement_does_not_treat_other_api_errors_as_a_missing_release(self):
+        for message in ["HTTP 401", "HTTP 403", "HTTP 503", "connection failed"]:
+            with (
+                self.subTest(message=message),
+                patch.object(publish_release.subprocess, "check_output", side_effect=[
+                    json.dumps({"object": {"sha": "a" * 40}}),
+                    subprocess.CalledProcessError(1, ["gh", "api"], stderr=message),
+                ]),
+                patch.object(publish_release.subprocess, "run") as run,
+                self.assertRaises(subprocess.CalledProcessError),
+            ):
+                publish_release.replace_release("v0.1.0", self.commit, "a" * 40)
+            run.assert_not_called()
 
 
 if __name__ == "__main__":

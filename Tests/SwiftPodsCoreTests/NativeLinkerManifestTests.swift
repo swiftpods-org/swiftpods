@@ -81,6 +81,51 @@ final class NativeLinkerManifestTests: XCTestCase {
         XCTAssertFalse(existing.contains("-lsqlite3"))
     }
 
+    func testLinkerUsesExplicitSourceTypesBeforeKnownTypesAndExtensions() throws {
+        let root = try directory()
+        let engine = try NativeXcode(
+            project: root, manifest: [:], resolution: NativeResolution(specs: [:], requests: []),
+            integrateUserProjects: false)
+        let graph = engine.graph
+        graph.objects["TARGET"] = ["buildPhases": ["SOURCES", "RESOURCES"]]
+        graph.objects["SOURCES"] = ["isa": "PBXSourcesBuildPhase", "files": ["BUILD"]]
+        graph.objects["BUILD"] = ["fileRef": "FILE"]
+        graph.objects["RESOURCES"] = ["isa": "PBXResourcesBuildPhase", "files": ["RESOURCE"]]
+        graph.objects["RESOURCE"] = ["fileRef": "UNCOMPILED"]
+        graph.objects["UNCOMPILED"] = ["path": "Unused.cpp"]
+        let cases: [([String: String], Bool)] = [
+            (["path": "main.mm"], true),
+            (["path": "main.mm", "explicitFileType": "sourcecode.c.objc"], false),
+            (["path": "main.mm", "lastKnownFileType": "sourcecode.c.objc"], false),
+            (["path": "main.m", "lastKnownFileType": "sourcecode.cpp.objcpp"], true),
+            (["path": "main.c", "explicitFileType": "sourcecode.cpp.cpp"], true),
+            (
+                [
+                    "path": "main.mm", "lastKnownFileType": "sourcecode.cpp.objcpp",
+                    "explicitFileType": "sourcecode.c.objc",
+                ], false
+            ),
+            (
+                [
+                    "path": "main.m", "lastKnownFileType": "sourcecode.c.objc",
+                    "explicitFileType": "sourcecode.cpp.objcpp",
+                ], true
+            ),
+            (["path": "main.c"], false),
+        ]
+        for (source, expected) in cases {
+            graph.objects["FILE"] = source
+            let hasCXXSources = engine.linkerHasCXXSources("TARGET", graph: graph)
+            XCTAssertEqual(hasCXXSources, expected, "\(source)")
+            XCTAssertEqual(
+                NativeBuildSettings.libraryFlags(
+                    ["c++"], sources: [], settings: [:], linkingWithClang: true, hasCXXSources: hasCXXSources),
+                expected ? [] : ["-lc++"], "\(source)")
+        }
+        graph.objects["SOURCES"]?["files"] = [] as [String]
+        XCTAssertFalse(engine.linkerHasCXXSources("TARGET", graph: graph))
+    }
+
     func testWhyRetainsPlatformDependentEdgesAndMarksAmbiguousLegacyRecords() throws {
         let ios = ["name": "ios", "deployment_target": "15.0"]
         let mac = ["name": "osx", "deployment_target": "13.0"]

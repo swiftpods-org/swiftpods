@@ -55,6 +55,11 @@ struct NativeResolver {
                     return nil
                 }
                 for (root, spec) in selected where spec.version.isPrerelease {
+                    if !update.contains(root), let version = try locked[root].map(PodVersion.init),
+                        version.isPrerelease && version == spec.version
+                    {
+                        continue
+                    }
                     let allowed = requests.contains { request in
                         request.root == root
                             && (request.external

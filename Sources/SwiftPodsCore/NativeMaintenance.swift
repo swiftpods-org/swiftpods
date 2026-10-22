@@ -40,6 +40,12 @@ enum NativeMaintenance {
             args.filter({ CommandOptions.hasOptionPrefix($0) }).allSatisfy({ ["--all", "--short"].contains($0) })
         else { throw Diagnostic("SP-CLI-ARGUMENT", stage: "cache", "Use cache list [POD] or cache clean POD/--all") }
         let query = args.first { !CommandOptions.hasOptionPrefix($0) }
+        if action == "clean" {
+            guard query != nil || args.contains("--all") else {
+                throw Diagnostic("SP-CLI-ARGUMENT", stage: "cache", "Choose a pod or use --all explicitly")
+            }
+            return ["removed": try NativeCacheCleanup.run(cache: cache, pod: query)]
+        }
         let store = try ContentStore(cacheRoot: cache)
         let podspecCache = NativePodspecCache(cache: cache)
         let podspecEntries = try podspecCache.entries().filter {
@@ -115,59 +121,9 @@ enum NativeMaintenance {
             if let query, !(entry["pods"] as? [String] ?? []).contains(query) { return nil }
             return entry
         }
-        if action == "list" {
-            let archives = try store.list().filter {
-                query == nil || ($0["origin"] as? [String: Any])?["pod"] as? String == query
-            }
-            return ["entries": archives + gitEntries + preparedEntries + snapshotEntries + podspecEntries]
+        let archives = try store.list().filter {
+            query == nil || ($0["origin"] as? [String: Any])?["pod"] as? String == query
         }
-        guard query != nil || args.contains("--all") else {
-            throw Diagnostic("SP-CLI-ARGUMENT", stage: "cache", "Choose a pod or use --all explicitly")
-        }
-        let archives = try store.clean(query)
-        var removed = archives
-        for entry in podspecEntries {
-            try podspecCache.remove(entry)
-            removed += 1
-        }
-        for entry in preparedEntries {
-            let directory = prepared.appendingPathComponent(entry["id"] as! String)
-            try FileManager.default.removeItem(at: directory)
-            try FileManager.default.removeItem(at: directory.appendingPathExtension("json"))
-            removed += 1
-        }
-        for entry in snapshotEntries {
-            let directory = snapshots.appendingPathComponent(entry["id"] as! String)
-            if try retainOtherPods(directory: directory, query: query) { continue }
-            try FileManager.default.removeItem(at: directory)
-            try FileManager.default.removeItem(at: directory.appendingPathExtension("origin.json"))
-            let seal = directory.appendingPathExtension("sha256")
-            if FileManager.default.fileExists(atPath: seal.path) { try FileManager.default.removeItem(at: seal) }
-            removed += 1
-        }
-        for entry in gitEntries {
-            let directory = git.appendingPathComponent(entry["id"] as! String)
-            _ = try NativeGitCache.maintenanceMetadata(directory)
-            if try retainOtherPods(directory: directory, query: query, pods: entry["pods"] as? [String]) { continue }
-            try FileManager.default.removeItem(at: directory)
-            for suffix in ["sha256", "origin.json"] {
-                let path = directory.appendingPathExtension(suffix)
-                if FileManager.default.fileExists(atPath: path.path) { try FileManager.default.removeItem(at: path) }
-            }
-            removed += 1
-        }
-        return ["removed": removed]
-    }
-    private static func retainOtherPods(directory: URL, query: String?, pods: [String]? = nil) throws -> Bool {
-        guard let query else { return false }
-        let receipt = directory.appendingPathExtension("origin.json")
-        guard var metadata = try? readObject(receipt) else { return false }
-        let remaining = (pods ?? metadata["pod_names"] as? [String] ?? []).filter {
-            $0 != query
-        }
-        guard !remaining.isEmpty else { return false }
-        metadata["pod_names"] = remaining
-        try jsonData(metadata).write(to: receipt, options: .atomic)
-        return true
+        return ["entries": archives + gitEntries + preparedEntries + snapshotEntries + podspecEntries]
     }
 }

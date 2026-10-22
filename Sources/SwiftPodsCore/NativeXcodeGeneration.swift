@@ -40,12 +40,14 @@ extension NativeXcode {
             // Source wrappers must see SDKs supplied by transitive binary pods,
             // including Xcode's selected XCFramework headers and frameworks.
             let sdks = roots.sorted().flatMap { vendorSDKs[variantKey($0, platform)] ?? [] }
+            let linkedSDKs = Set(try consumerVendorSDKs(roots, platform: platform).map(\.url))
             if let phases = graph.objects[id]?["buildPhases"] as? [String],
                 let phase = phases.first(where: { graph.objects[$0]?["isa"] as? String == "PBXFrameworksBuildPhase" })
             {
                 var files = graph.objects[phase]?["files"] as? [String] ?? []
                 let references =
-                    sdks.filter { dynamic || $0.isXCFramework }.map { file($0.url.path, type: $0.fileType) }
+                    sdks.filter { dynamic ? linkedSDKs.contains($0.url) : $0.isXCFramework }
+                    .map { file($0.url.path, type: $0.fileType) }
                     + products.filter {
                         dynamic && matchesProduct($0, roots: roots, platform: platform) && productRoots[$0] != nil
                     }.map(buildReference)
@@ -83,7 +85,8 @@ extension NativeXcode {
                 applyCustomModuleMaps(roots, platform: platform, settings: &settings)
                 if dynamic {
                     let flags = try consumerLinkerFlags(
-                        roots, platform: platform, sources: linkerSources(id, graph: graph), settings: settings)
+                        roots, platform: platform, sources: [], settings: settings,
+                        hasCXXSources: linkerHasCXXSources(id, graph: graph))
                     settings["OTHER_LDFLAGS"] = nativeStrings(settings["OTHER_LDFLAGS"]) + flags
                 }
                 graph.objects[config]?["buildSettings"] = settings

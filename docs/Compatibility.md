@@ -55,6 +55,8 @@ nested library, test and app specifications without building their sources.
 Resolution considers combined version requirements, explicit prereleases,
 subspec selections and deployment minimums. Warning and configuration options
 do not grant permission to select prerelease versions.
+An existing prerelease pin remains valid after compatible requirement changes;
+updating that pod requires explicit prerelease permission to select it again.
 
 Explicitly selected `.C` and `.M` sources compile as C++ and Objective-C++.
 Pod identities accept Unicode and graphic symbols while rejecting hidden names,

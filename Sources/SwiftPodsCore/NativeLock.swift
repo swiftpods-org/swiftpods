@@ -176,7 +176,34 @@ struct NativeLock {
         }
         return changed.intersection(Set(versions.keys))
     }
-    func unlocked(_ roots: Set<String>) -> Set<String> {
+    /// Earlier lock writers recorded only one platform's edges. Recover the
+    /// installed graph before deciding which transitive pins an update releases.
+    func recoveredDependencies(
+        _ direct: [NativeDependency], specification: (NativeDependency, String) throws -> NativeSpec?
+    ) throws -> [String: Set<String>] {
+        var result = dependencies
+        var queue = direct
+        var visited = Set<String>()
+        while let request = queue.popLast() {
+            try NativeCancellation.check()
+            let key = request.name + ":" + request.platform + ":" + request.deployment
+            guard let version = versions[request.root], visited.insert(key).inserted,
+                let spec = try specification(request, version)
+            else { continue }
+            let children: [NativeDependency]
+            do {
+                children = try spec.dependencies(for: request)
+            } catch let error as Diagnostic where ["SP-SPEC-SUBSPEC", "SP-PLATFORM-CONFLICT"].contains(error.code) {
+                // The Podfile may select a platform or subspec added after this pin.
+                continue
+            }
+            result[request.root, default: []].formUnion(children.map(\.root))
+            queue += children
+        }
+        return result
+    }
+    func unlocked(_ roots: Set<String>, dependencies recovered: [String: Set<String>]? = nil) -> Set<String> {
+        let dependencies = recovered ?? self.dependencies
         var result = roots
         var queue = Array(roots)
         let explicit = Set(declarations.keys.map { NativePodName.root($0) })
@@ -200,19 +227,22 @@ struct NativeLock {
         manifestChecksum: String, previous: [String: Any] = [:]
     ) throws -> String {
         var text = "PODS:\n"
-        var names = Set<String>()
-        for request in resolution.requests.sorted(by: { $0.name < $1.name }) where names.insert(request.name).inserted {
-            let spec = resolution.specs[request.root]!
-            let dependencies = try spec.dependencies(for: request)
-            let value = quote(request.name + " (" + spec.version.description + ")")
+        let requests = Dictionary(grouping: resolution.requests, by: \.name)
+        for name in requests.keys.sorted() {
+            let spec = resolution.specs[NativePodName.root(name)]!
+            // One lock entry represents every platform that selected this pod.
+            let dependencies = try Set(requests[name]!.flatMap { request in
+                try spec.dependencies(for: request).map {
+                    $0.name + " (" + $0.requirements.joined(separator: ", ") + ")"
+                }
+            })
+            let value = quote(name + " (" + spec.version.description + ")")
             if dependencies.isEmpty {
                 text += "  - " + value + "\n"
             } else {
                 text += "  - " + value + ":\n"
-                for dependency in dependencies.sorted(by: { $0.name < $1.name }) {
-                    text +=
-                        "    - " + quote(dependency.name + " (" + dependency.requirements.joined(separator: ", ") + ")")
-                        + "\n"
+                for dependency in dependencies.sorted() {
+                    text += "    - " + quote(dependency) + "\n"
                 }
             }
         }

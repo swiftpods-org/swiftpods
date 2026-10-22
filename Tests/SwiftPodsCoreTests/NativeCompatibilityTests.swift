@@ -36,16 +36,30 @@ final class NativeCompatibilityTests: XCTestCase {
         ])
         XCTAssertEqual(result.specs["Kit"]?.version.description, "2.0.pre")
     }
-    func testLockPinDoesNotAuthorizeAPrereleaseWithoutAnExplicitRequirement() throws {
+    func testLockedPrereleaseSurvivesCompatibleRequirementChangesUntilUpdated() throws {
         let stable = try NativeSpec(data: ["name": "Kit", "version": "1.0"])
         let preview = try NativeSpec(data: ["name": "Kit", "version": "2.0.pre"])
         let candidates: (NativeDependency) throws -> [NativeSpec] = { _ in [preview, stable] }
         let generic = try NativeDependency(["name": "Kit"])
-        XCTAssertThrowsError(try NativeResolver(candidates: candidates, locked: ["Kit": "2.0.pre"]).resolve([generic]))
+        let installed = try NativeResolver(candidates: candidates, locked: ["Kit": "2.0.pre"]).resolve([generic])
+        XCTAssertEqual(installed.specs["Kit"]?.version.description, "2.0.pre")
+        let incompatible = try NativeDependency(["name": "Kit", "requirements": ["< 2.0.pre"]])
+        XCTAssertThrowsError(
+            try NativeResolver(candidates: candidates, locked: ["Kit": "2.0.pre"]).resolve([incompatible]))
         let update = try NativeResolver(candidates: candidates, locked: ["Kit": "2.0.pre"], update: ["Kit"]).resolve([
             generic
         ])
         XCTAssertEqual(update.specs["Kit"]?.version.description, "1.0")
+    }
+    func testStableLockAliasDoesNotAuthorizeANewPrereleaseSpelling() throws {
+        let preview = try NativeSpec(data: ["name": "Kit", "version": "1.2.3-4"])
+        let generic = try NativeDependency(["name": "Kit"])
+        XCTAssertThrowsError(
+            try NativeResolver(candidates: { _ in [preview] }, locked: ["Kit": "1.2.3.4"]).resolve([generic]))
+        XCTAssertThrowsError(try NativeResolver(candidates: { _ in [preview] }).resolve([generic]))
+        XCTAssertThrowsError(
+            try NativeResolver(candidates: { _ in [preview] }, locked: ["Kit": "1.2.3-4"], update: ["Kit"])
+                .resolve([generic]))
     }
     func testLockedVersionsAreConstraintsUntilExplicitlyUnlocked() throws {
         let first = try NativeSpec(data: ["name": "Kit", "version": "1.0"])

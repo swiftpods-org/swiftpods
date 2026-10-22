@@ -65,6 +65,35 @@ final class NativeLintInterfaceTests: XCTestCase {
         XCTAssertEqual(contents, "#import <Kit/A.h>\n#import <Kit/B.h>\n")
     }
 
+    func testCustomModuleMapProbesIncludeEveryTopLevelModuleInItsRequiredLanguage() throws {
+        let (path, contents) = try probe([
+            "source_files": "*.h", "module_map": "Custom.modulemap",
+        ], files: ["Kit.h", "Custom.modulemap"], modular: true) { engine in
+            try Data((
+                "module Kit { header \"Kit.h\" }\n"
+                + "module Extra { header \"Missing.h\" }\n"
+                + "module CPP { requires !objc, cplusplus header \"Other.h\" }\n"
+            ).utf8).write(to: engine.project.appendingPathComponent("Library/Custom.modulemap"))
+        }
+        XCTAssertEqual(contents, "@import Kit;\n")
+        let directory = path.deletingLastPathComponent()
+        XCTAssertEqual(try String(contentsOf: directory.appendingPathComponent("VendorProbe.m"), encoding: .utf8), "@import Extra;\n")
+        XCTAssertEqual(try String(contentsOf: directory.appendingPathComponent("VendorProbe.cpp"), encoding: .utf8), "#pragma clang module import CPP\n")
+        let graph = try NativePBX(directory.appendingPathComponent("Lint.xcodeproj/project.pbxproj"), existing: true)
+        XCTAssertTrue(graph.objects.values.contains { $0["lastKnownFileType"] as? String == "sourcecode.cpp.cpp" })
+    }
+
+    func testCOnlyPrimaryModuleUsesACProbe() throws {
+        let (path, contents) = try probe([
+            "source_files": "*.h", "module_map": "Custom.modulemap",
+        ], files: ["Kit.h", "Custom.modulemap"], modular: true) { engine in
+            try Data("module Kit { requires !objc header \"Kit.h\" }\n".utf8)
+                .write(to: engine.project.appendingPathComponent("Library/Custom.modulemap"))
+        }
+        XCTAssertEqual(path.lastPathComponent, "Probe.c")
+        XCTAssertEqual(contents, "#pragma clang module import Kit\n")
+    }
+
     func testLintPrivateMasksCannotHideAnotherSubspecsPublicInterface() throws {
         let (_, contents) = try probe(
             [
@@ -163,6 +192,42 @@ final class NativeLintInterfaceTests: XCTestCase {
                 settings["CLANG_DISABLE_CXX_MODULES"] as? String, "NO")
             XCTAssertTrue(nativeStrings(settings["OTHER_CPLUSPLUSFLAGS"]).contains("-fcxx-modules"))
             XCTAssertTrue(nativeStrings(settings["OTHER_CPLUSPLUSFLAGS"]).contains("$(inherited)"))
+        }
+    }
+
+    func testCPlusPlusProbesInheritExpandedPodSettingsAndPreserveConsumerOverrides() throws {
+        for overridden in [false, true] {
+            let (path, _) = try probe([
+                "source_files": "Kit.hpp",
+                "pod_target_xcconfig": [
+                    "KIT_CPP_STANDARD": "c++17", "CLANG_CXX_LANGUAGE_STANDARD": "$(KIT_CPP_STANDARD)",
+                    "CLANG_CXX_LIBRARY": "libc++",
+                ],
+            ], files: ["Kit.hpp"]) { engine in
+                guard overridden else { return }
+                let config = engine.project.appendingPathComponent("Consumer.xcconfig")
+                try Data("CLANG_CXX_LANGUAGE_STANDARD = c++20\n".utf8).write(to: config)
+                let graph = try NativePBX(engine.project.appendingPathComponent("Lint.xcodeproj/project.pbxproj"), existing: true)
+                let ref = graph.add("consumer-cxx-override", [
+                    "isa": "PBXFileReference", "path": config.path, "sourceTree": "<absolute>",
+                    "lastKnownFileType": "text.xcconfig",
+                ])
+                for id in Array(graph.objects.keys)
+                where (graph.objects[id]?["buildSettings"] as? [String: Any])?["PRODUCT_NAME"] as? String == "Lint" {
+                    graph.objects[id]?["baseConfigurationReference"] = ref
+                }
+                try graph.save()
+            }
+            let graph = try NativePBX(path.deletingLastPathComponent().appendingPathComponent("Lint.xcodeproj/project.pbxproj"), existing: true)
+            let configs = graph.objects.values.filter {
+                ($0["buildSettings"] as? [String: Any])?["PRODUCT_NAME"] as? String == "Lint"
+            }
+            XCTAssertEqual(configs.count, 2)
+            for config in configs {
+                let scope = try NativeBuildSettings.resolvedScopes(config, graph: graph, targetName: "Lint").targetScope
+                XCTAssertEqual(try scope.expandedValue("CLANG_CXX_LANGUAGE_STANDARD"), overridden ? "c++20" : "c++17")
+                XCTAssertEqual(try scope.expandedValue("CLANG_CXX_LIBRARY"), "libc++")
+            }
         }
     }
 

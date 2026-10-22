@@ -73,12 +73,16 @@ enum NativeBuildSettings {
         return result
     }
 
-    static func libraryFlags(_ libraries: [String], sources: [URL], settings: [String: Any], linkingWithClang: Bool)
-        -> [String]
-    {
-        let cxx = Set(["mm", "cc", "cpp", "cxx", "c++", "C", "M"])
+    static func isCXXSource(_ source: URL) -> Bool {
+        ["mm", "cc", "cpp", "cxx", "c++", "C", "M"].contains(source.pathExtension)
+    }
+
+    static func libraryFlags(
+        _ libraries: [String], sources: [URL], settings: [String: Any], linkingWithClang: Bool,
+        hasCXXSources: Bool? = nil
+    ) -> [String] {
         let implicitCXX =
-            linkingWithClang && sources.contains { cxx.contains($0.pathExtension) }
+            linkingWithClang && (hasCXXSources ?? sources.contains(where: isCXXSource))
             && (settings["LINK_WITH_STANDARD_LIBRARIES"] as? String ?? "YES") != "NO" && settings["LD"] == nil
             && settings["LDPLUSPLUS"] == nil
         let standardLibrary = settings["CLANG_CXX_LIBRARY"] as? String ?? "libc++"
