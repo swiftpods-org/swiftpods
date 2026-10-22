@@ -69,6 +69,7 @@ final class NativeXcode {
     var resourceBundleLabels: [String: String] = [:]
     var customModuleMaps: [String: URL] = [:]
     var vendorSDKs: [String: [NativeVendorSDK]] = [:]
+    let linkerSDKContext = NativeSDKContext()
     init(
         project: URL, manifest: [String: Any], resolution: NativeResolution, integrateUserProjects: Bool = true,
         projectBindings: [String: String]? = nil

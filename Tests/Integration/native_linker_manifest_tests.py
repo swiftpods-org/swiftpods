@@ -14,7 +14,12 @@ from Tests.Integration.native_xcconfig_tests import create
 from Tests.Regression.consumer_build_regressions import update_spec
 from Tests.Regression.input_contract_regressions import commit, diagnostic, git
 from Tests.Regression.lifecycle_audit_regressions import write_project
-from Tests.Regression.linkage_safety_regressions import run as linkage_safety_regressions
+from Tests.Regression.linkage_safety_regressions import (
+    run as linkage_safety_regressions,
+)
+from Tests.Regression.linker_context_regressions import (
+    run as linker_context_regressions,
+)
 from Tests.Regression.workspace_resource_regressions import read_project
 
 
@@ -507,6 +512,7 @@ def main():
     explicit_source_type_linking(fixture)
     locked_prerelease_install(fixture)
     linkage_safety_regressions(fixture)
+    linker_context_regressions(fixture)
     uppercase_arc_and_optimization(fixture)
     profile_selection(fixture)
     manifest_selection(fixture)

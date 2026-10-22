@@ -69,6 +69,24 @@ extension NativeXcode {
             graph.objects[$0]?["isa"] as? String == "PBXSourcesBuildPhase"
         }.flatMap { graph.objects[$0]?["files"] as? [String] ?? [] }
         return builds.contains { build in
+            let filters = nativeStrings(graph.objects[build]?["platformFilters"])
+                + nativeStrings(graph.objects[build]?["platformFilter"])
+            if !filters.isEmpty {
+                let sdk = settings["SDKROOT"] as? String ?? "macosx"
+                let platform: String
+                if settings["IS_MACCATALYST"] as? String == "YES"
+                    || settings["EFFECTIVE_PLATFORM_NAME"] as? String == "-maccatalyst"
+                {
+                    platform = "maccatalyst"
+                } else {
+                    let name = linkerSDKContext.name(sdk, relativeTo: graph.sourceRoot)
+                    platform =
+                        name.hasPrefix("iphone") ? "ios" : name.hasPrefix("macosx") ? "macos"
+                        : name.hasPrefix("appletv") ? "tvos" : name.hasPrefix("watch") ? "watchos"
+                        : name.hasPrefix("xr") ? "xros" : name
+                }
+                guard filters.contains(platform) else { return false }
+            }
             guard let reference = graph.objects[build]?["fileRef"] as? String,
                 let source = graph.objects[reference], let path = source["path"] as? String
             else { return false }

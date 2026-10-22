@@ -228,13 +228,7 @@ extension NativeXcode {
             settings[key] = values
         }
         applyCustomModuleMaps(roots, platform: request.platform, settings: &settings)
-        settings["OTHER_LDFLAGS"] =
-            ["$(inherited)"] + nativeStrings(settings["OTHER_LDFLAGS"])
-            + NativeBuildSettings.libraryFlags(
-                nativeStrings(attributes["libraries"]), sources: sources, settings: settings, linkingWithClang: true)
-        settings["OTHER_LDFLAGS"] =
-            nativeStrings(settings["OTHER_LDFLAGS"])
-            + (try consumerLinkerFlags(roots, platform: request.platform, sources: sources, settings: settings))
+        settings["OTHER_LDFLAGS"] = ["$(inherited)"] + nativeStrings(settings["OTHER_LDFLAGS"])
         let mac = request.platform == "osx"
         settings["LD_RUNPATH_SEARCH_PATHS"] =
             [
@@ -391,6 +385,23 @@ extension NativeXcode {
             ])
         targetIDs.append(id)
         targetOwners[id] = request.root
+        for config in configurations[label].map({ Array($0.values) }) ?? [] {
+            var values = graph.objects[config]?["buildSettings"] as? [String: Any] ?? [:]
+            let flags = try configuredLinkerFlags(
+                graph.objects[config]!, target: id, graph: graph, platform: request.platform, settings: &values
+            ) { values, scope, forcedCXX in
+                let cxx = forcedCXX ?? linkerHasCXXSources(id, graph: graph, settings: values, scope: scope)
+                let ownFlags = NativeBuildSettings.libraryFlags(
+                    nativeStrings(attributes["libraries"]), sources: [], settings: values,
+                    linkingWithClang: true, hasCXXSources: cxx)
+                var dependencySettings = values
+                dependencySettings["OTHER_LDFLAGS"] = nativeStrings(values["OTHER_LDFLAGS"]) + ownFlags
+                return ownFlags + (try consumerLinkerFlags(
+                    roots, platform: request.platform, sources: [], settings: dependencySettings, hasCXXSources: cxx))
+            }
+            values["OTHER_LDFLAGS"] = nativeStrings(values["OTHER_LDFLAGS"]) + flags
+            graph.objects[config]?["buildSettings"] = values
+        }
         onDemand.tag(target: id, graph: graph)
         if let host { testTargetHosts[id] = host.id }
         if generatedSource == nil {

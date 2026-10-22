@@ -188,6 +188,92 @@ final class NativeLinkerManifestTests: XCTestCase {
                 "TARGET", graph: graph, settings: ["GCC_INPUT_FILETYPE": "sourcecode.cpp.cpp"]))
     }
 
+    func testPlatformFilteredSourcesDoNotSupplyAnImplicitCXXRuntime() throws {
+        let root = try directory()
+        let engine = try NativeXcode(
+            project: root, manifest: [:], resolution: NativeResolution(specs: [:], requests: []),
+            integrateUserProjects: false)
+        let graph = engine.graph
+        graph.objects["TARGET"] = ["buildPhases": ["SOURCES"]]
+        graph.objects["SOURCES"] = ["isa": "PBXSourcesBuildPhase", "files": ["BUILD"]]
+        graph.objects["FILE"] = ["path": "main.mm"]
+        let customSDK = root.appendingPathComponent("Custom.sdk")
+        try FileManager.default.createDirectory(at: customSDK, withIntermediateDirectories: true)
+        try jsonData(["CanonicalName": "iphoneos.fixture"]).write(to: customSDK.appendingPathComponent("SDKSettings.json"))
+        for key in ["platformFilter", "platformFilters"] {
+            graph.objects["BUILD"] = ["fileRef": "FILE", key: key == "platformFilter" ? "ios" : ["ios"]]
+            for (sdk, catalyst, expected) in [
+                ("macosx", "NO", false), ("iphoneos", "NO", true), ("iphonesimulator", "NO", true),
+                (customSDK.path, "NO", true),
+                ("macosx", "YES", false),
+            ] {
+                XCTAssertEqual(
+                    engine.linkerHasCXXSources(
+                        "TARGET", graph: graph, settings: ["SDKROOT": sdk, "IS_MACCATALYST": catalyst]), expected)
+            }
+        }
+        graph.objects["BUILD"] = ["fileRef": "FILE", "platformFilters": ["macos", "maccatalyst"]]
+        for catalyst in ["NO", "YES"] {
+            XCTAssertTrue(engine.linkerHasCXXSources(
+                "TARGET", graph: graph, settings: ["SDKROOT": "macosx", "IS_MACCATALYST": catalyst]))
+        }
+    }
+
+    func testUnicodeSpacesAreLiteralCharactersInSourceExclusionLists() {
+        let root = URL(fileURLWithPath: "/SDK")
+        for separator in ["\u{00a0}", "\u{2003}", "\u{2028}", "\u{2029}"] {
+            let name = "main" + separator + "optional.mm"
+            let source = root.appendingPathComponent(name)
+            for pattern in [name, NativeBuildSetting.quoted(name)] {
+                XCTAssertTrue(NativeBuildSettings.sourceIsExcluded(
+                    source, relativeTo: root, settings: ["EXCLUDED_SOURCE_FILE_NAMES": pattern]))
+                XCTAssertFalse(NativeBuildSettings.sourceIsExcluded(
+                    source, relativeTo: root,
+                    settings: ["EXCLUDED_SOURCE_FILE_NAMES": "*.mm", "INCLUDED_SOURCE_FILE_NAMES": pattern]))
+            }
+        }
+    }
+
+    func testLinkerFlagsRemainConditionalForEachBuildArchitecture() throws {
+        let root = try directory()
+        let sdk = root.appendingPathComponent("Fixture.sdk")
+        try FileManager.default.createDirectory(at: sdk, withIntermediateDirectories: true)
+        try jsonData([
+            "CanonicalName": "macosx.fixture",
+            "SupportedTargets": ["macosx": ["Archs": ["arm64", "x86_64"]]],
+        ]).write(to: sdk.appendingPathComponent("SDKSettings.json"))
+        let engine = try NativeXcode(
+            project: root, manifest: [:], resolution: NativeResolution(specs: [:], requests: []),
+            integrateUserProjects: false)
+        let graph = engine.graph
+        graph.objects["TARGET"] = ["name": "App", "buildPhases": ["SOURCES"]]
+        XCTAssertEqual(
+            engine.linkerSDKContext.architectures("Fixture.sdk", target: "macosx", relativeTo: root),
+            ["arm64", "x86_64"])
+        graph.objects["SOURCES"] = ["isa": "PBXSourcesBuildPhase", "files": ["BUILD"]]
+        graph.objects["BUILD"] = ["fileRef": "FILE"]
+        graph.objects["FILE"] = ["path": "main.mm"]
+        var settings: [String: Any] = [
+            "SDKROOT": sdk.path, "EXCLUDED_SOURCE_FILE_NAMES[arch=arm64]": "main.mm",
+        ]
+        let configuration: [String: Any] = ["name": "Debug", "buildSettings": settings]
+        let flags = try engine.configuredLinkerFlags(
+            configuration, target: "TARGET", graph: graph, platform: "osx", settings: &settings
+        ) { values, scope, forced in
+            NativeBuildSettings.libraryFlags(
+                ["c++"], sources: [], settings: values, linkingWithClang: true,
+                hasCXXSources: forced ?? engine.linkerHasCXXSources("TARGET", graph: graph, settings: values, scope: scope))
+        }
+        XCTAssertEqual(flags, ["$(SWIFTPODS_LINKER_FLAGS)"])
+        settings["OTHER_LDFLAGS"] = flags
+        for (arch, expected) in [("arm64", "-lc++"), ("x86_64", "")] {
+            let scope = try NativeBuildSettings.resolvedScopes(
+                ["name": "Debug", "buildSettings": settings], graph: graph, targetName: "App",
+                buildOverrides: ["SDKROOT": sdk.path, "CURRENT_ARCH": arch]).targetScope
+            XCTAssertEqual(try scope.expandedValue("OTHER_LDFLAGS"), expected)
+        }
+    }
+
     func testWhyRetainsPlatformDependentEdgesAndMarksAmbiguousLegacyRecords() throws {
         let ios = ["name": "ios", "deployment_target": "15.0"]
         let mac = ["name": "osx", "deployment_target": "13.0"]

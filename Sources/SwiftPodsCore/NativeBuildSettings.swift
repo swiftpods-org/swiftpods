@@ -114,7 +114,7 @@ enum NativeBuildSettings {
                 quote = nil
             } else if quote == nil && (scalar == "\"" || scalar == "'") {
                 quote = scalar
-            } else if quote == nil && CharacterSet.whitespacesAndNewlines.contains(scalar) {
+            } else if quote == nil && [" ", "\t", "\r", "\n"].contains(scalar) {
                 if !word.isEmpty { words.append(word); word = "" }
             } else {
                 word.unicodeScalars.append(scalar)
@@ -430,16 +430,18 @@ enum NativeBuildSettings {
         _ configuration: [String: Any], graph: NativePBX, base: NativeBuildSettingScope = NativeBuildSettingScope(),
         files: Bool = true, missingGeneratedRoot: URL? = nil, evaluatingSDK: String? = nil,
         sdkContext: NativeSDKContext = NativeSDKContext(), targetName: String? = nil, finalizeDefaults: Bool = true,
-        directLiterals: Set<String> = [], provisionalSDK: Bool = false
+        directLiterals: Set<String> = [], provisionalSDK: Bool = false, buildOverrides: [String: String] = [:]
     ) throws -> NativeBuildSettingScope {
         let effectiveBase = defaultScope(
             graph: graph, configuration: configuration["name"] as? String ?? "Debug", targetName: targetName,
             settingTypes: sdkContext.settingTypes
-        ).merging(base)
+        ).merging(base).merging(buildOverrides, literals: Set(buildOverrides.keys))
         var context = ["config": configuration["name"] as? String ?? "Debug"]
-        context["sdk"] = evaluatingSDK
+        context["sdk"] = buildOverrides["SDKROOT"] ?? evaluatingSDK
         let direct = configuration["buildSettings"] as? [String: Any] ?? [:]
-        if let arch = direct["CURRENT_ARCH"] as? String ?? effectiveBase.values["CURRENT_ARCH"] as? String {
+        if let arch = buildOverrides["CURRENT_ARCH"] ?? direct["CURRENT_ARCH"] as? String
+            ?? effectiveBase.values["CURRENT_ARCH"] as? String
+        {
             context["arch"] = arch
         }
         var visited = Set<String>()
@@ -466,6 +468,7 @@ enum NativeBuildSettings {
                     key, context: context, sdkContext: sdkContext, sourceRoot: graph.sourceRoot)
                 if applies { result = result.merging([name: direct[key]!], literals: directLiterals) }
             }
+            result = result.merging(buildOverrides, literals: Set(buildOverrides.keys))
             guard evaluatingSDK == nil, let sdk = try expandedSDK(result, provisional: provisionalSDK),
                 sdk != context["sdk"]
             else { return try finalizeDefaults ? result.finalizedDefaults() : result }
@@ -491,7 +494,8 @@ enum NativeBuildSettings {
 
     /// Retain the project scope used by Xcode to locate a target's base configuration.
     static func resolvedScopes(
-        _ configuration: [String: Any], graph: NativePBX, targetName: String?
+        _ configuration: [String: Any], graph: NativePBX, targetName: String?,
+        sdkContext: NativeSDKContext = NativeSDKContext(), buildOverrides: [String: String] = [:]
     ) throws -> Scopes {
         let project = graph.objects[graph.root["rootObject"] as? String ?? ""] ?? [:]
         let list = graph.objects[project["buildConfigurationList"] as? String ?? ""] ?? [:]
@@ -499,13 +503,14 @@ enum NativeBuildSettings {
             (list["buildConfigurations"] as? [String] ?? []).compactMap { graph.objects[$0] }
             .first { $0["name"] as? String == configuration["name"] as? String } ?? [:]
         return try resolvedScopes(
-            configuration, inheriting: projectConfiguration, graph: graph, targetName: targetName)
+            configuration, inheriting: projectConfiguration, graph: graph, sdkContext: sdkContext,
+            targetName: targetName, buildOverrides: buildOverrides)
     }
 
     static func resolvedScopes(
         _ configuration: [String: Any], inheriting suppliedProjectConfiguration: [String: Any], graph: NativePBX,
         files: Bool = true, missingGeneratedRoot: URL? = nil, sdkContext: NativeSDKContext = NativeSDKContext(),
-        targetName: String? = nil
+        targetName: String? = nil, buildOverrides: [String: String] = [:]
     ) throws -> Scopes {
         var projectConfiguration = suppliedProjectConfiguration
         if let targetName {
@@ -524,16 +529,17 @@ enum NativeBuildSettings {
             (projectConfiguration["buildSettings"] as? [String: Any] ?? [:]).filter { !$0.key.contains("[") },
             literals: literalNames
         ).merging((configuration["buildSettings"] as? [String: Any] ?? [:]).filter { !$0.key.contains("[") })
-        var sdk = try expandedSDK(declared, provisional: true)
+        var sdk = try buildOverrides["SDKROOT"] ?? expandedSDK(declared, provisional: true)
         var visited = Set<String>()
         while true {
             let base = try resolvedContext(
                 projectConfiguration, graph: graph, files: files, missingGeneratedRoot: missingGeneratedRoot,
                 evaluatingSDK: sdk, sdkContext: sdkContext, targetName: targetName, finalizeDefaults: false,
-                directLiterals: literalNames, provisionalSDK: true)
+                directLiterals: literalNames, provisionalSDK: true, buildOverrides: buildOverrides)
             let values = try resolvedContext(
                 configuration, graph: graph, base: base, files: files, missingGeneratedRoot: missingGeneratedRoot,
-                evaluatingSDK: sdk, sdkContext: sdkContext, targetName: targetName, finalizeDefaults: false)
+                evaluatingSDK: sdk, sdkContext: sdkContext, targetName: targetName, finalizeDefaults: false,
+                buildOverrides: buildOverrides)
             guard let selected = try values.expandedValue("SDKROOT", undefinedAsEmpty: true), selected != sdk
             else { return Scopes(projectScope: base, targetScope: try values.finalizedDefaults()) }
             guard visited.insert(selected).inserted else {

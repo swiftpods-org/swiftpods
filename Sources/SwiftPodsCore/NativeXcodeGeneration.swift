@@ -93,9 +93,22 @@ extension NativeXcode {
                 }
                 applyCustomModuleMaps(roots, platform: platform, settings: &settings)
                 if dynamic {
-                    let flags = try consumerLinkerFlags(
-                        roots, platform: platform, sources: [], settings: settings,
-                        hasCXXSources: linkerHasCXXSources(id, graph: graph, settings: settings))
+                    let attributes = try NativeVariantPlan.attributes(
+                        resolution.specs[name]!, names: variant.names, platform: platform)
+                    var configuration = graph.objects[config]!
+                    configuration["buildSettings"] = settings
+                    let flags = try configuredLinkerFlags(
+                        configuration, target: id, graph: graph, platform: platform, settings: &settings
+                    ) { values, scope, forcedCXX in
+                        let cxx = forcedCXX ?? linkerHasCXXSources(id, graph: graph, settings: values, scope: scope)
+                        let ownFlags = NativeBuildSettings.libraryFlags(
+                            nativeStrings(attributes["libraries"]), sources: [], settings: values,
+                            linkingWithClang: true, hasCXXSources: cxx)
+                        var dependencySettings = values
+                        dependencySettings["OTHER_LDFLAGS"] = nativeStrings(values["OTHER_LDFLAGS"]) + ownFlags
+                        return ownFlags + (try consumerLinkerFlags(
+                            roots, platform: platform, sources: [], settings: dependencySettings, hasCXXSources: cxx))
+                    }
                     settings["OTHER_LDFLAGS"] = nativeStrings(settings["OTHER_LDFLAGS"]) + flags
                 }
                 graph.objects[config]?["buildSettings"] = settings

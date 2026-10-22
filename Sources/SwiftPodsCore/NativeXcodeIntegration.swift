@@ -236,20 +236,15 @@ extension NativeXcode {
                 var linker = nativeStrings(settings["OTHER_LDFLAGS"]).filter { $0 != "$(SWIFTPODS_CONFIG_LDFLAGS)" }
                 var configurationValues = user.objects[config]!
                 configurationValues["buildSettings"] = settings
-                let linkerScope = try NativeBuildSettings.resolvedScopes(
-                    configurationValues, graph: user, targetName: name
-                ).targetScope
-                var linkerSettings = settings
-                for key in [
-                    "LINK_WITH_STANDARD_LIBRARIES", "CLANG_CXX_LIBRARY", "LD", "LDPLUSPLUS", "GCC_INPUT_FILETYPE",
-                    "EXCLUDED_SOURCE_FILE_NAMES", "INCLUDED_SOURCE_FILE_NAMES",
-                ] {
-                    linkerSettings[key] = try linkerScope.expandedValue(key)
+                let dependencyFlags = try configuredLinkerFlags(
+                    configurationValues, target: targetID, graph: user, platform: platform["name"] ?? "ios",
+                    settings: &settings
+                ) { values, scope, forcedCXX in
+                    try consumerLinkerFlags(
+                        enabled, platform: platform["name"] ?? "ios", sources: [], settings: values,
+                        hasCXXSources: forcedCXX
+                            ?? linkerHasCXXSources(targetID, graph: user, settings: values, scope: scope))
                 }
-                let dependencyFlags = try consumerLinkerFlags(
-                    enabled, platform: platform["name"] ?? "ios", sources: [],
-                    settings: linkerSettings,
-                    hasCXXSources: linkerHasCXXSources(targetID, graph: user, settings: linkerSettings, scope: linkerScope))
                 if !dependencyFlags.isEmpty {
                     if linker.isEmpty { linker = ["$(inherited)"] }
                     linker += dependencyFlags

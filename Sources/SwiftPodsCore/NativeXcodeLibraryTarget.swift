@@ -132,8 +132,8 @@ extension NativeXcode {
         if !dynamic { excludeStaticSDKLinkInputs(sdks, settings: &settings) }
         settings["OTHER_LDFLAGS"] =
             ["$(inherited)"] + nativeStrings(settings["OTHER_LDFLAGS"])
-            + NativeBuildSettings.libraryFlags(
-                nativeStrings(attributes["libraries"]), sources: all, settings: settings, linkingWithClang: dynamic)
+            + (dynamic ? [] : NativeBuildSettings.libraryFlags(
+                nativeStrings(attributes["libraries"]), sources: all, settings: settings, linkingWithClang: false))
         if dynamic && sdks.contains(where: { !$0.dynamic }) {
             let flags = nativeStrings(settings["OTHER_LDFLAGS"])
             if !flags.contains("-ObjC") { settings["OTHER_LDFLAGS"] = flags + ["-ObjC"] }

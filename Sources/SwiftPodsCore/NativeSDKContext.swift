@@ -34,6 +34,32 @@ final class NativeSDKContext {
         return Self.validName(name) ? name : ""
     }
 
+    func architectures(_ sdk: String, target: String, relativeTo sourceRoot: URL? = nil) -> [String] {
+        let directory: URL?
+        if sdk.utf8.first == 47 {
+            directory = URL(fileURLWithPath: sdk)
+        } else {
+            _ = canonicalName(sdk, relativeTo: sourceRoot)
+            directory = locations[sdk] ?? sourceRoot.map {
+                URL(fileURLWithPath: sdk, relativeTo: URL(fileURLWithPath: $0.path, isDirectory: true))
+                    .standardizedFileURL
+            }
+        }
+        if let directory,
+            let data = try? Data(contentsOf: directory.appendingPathComponent("SDKSettings.json")),
+            let settings = try? NativeJSON.decode(data) as? [String: Any],
+            let targets = settings["SupportedTargets"] as? [String: [String: Any]],
+            let architectures = targets[target]?["Archs"] as? [String], !architectures.isEmpty
+        {
+            return architectures.filter {
+                $0.range(of: #"\A[A-Za-z0-9_.]+\z"#, options: .regularExpression) != nil
+            }.sorted()
+        }
+        // Project generation also works without the SDK installed. These are
+        // the architectures understood by the native binary reader.
+        return ["arm64", "arm64e", "arm64_32", "armv6", "armv7", "armv7s", "armv7k", "i386", "x86_64", "x86_64h"]
+    }
+
     func canonicalName(_ value: String, relativeTo sourceRoot: URL? = nil) -> String? {
         guard !value.utf8.contains(0) else { return nil }
         if value.utf8.first == 47 {
