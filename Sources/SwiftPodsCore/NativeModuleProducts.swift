@@ -29,6 +29,43 @@ extension NativeXcode {
         }
     }
 
+    /// Independent dynamic wrappers must not each contain the same SDK's state.
+    func validateStaticSDKOwnership() throws {
+        let previous = activeVariants
+        let previousVariant = currentVariant
+        defer {
+            activeVariants = previous
+            currentVariant = previousVariant
+        }
+        for target in manifest["targets"] as? [[String: Any]] ?? [] {
+            selectConsumer(target)
+            let platform = (target["platform"] as? [String: String])?["name"] ?? "ios"
+            let configured = try configuredDependencyRoots(target)
+            for configuration in configurationNames {
+                selectConsumer(target)
+                let variants = (configured[configuration] ?? []).sorted().compactMap {
+                    variantPlan?.variants[variantKey($0, platform)]
+                }
+                var owners: [URL: String] = [:]
+                for variant in variants {
+                    selectVariant(variant)
+                    guard isDynamicLibrary(variant.root, platform: platform) else { continue }
+                    let roots = try dependencyRoots(variant.actualRequests).subtracting([variant.root])
+                    let sdks = (vendorSDKs[variant.key] ?? []) + (try consumerVendorSDKs(roots, platform: platform))
+                    for sdk in sdks where !sdk.dynamic {
+                        if let owner = owners[sdk.url], owner != variant.label {
+                            throw Diagnostic(
+                                "SP-XCODE-STATIC-SDK-CONFLICT", stage: "integrate",
+                                "Dynamic pods \(owner) and \(variant.label) load independent copies of \(sdk.productName) in \(configuration); use static linkage for this consumer",
+                                file: target["name"] as? String, dependencyChain: [owner, variant.label])
+                        }
+                        owners[sdk.url] = variant.label
+                    }
+                }
+            }
+        }
+    }
+
     /// Frameworks sharing a module may belong to separate consumers or configurations.
     func validateFrameworkModules() throws {
         let previous = activeVariants

@@ -105,6 +105,10 @@ Catalyst destinations select distinct binary slices, even when they share a CPU
 architecture. Dynamic products are embedded; static products are linked.
 Dynamic pods with static source dependencies are rejected to prevent duplicate
 code and state in their consumers; use static linkage for that dependency graph.
+If two dynamic pods independently load the same static binary SDK in one
+consumer configuration, integration fails with `SP-XCODE-STATIC-SDK-CONFLICT`;
+use static linkage for that consumer. Separate consumers and mutually exclusive
+configurations may each use their own copy.
 
 File patterns, exclusions, header visibility, module maps, ARC, prefix headers,
 conditional xcconfig settings, include chains and `$(inherited)` retain their

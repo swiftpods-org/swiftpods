@@ -139,4 +139,86 @@ final class NativeBinarySDKLinkTests: XCTestCase {
         var inputs = Set<String>()
         return try NativeBuildSettings.xcconfig(URL(fileURLWithPath: path), inputs: &inputs)
     }
+
+    private func sharedSDKFixture(
+        format: String = "archive", mode: String = "dynamic", chained: Bool = false, own: Bool = false,
+        targets: [[String: Any]]? = nil
+    ) throws -> NativeXcode {
+        let original = try fixture(format: format, mode: mode, own: false)
+        let root = original.project
+        try Data("extern int sdk(void);\nint other(void) { return sdk(); }\n".utf8)
+            .write(to: root.appendingPathComponent("Other.c"))
+        var specs = original.resolution.specs
+        var values: [String: Any] = ["name": "Other", "version": "1.0", "source_files": "Other.c"]
+        if own {
+            for key in ["vendored_frameworks", "vendored_libraries"] { values[key] = specs["Binary"]?.data[key] }
+        } else {
+            values["dependencies"] =
+                chained
+                ? ["Wrapper": [] as [String], "Binary": [] as [String]] : ["Binary": [] as [String]]
+        }
+        specs["Other"] = try NativeSpec(data: values, directory: root)
+        let main: [String: Any] = [
+            "name": "App", "platform": ["name": "osx", "deployment_target": "13.0"], "frameworks": mode,
+            "dependencies": [["name": "Wrapper"], ["name": "Other"]],
+        ]
+        return try NativeXcode(
+            project: root, manifest: ["targets": targets ?? [main]],
+            resolution: NativeResolution(specs: specs, requests: []), integrateUserProjects: false)
+    }
+
+    func testSiblingDynamicWrappersCannotLoadIndependentCopiesOfTheSameStaticSDK() throws {
+        for format in ["archive", "framework", "xcframework-library", "xcframework-framework"] {
+            for own in [false, true] {
+                let engine = try sharedSDKFixture(format: format, own: own)
+                XCTAssertThrowsError(try engine.generate(), format) {
+                    let diagnostic = $0 as? Diagnostic
+                    XCTAssertEqual(diagnostic?.code, "SP-XCODE-STATIC-SDK-CONFLICT")
+                    XCTAssertEqual(diagnostic?.file, "App")
+                    XCTAssertEqual(Set(diagnostic?.dependencyChain ?? []), ["Wrapper", "Other"])
+                    XCTAssertTrue(diagnostic?.message.contains("Debug") == true)
+                }
+            }
+        }
+    }
+
+    func testSharedStaticSDKIsLinkedOnceByAStaticConsumer() throws {
+        let engine = try sharedSDKFixture(mode: "static")
+        try engine.generate()
+        let target = try XCTUnwrap((engine.manifest["targets"] as? [[String: Any]])?.first)
+        engine.selectConsumer(target)
+        let roots = try XCTUnwrap(engine.configuredDependencyRoots(target)["Debug"])
+        XCTAssertEqual(try engine.consumerVendorSDKs(roots, platform: "osx").map(\.productName), ["libSDK.a"])
+    }
+
+    func testStaticSDKOwnershipIsScopedToConsumerAndConfiguration() throws {
+        let base: [String: Any] = [
+            "name": "App", "platform": ["name": "osx", "deployment_target": "13.0"], "frameworks": "dynamic",
+        ]
+        var first = base
+        first["dependencies"] = [["name": "Wrapper"]]
+        var second = base
+        second["name"] = "Second"
+        second["dependencies"] = [["name": "Other"]]
+        try sharedSDKFixture(targets: [first, second]).generate()
+
+        var conditional = base
+        conditional["dependencies"] = [
+            ["name": "Wrapper", "options": ["configurations": ["Debug"]]],
+            ["name": "Other", "options": ["configurations": ["Release"]]],
+        ]
+        try sharedSDKFixture(targets: [conditional]).generate()
+    }
+
+    func testDynamicDependencyChainLoadsTheStaticSDKInOnlyItsFirstWrapper() throws {
+        let engine = try sharedSDKFixture(chained: true)
+        try engine.generate()
+        for name in ["Wrapper", "Other"] {
+            let variant = try XCTUnwrap(engine.variantPlan?.variants[name + ":osx"])
+            let settings = try linkerSettings(engine, variant: variant)
+            XCTAssertEqual(
+                nativeStrings(settings["OTHER_LDFLAGS"]).joined(separator: " ").contains("-force_load"),
+                name == "Wrapper")
+        }
+    }
 }

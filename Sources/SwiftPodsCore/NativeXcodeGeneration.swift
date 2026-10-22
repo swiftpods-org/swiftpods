@@ -16,6 +16,7 @@ extension NativeXcode {
             try generateLibraryTarget(variant)
         }
         try validateStaticSourceDependencies()
+        try validateStaticSDKOwnership()
         try connectLibraryTargets()
         try generateSupplementaryTargets()
         try generateConsumerResourceTargets()

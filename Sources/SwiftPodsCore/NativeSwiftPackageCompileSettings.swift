@@ -22,15 +22,20 @@ enum NativeSwiftPackageCompileSettings {
     }
 
     struct Interface: Equatable {
-        var headers = Set<String>()
-        var frameworks = Set<String>()
+        var headers: [String] = []
+        var frameworks: [String] = []
         var maps = Set<String>()
         var compilerFlags: [String] = []
         var values: [String: [String]] {
+            func paths(_ values: [String]) -> [String] {
+                // Include and framework lookup order selects the public interface.
+                var seen = Set<String>()
+                return values.filter { seen.insert($0).inserted }.map(NativeBuildSetting.quoted)
+            }
             let flags = maps.sorted().map { "-fmodule-map-file=" + $0 } + compilerFlags
             return [
-                "SWIFTPODS_SPM_HEADERS": headers.sorted().map(NativeBuildSetting.quoted),
-                "SWIFTPODS_SPM_FRAMEWORKS": frameworks.sorted().map(NativeBuildSetting.quoted),
+                "SWIFTPODS_SPM_HEADERS": paths(headers),
+                "SWIFTPODS_SPM_FRAMEWORKS": paths(frameworks),
                 "SWIFTPODS_SPM_CFLAGS": flags.map(NativeBuildSetting.quoted),
                 "SWIFTPODS_SPM_SWIFT_FLAGS": flags.flatMap { ["-Xcc", NativeBuildSetting.quoted($0)] },
             ]
@@ -66,8 +71,8 @@ enum NativeSwiftPackageCompileSettings {
             if kind == "system", let config = target["pkgConfig"] as? String {
                 let exported = try NativeSwiftPackagePkgConfig.interface(
                     graph.pkgConfig(config, package: package), directory: package.directory, user: user)
-                result.headers.formUnion(exported.headers)
-                result.frameworks.formUnion(exported.frameworks)
+                result.headers += exported.headers
+                result.frameworks += exported.frameworks
                 result.compilerFlags += exported.compilerFlags
             }
             if kind == "binary" {
@@ -77,9 +82,9 @@ enum NativeSwiftPackageCompileSettings {
                         && $0.architectures.contains(destination.architecture)
                 }) {
                     if slice.library.pathExtension == "framework" {
-                        result.frameworks.insert(user.buildSettingPath(slice.library.deletingLastPathComponent()))
+                        result.frameworks.append(user.buildSettingPath(slice.library.deletingLastPathComponent()))
                     } else if let headers = slice.headers {
-                        result.headers.insert(user.buildSettingPath(headers))
+                        result.headers.append(user.buildSettingPath(headers))
                         let map = headers.appendingPathComponent("module.modulemap")
                         if FileManager.default.fileExists(atPath: map.path) {
                             result.maps.insert(user.buildSettingPath(map))
@@ -93,7 +98,7 @@ enum NativeSwiftPackageCompileSettings {
                 let directory = try graph.targetDirectory(target, package: package)
                 let headers = directory.appendingPathComponent(target["publicHeadersPath"] as? String ?? (kind == "system" ? "." : "include"))
                 if FileManager.default.fileExists(atPath: headers.path) {
-                    result.headers.insert(user.buildSettingPath(headers))
+                    result.headers.append(user.buildSettingPath(headers))
                     let map = headers.appendingPathComponent("module.modulemap")
                     if FileManager.default.fileExists(atPath: map.path) {
                         result.maps.insert(user.buildSettingPath(map))

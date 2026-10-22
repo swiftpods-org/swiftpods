@@ -36,11 +36,11 @@ enum NativeSwiftPackagePkgConfig {
             let flag = words[index]
             if flag == "-I" || flag == "-F" {
                 let value = path(try operand())
-                if flag == "-I" { result.headers.insert(value) } else { result.frameworks.insert(value) }
+                if flag == "-I" { result.headers.append(value) } else { result.frameworks.append(value) }
             } else if flag.hasPrefix("-I"), flag.count > 2 {
-                result.headers.insert(path(String(flag.dropFirst(2))))
+                result.headers.append(path(String(flag.dropFirst(2))))
             } else if flag.hasPrefix("-F"), flag.count > 2 {
-                result.frameworks.insert(path(String(flag.dropFirst(2))))
+                result.frameworks.append(path(String(flag.dropFirst(2))))
             } else if ["-isystem", "-iquote", "-iframework", "-include", "-imacros", "-isysroot"].contains(flag) {
                 result.compilerFlags += [flag, path(try operand())]
             } else if flag == "-D" || flag == "-U" {

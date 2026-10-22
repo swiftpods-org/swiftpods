@@ -87,6 +87,56 @@ final class NativeSwiftPackagePkgConfigTests: XCTestCase {
         }
     }
 
+    func testPkgConfigPreservesHeaderAndFrameworkSearchOrderWhileRemovingDuplicates() throws {
+        let (_, user, graph) = try fixture(
+            output:
+                "-I'/opt/z headers' -I '/opt/a headers' -I'/opt/z headers' -F/opt/z-frameworks -F /opt/a-frameworks -F/opt/z-frameworks"
+        )
+        let value = try exported(user, graph: graph)
+        let headers = ["/opt/z headers", "/opt/a headers"].map {
+            NativeBuildSetting.quoted(user.buildSettingPath(URL(fileURLWithPath: $0)))
+        }
+        let frameworks = ["/opt/z-frameworks", "/opt/a-frameworks"].map {
+            NativeBuildSetting.quoted(user.buildSettingPath(URL(fileURLWithPath: $0)))
+        }
+        XCTAssertEqual(Array((value.values["SWIFTPODS_SPM_HEADERS"] ?? []).prefix(2)), headers)
+        XCTAssertEqual(value.values["SWIFTPODS_SPM_FRAMEWORKS"], frameworks)
+        XCTAssertEqual(value.values["SWIFTPODS_SPM_HEADERS"]?.filter { $0 == headers[0] }.count, 1)
+    }
+
+    func testPkgConfigHeaderPrecedenceCompilesTheSelectedPublicInterface() throws {
+        let (root, user, graph) = try fixture(output: "-Iz-preferred -Ia-fallback")
+        let package = root.appendingPathComponent("checkouts/SDK")
+        for (directory, selection) in [("z-preferred", 7), ("a-fallback", 99)] {
+            let path = package.appendingPathComponent(directory)
+            try FileManager.default.createDirectory(at: path, withIntermediateDirectories: true)
+            try Data("#define SDK_CHOICE \(selection)\n".utf8).write(to: path.appendingPathComponent("selected.h"))
+        }
+        let sources = package.appendingPathComponent("Sources/CSystem")
+        try Data("module CSystem [system] { header \"shim.h\" export * }\n".utf8)
+            .write(to: sources.appendingPathComponent("module.modulemap"))
+        try Data("#include <selected.h>\n#if SDK_CHOICE != 7\n#error Wrong SDK header selected\n#endif\n".utf8)
+            .write(to: sources.appendingPathComponent("shim.h"))
+        let consumer = root.appendingPathComponent("consumer.m")
+        try Data("@import CSystem;\n".utf8).write(to: consumer)
+        let value = try exported(user, graph: graph)
+        let scope = NativeBuildSettingScope(["SRCROOT": root.path])
+        let headers = try (value.values["SWIFTPODS_SPM_HEADERS"] ?? []).map {
+            "-I" + (try scope.expandedPathExpression($0))
+        }
+        let flags = try (value.values["SWIFTPODS_SPM_CFLAGS"] ?? []).map { try scope.expandedPathExpression($0) }
+        let response = root.appendingPathComponent("compiler.rsp")
+        try Data((headers + flags).joined(separator: "\n").utf8).write(to: response)
+        let result = try ToolProcess.run(
+            "/usr/bin/xcrun",
+            [
+                "clang", "-Werror", "-fmodules", "-fsyntax-only",
+                "-fmodules-cache-path=" + root.appendingPathComponent("ModuleCache").path,
+                "@" + response.path, consumer.path,
+            ])
+        XCTAssertEqual(result.status, 0, String(decoding: result.error, as: UTF8.self))
+    }
+
     func testMalformedOrLinkerFlagsCannotBecomeCompilerInterfaceFlags() throws {
         for text in ["-I'broken", "-I", "-Xlinker -all_load", "-Wl,-all_load", "-L/opt/lib -lSDK"] {
             let (_, user, graph) = try fixture(output: text)
