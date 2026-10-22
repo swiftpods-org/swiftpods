@@ -169,10 +169,12 @@ enum NativeVCS {
             let url =
                 suffix.map { location.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/" + $0 } ?? location
             var info = ["svn", "info", "--non-interactive", "--show-item", "revision"]
-            if let revision = try NativeSourceOptions.revision(source["revision"], file: location) {
+            let selectedRevision = try NativeSourceOptions.revision(source["revision"], file: location)
+            if let revision = selectedRevision {
                 info += ["-r", revision]
             }
-            let result = try ToolProcess.run("/usr/bin/env", info + ["--", url])
+            let infoURL = selectedRevision.map { svnPeggedURL(url, revision: $0) } ?? url
+            let result = try ToolProcess.run("/usr/bin/env", info + ["--", infoURL])
             guard result.status == 0 else {
                 throw Diagnostic("SP-SOURCE-SVN", stage: "download", String(decoding: result.error, as: UTF8.self))
             }
@@ -181,7 +183,7 @@ enum NativeVCS {
             let arguments = ["svn", "export", "--non-interactive", "--force", "-r", revision]
             checkout = ["svn": location, "revision": revision]
             for key in ["tag", "branch", "folder"] { if let value = source[key] as? String { checkout[key] = value } }
-            try command("/usr/bin/env", arguments + ["--", url, destination.path])
+            try command("/usr/bin/env", arguments + ["--", svnPeggedURL(url, revision: revision), destination.path])
         } else if let location = source["hg"] as? String {
             guard !CommandOptions.hasOptionPrefix(location) else {
                 throw Diagnostic("SP-SOURCE-URL", stage: "download", "Invalid Mercurial source")
@@ -207,5 +209,18 @@ enum NativeVCS {
         }
         _ = try FileFingerprint.tree(destination, requireContainedLinks: true)
         return checkout
+    }
+
+    /// An operative -r alone still resolves a path at HEAD. Preserve an explicit
+    /// peg, but replace SVN's trailing @ escape with the selected revision.
+    static func svnPeggedURL(_ url: String, revision: String) -> String {
+        let scalars = url.unicodeScalars
+        if let at = scalars.lastIndex(of: "@"),
+            scalars.lastIndex(of: "/").map({ at > $0 }) ?? true
+        {
+            if scalars.index(after: at) != scalars.endIndex { return url }
+            return String(scalars[..<at]) + "@" + revision
+        }
+        return url + "@" + revision
     }
 }

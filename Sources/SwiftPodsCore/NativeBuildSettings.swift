@@ -85,6 +85,46 @@ enum NativeBuildSettings {
         return ["mm", "cc", "cpp", "cxx", "c++", "C", "M"].contains(source.pathExtension)
     }
 
+    static func sourceIsExcluded(_ source: URL, relativeTo root: URL, settings: [String: Any]) -> Bool {
+        let paths = [source.lastPathComponent, source.path, NativePath.relativePath(of: source, to: root)]
+        func matches(_ key: String) -> Bool {
+            settingWords(nativeStrings(settings[key]).joined(separator: " ")).contains { pattern in
+                guard !pattern.utf8.contains(0) else { return false }
+                return paths.contains { path in
+                    pattern.withCString { p in path.withCString { v in fnmatch(p, v, 0) == 0 } }
+                }
+            }
+        }
+        // Explicit inclusion overrides an exclusion; it is not a whitelist.
+        return matches("EXCLUDED_SOURCE_FILE_NAMES") && !matches("INCLUDED_SOURCE_FILE_NAMES")
+    }
+
+    private static func settingWords(_ text: String) -> [String] {
+        var words: [String] = []
+        var word = ""
+        var quote: Unicode.Scalar?
+        var escaped = false
+        for scalar in text.unicodeScalars {
+            if escaped {
+                word.unicodeScalars.append(scalar)
+                escaped = false
+            } else if scalar == "\\" {
+                escaped = true
+            } else if scalar == quote {
+                quote = nil
+            } else if quote == nil && (scalar == "\"" || scalar == "'") {
+                quote = scalar
+            } else if quote == nil && CharacterSet.whitespacesAndNewlines.contains(scalar) {
+                if !word.isEmpty { words.append(word); word = "" }
+            } else {
+                word.unicodeScalars.append(scalar)
+            }
+        }
+        if escaped { word += "\\" }
+        if !word.isEmpty { words.append(word) }
+        return words
+    }
+
     static func libraryFlags(
         _ libraries: [String], sources: [URL], settings: [String: Any], linkingWithClang: Bool,
         hasCXXSources: Bool? = nil

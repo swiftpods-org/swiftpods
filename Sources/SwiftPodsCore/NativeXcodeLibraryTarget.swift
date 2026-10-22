@@ -12,7 +12,7 @@ extension NativeXcode {
         }
         let attributes = try NativeVariantPlan.attributes(spec, names: variant.names, platform: platform)
         let selection = try NativeLibraryFiles(spec: spec, names: variant.names, platform: platform, root: directory)
-        let sdks = try loadVendoredSDKs(attributes, root: directory, platform: platform)
+        let sdks = vendorSDKs[variant.key] ?? []
         // A binary-only pod must not produce an empty framework that shadows its SDK's module
         // or collides with the product extracted by Xcode's ProcessXCFramework step.
         let binaryOnly = selection.files.isEmpty && !sdks.isEmpty
@@ -27,12 +27,19 @@ extension NativeXcode {
         let dynamic = useFramework && mode == "dynamic"
         var productName = useFramework ? module : targetName
         if binaryOnly {
-            // The placeholder archive must not shadow a vendored library in linker search paths.
-            let sdkNames = Set(
-                sdks.filter { !$0.isFramework }.map {
+            // Linker search paths can expose SDKs and products from other pods.
+            var reservedNames = Set(
+                vendorSDKs.values.flatMap { $0 }.filter { !$0.isFramework }.map {
                     ($0.productName as NSString).deletingPathExtension.lowercased()
                 })
-            while sdkNames.contains(("lib" + productName).lowercased()) { productName += "-SwiftPods" }
+            reservedNames.formUnion(
+                (variantPlan?.variants.values.filter { $0.key != variant.key } ?? []).map {
+                    ("lib" + $0.label).lowercased()
+                })
+            reservedNames.formUnion(products.compactMap {
+                (graph.objects[$0]?["path"] as? String).map { ($0 as NSString).deletingPathExtension.lowercased() }
+            })
+            while reservedNames.contains(("lib" + productName).lowercased()) { productName += "-SwiftPods" }
         }
         let productFilename = useFramework ? module + ".framework" : "lib" + productName + ".a"
         let minimum =
@@ -123,7 +130,6 @@ extension NativeXcode {
             frameworks.append(buildFile(file(sdk.url.path, type: sdk.fileType), target: targetName))
         }
         if !dynamic { excludeStaticSDKLinkInputs(sdks, settings: &settings) }
-        vendorSDKs[variantKey(name, platform)] = sdks
         settings["OTHER_LDFLAGS"] =
             ["$(inherited)"] + nativeStrings(settings["OTHER_LDFLAGS"])
             + NativeBuildSettings.libraryFlags(

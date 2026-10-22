@@ -7,7 +7,7 @@ import subprocess
 
 from Tests.Integration.native_integration import project, serialize
 from Tests.Integration.native_xcconfig_tests import create
-from Tests.Regression.source_revision_regressions import concurrent_source_refresh
+from Tests.Regression.source_revision_regressions import concurrent_source_refresh, deleted_svn_path
 
 
 def read_project(path):
@@ -312,6 +312,7 @@ def run(fixture):
     git_alias_cleanup(fixture)
     snapshot_alias_cleanup(fixture)
     concurrent_source_refresh(fixture)
+    deleted_svn_path(fixture)
 
 
 def snapshot_alias_cleanup(fixture):

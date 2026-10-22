@@ -175,6 +175,108 @@ def forced_compiler_language(fixture):
         fixture.verified.append("forced_compiler_language_keeps_cxx_runtime_" + declared)
 
 
+def cross_pod_archive_names(fixture):
+    for provider in ("AProvider", "ZProvider"):
+        name = "cross-pod-archive-" + provider
+        work, selected = consumer(fixture, name)
+        for pod, archive, symbol, value in [
+            ("Vendor", "libOther.a", "vendor_a", 3),
+            (provider, "libVendor.a", "vendor_b", 4),
+        ]:
+            directory = work / pod
+            directory.mkdir()
+            source = directory / "Value.c"
+            source.write_text(f"int {symbol}(void) {{ return {value}; }}\n")
+            command(["xcrun", "clang", "-Wall", "-Wextra", "-Werror", "-mmacosx-version-min=13.0",
+                     "-c", source, "-o", directory / "Value.o"], work,
+                    fixture.root / (name + "-" + pod + "-compile.log"))
+            command(["xcrun", "libtool", "-static", "-o", directory / archive, directory / "Value.o"],
+                    work, fixture.root / (name + "-" + pod + "-archive.log"))
+            (directory / (pod + ".podspec.json")).write_text(json.dumps({
+                "name": pod, "version": "1.0", "source_files": [], "vendored_libraries": archive,
+                "platforms": {"osx": "13.0"},
+            }))
+        (work / "Kit/Kit.c").write_text(
+            "extern int vendor_a(void);\nextern int vendor_b(void);\n"
+            "int kit_value(void) { return vendor_a() + vendor_b(); }\n"
+        )
+        update_spec(work, dependencies={"Vendor": [], provider: []})
+        body = (work / "Podfile").read_text().replace(
+            "end\n", f" pod 'Vendor', :path => './Vendor'\n pod '{provider}', :path => './{provider}'\nend\n")
+        (work / "Podfile").write_text("use_frameworks! :linkage => :dynamic\n" + body)
+        (selected.parent / "Sources/main.mm").write_text(
+            "#include <Kit/Kit.h>\nint main(void) { return kit_value() == 7 ? 0 : 1; }\n"
+        )
+        fixture.cli(work, "install")
+        fixture.cli(work, "install", "--deployment", "--offline")
+        objects = read_project(work / "Pods/Pods.xcodeproj")["objects"]
+        target = next(obj for obj in objects.values()
+                      if obj.get("isa") == "PBXNativeTarget" and obj.get("name") == "Vendor")
+        assert objects[target["productReference"]]["path"] == "libVendor-SwiftPods.a"
+        label = name + "-build"
+        fixture.build(work, "Demo", label)
+        execute(fixture, work, label)
+        fixture.verified.append("placeholder_reserves_other_pods_archive_before_generation_" + provider)
+
+
+def excluded_cxx_sources(fixture):
+    for declared in ("target", "xcconfig", "conditional", "included", "absolute", "relative"):
+        name = "excluded-cxx-" + declared
+        work, selected = consumer(fixture, name)
+        (work / "Kit/Kit.c").unlink()
+        (work / "Kit/Kit.cpp").write_text(
+            '#include <string>\nextern "C" int kit_value(void) { '
+            'std::string value("a non-small string from an archive"); return value.size() > 20 ? 7 : 1; }\n'
+        )
+        update_spec(work, source_files="*.{cpp,h}", libraries=["c++"])
+        source_name = "main optional.mm"
+        source = selected.parent / "Sources" / source_name
+        original = source.with_name("main.mm")
+        original.rename(source)
+        source.write_text("int unused_cpp(void) { return 0; }\n")
+        (source.parent / "main.m").write_text(
+            "extern int kit_value(void);\nint main(void) { return kit_value() == 7 ? 0 : 1; }\n"
+        )
+        graph = read_project(selected)
+        objects = graph["objects"]
+        reference = next(key for key, obj in objects.items()
+                         if obj.get("isa") == "PBXFileReference" and obj.get("path", "").endswith("main.mm"))
+        objects[reference]["path"] = "Sources/" + source_name
+        main_id, build_id = "F000000000000000000000C1", "F000000000000000000000C2"
+        objects[main_id] = {**objects[reference], "path": "Sources/main.m",
+                                       "lastKnownFileType": "sourcecode.c.objc"}
+        objects[build_id] = {"isa": "PBXBuildFile", "fileRef": main_id}
+        for obj in list(objects.values()):
+            if obj.get("isa") == "PBXGroup" and reference in obj.get("children", []):
+                obj["children"].append(main_id)
+            if obj.get("isa") == "PBXSourcesBuildPhase":
+                obj["files"].append(build_id)
+            if (declared == "target" and obj.get("isa") == "XCBuildConfiguration"
+                    and obj["buildSettings"].get("PRODUCT_NAME")):
+                obj["buildSettings"]["EXCLUDED_SOURCE_FILE_NAMES"] = '"' + source_name + '"'
+        write_project(selected, graph)
+        if declared != "target":
+            pattern = (str(source) if declared == "absolute" else
+                       "Sources/" + source_name if declared == "relative" else source_name)
+            settings = f'EXCLUDED_SOURCE_FILE_NAMES = "{pattern}"\n'
+            if declared == "conditional":
+                settings = (f'OPTIONAL_CXX_SOURCE = "{source_name}"\n'
+                            'EXCLUDED_SOURCE_FILE_NAMES[config=Debug][sdk=macosx*] = $(OPTIONAL_CXX_SOURCE)\n')
+            elif declared == "included":
+                settings += f'INCLUDED_SOURCE_FILE_NAMES = "{source_name}"\n'
+            base = selected.parent / "Configs/Base.xcconfig"
+            base.write_text(base.read_text() + settings)
+        fixture.cli(work, "install")
+        fixture.cli(work, "install", "--deployment", "--offline")
+        support = work / "Pods/Target Support Files/Pods-Demo"
+        assert ("-lc++" in (support / "Pods-Demo.debug.xcconfig").read_text()) == (declared != "included")
+        assert ("-lc++" in (support / "Pods-Demo.release.xcconfig").read_text()) == (declared not in ("conditional", "included"))
+        label = name + "-build"
+        fixture.build(work, "Demo", label)
+        execute(fixture, work, label)
+        fixture.verified.append("excluded_cxx_source_keeps_required_runtime_" + declared)
+
+
 def dynamic_library_product_name(fixture):
     name = "dylib-shadow"
     work, selected = consumer(fixture, name)
@@ -245,4 +347,6 @@ def run(fixture):
     archive_product_names(fixture)
     dynamic_library_product_name(fixture)
     forced_compiler_language(fixture)
+    cross_pod_archive_names(fixture)
+    excluded_cxx_sources(fixture)
     versioned_framework_signing(fixture)

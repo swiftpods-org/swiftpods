@@ -126,6 +126,42 @@ final class NativeLinkerManifestTests: XCTestCase {
         XCTAssertFalse(engine.linkerHasCXXSources("TARGET", graph: graph))
     }
 
+    func testExcludedSourcesDoNotSupplyAnImplicitCXXRuntime() throws {
+        let root = try directory()
+        let engine = try NativeXcode(
+            project: root, manifest: [:], resolution: NativeResolution(specs: [:], requests: []),
+            integrateUserProjects: false)
+        let graph = engine.graph
+        graph.objects["TARGET"] = ["buildPhases": ["SOURCES"]]
+        graph.objects["SOURCES"] = ["isa": "PBXSourcesBuildPhase", "files": ["BUILD"]]
+        graph.objects["BUILD"] = ["fileRef": "FILE"]
+        graph.objects["GROUP"] = ["path": "Sources", "children": ["FILE"], "sourceTree": "<group>"]
+        graph.objects["FILE"] = ["path": "main file.mm", "sourceTree": "<group>"]
+        let source = graph.sourceRoot.appendingPathComponent("Sources/main file.mm")
+        let cases: [([String: Any], Bool)] = [
+            ([:], true),
+            (["EXCLUDED_SOURCE_FILE_NAMES": "*.mm"], false),
+            (["EXCLUDED_SOURCE_FILE_NAMES": "*.cpp"], true),
+            (["EXCLUDED_SOURCE_FILE_NAMES": "\"main file.mm\" other.c"], false),
+            (["EXCLUDED_SOURCE_FILE_NAMES": "main\\ file.mm"], false),
+            (["EXCLUDED_SOURCE_FILE_NAMES": "Sources/*.mm"], false),
+            (["EXCLUDED_SOURCE_FILE_NAMES": NativeBuildSetting.quoted(source.path)], false),
+            (["EXCLUDED_SOURCE_FILE_NAMES": ["other.c", "\"main file.mm\""]], false),
+            (["EXCLUDED_SOURCE_FILE_NAMES": "*.mm", "INCLUDED_SOURCE_FILE_NAMES": "\"main file.mm\""], true),
+            (["EXCLUDED_SOURCE_FILE_NAMES": "*.mm", "INCLUDED_SOURCE_FILE_NAMES": "other.mm"], false),
+            (["INCLUDED_SOURCE_FILE_NAMES": "other.mm"], true),
+        ]
+        for (settings, expected) in cases {
+            XCTAssertEqual(
+                engine.linkerHasCXXSources("TARGET", graph: graph, settings: settings), expected, "\(settings)")
+        }
+        graph.objects["SOURCES"]?["files"] = ["BUILD", "SECOND"]
+        graph.objects["SECOND"] = ["fileRef": "OTHER"]
+        graph.objects["OTHER"] = ["path": "active.cpp", "sourceTree": "SOURCE_ROOT"]
+        XCTAssertTrue(
+            engine.linkerHasCXXSources("TARGET", graph: graph, settings: ["EXCLUDED_SOURCE_FILE_NAMES": "*.mm"]))
+    }
+
     func testForcedCompilerLanguageOverridesFileMetadataButDoesNotAffectSwift() throws {
         let root = try directory()
         let engine = try NativeXcode(

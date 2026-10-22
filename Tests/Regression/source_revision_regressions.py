@@ -1,9 +1,62 @@
 """Concurrent source refreshes must preserve the revision already selected by a consumer."""
 
 import json
+import shutil
 import subprocess
 import time
 from pathlib import Path
+
+
+def deleted_svn_path(fixture):
+    root = fixture.root / "deleted-svn-path"
+    root.mkdir()
+    repository = root / "origin"
+    source = root / "source"
+
+    def command(*arguments):
+        return subprocess.check_output(arguments, cwd=root, env=fixture.env,
+                                       stderr=subprocess.STDOUT, text=True, timeout=30).strip()
+
+    command("svnadmin", "create", str(repository))
+    location = repository.as_uri()
+    command("svn", "mkdir", location + "/trunk", "-m", "create")
+    command("svn", "checkout", location, str(source))
+    (source / "trunk/Kit.c").write_text("int kit_value(void) { return 7; }\n")
+    (source / "trunk/Kit.podspec.json").write_text(json.dumps({
+        "name": "Kit", "version": "1.0", "source_files": "*.c", "platforms": {"osx": "13.0"},
+    }))
+    command("svn", "add", str(source / "trunk/Kit.c"), str(source / "trunk/Kit.podspec.json"))
+    command("svn", "commit", str(source), "-m", "payload")
+    revision = command("svn", "info", "--show-item", "revision", location + "/trunk")
+    command("svn", "move", location + "/trunk", location + "/archive", "-m", "move")
+    peg = command("svn", "info", "--show-item", "revision", location + "/archive")
+    command("svn", "delete", location + "/archive", "-m", "delete")
+    previous_cache = fixture.env["SWIFTPODS_CACHE_ROOT"]
+    try:
+        for name, url, selector in [
+            ("pinned", location + "/trunk", repr(revision)),
+            ("integer", location + "/trunk", revision),
+            ("escaped", location + "/trunk@", repr(revision)),
+            ("explicit-peg", location + "/archive@" + peg, repr(revision)),
+        ]:
+            work = root / name
+            work.mkdir()
+            (work / "Podfile").write_text(
+                "install! 'cocoapods', :integrate_targets => false\nplatform :osx, '13.0'\n"
+                "target 'App' do\n pod 'Kit', :svn => " + repr(url) + ", :revision => " + selector + "\nend\n")
+            fixture.env["SWIFTPODS_CACHE_ROOT"] = str(root / (name + "-cache"))
+            fixture.cli(work, "install")
+            lock = (work / "Podfile.lock").read_bytes()
+            assert "return 7;" in (work / "Pods/Kit/Kit.c").read_text()
+            fixture.cli(work, "install", "--deployment", "--offline")
+            shutil.rmtree(work / "Pods")
+            fixture.env["SWIFTPODS_CACHE_ROOT"] = str(root / (name + "-clean-cache"))
+            fixture.cli(work, "install", "--deployment")
+            assert (work / "Podfile.lock").read_bytes() == lock
+            assert "return 7;" in (work / "Pods/Kit/Kit.c").read_text()
+            fixture.verified.append("pinned_svn_revision_survives_deleted_head_path_" + name)
+    finally:
+        fixture.env["SWIFTPODS_CACHE_ROOT"] = previous_cache
 
 
 def concurrent_source_refresh(fixture):

@@ -62,7 +62,9 @@ extension NativeXcode {
         return flags
     }
 
-    func linkerHasCXXSources(_ target: String, graph: NativePBX, settings: [String: Any] = [:]) -> Bool {
+    func linkerHasCXXSources(
+        _ target: String, graph: NativePBX, settings: [String: Any] = [:], scope: NativeBuildSettingScope? = nil
+    ) -> Bool {
         let builds = (graph.objects[target]?["buildPhases"] as? [String] ?? []).filter {
             graph.objects[$0]?["isa"] as? String == "PBXSourcesBuildPhase"
         }.flatMap { graph.objects[$0]?["files"] as? [String] ?? [] }
@@ -70,10 +72,18 @@ extension NativeXcode {
             guard let reference = graph.objects[build]?["fileRef"] as? String,
                 let source = graph.objects[reference], let path = source["path"] as? String
             else { return false }
-            return NativeBuildSettings.isCXXSource(
+            guard NativeBuildSettings.isCXXSource(
                 URL(fileURLWithPath: NativeBuildSetting.decodedLiteral(path)),
                 fileType: source["explicitFileType"] as? String ?? source["lastKnownFileType"] as? String,
                 inputFileType: settings["GCC_INPUT_FILETYPE"] as? String)
+            else { return false }
+            let resolved =
+                (try? NativeBuildSettings.file(
+                    reference, graph: graph, configuration: settings["CONFIGURATION"] as? String ?? "",
+                    targetName: graph.objects[target]?["name"] as? String,
+                    scope: scope ?? NativeBuildSettingScope(settings)))
+                ?? graph.sourceRoot.appendingPathComponent(NativeBuildSetting.decodedLiteral(path))
+            return !NativeBuildSettings.sourceIsExcluded(resolved, relativeTo: graph.sourceRoot, settings: settings)
         }
     }
 

@@ -4,7 +4,15 @@ extension NativeXcode {
     /// Builds the dependency project in dependency order before user integration.
     func generate() throws {
         try prepareResourceBundleLabels()
-        for variant in variantPlan?.variants.values.sorted(by: { $0.label < $1.label }) ?? [] {
+        let variants = variantPlan?.variants.values.sorted(by: { $0.label < $1.label }) ?? []
+        // Reserve SDK names before creating any products; a later pod can supply
+        // a library whose name matches an earlier pod's placeholder archive.
+        for variant in variants {
+            guard let spec = resolution.specs[variant.root], let directory = spec.directory else { continue }
+            let attributes = try NativeVariantPlan.attributes(spec, names: variant.names, platform: variant.platform)
+            vendorSDKs[variant.key] = try loadVendoredSDKs(attributes, root: directory, platform: variant.platform)
+        }
+        for variant in variants {
             try generateLibraryTarget(variant)
         }
         try validateStaticSourceDependencies()

@@ -146,6 +146,38 @@ final class NativeVendorTests: XCTestCase {
             XCTAssertEqual(engine.vendorSDKs["Kit:ios"]?.first?.productName, "Kit.framework")
         }
     }
+    func testPlaceholderArchivesReserveOtherPodsSDKAndTargetNamesBeforeGeneration() throws {
+        for other in ["AProvider", "ZProvider"] {
+            let root = try directory()
+            let object = archive(macho(platform: 1, kind: 1))
+            var specs: [String: NativeSpec] = [:]
+            for (name, libraries) in [
+                ("Vendor", ["libOther.a"]),
+                (other, ["libVendor.a", "libVendor-SwiftPods.a"]),
+                ("Vendor-SwiftPods-SwiftPods", ["libIndependent.a"]),
+            ] {
+                let directory = root.appendingPathComponent(name)
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+                for library in libraries { try object.write(to: directory.appendingPathComponent(library)) }
+                specs[name] = try NativeSpec(
+                    data: ["name": name, "version": "1.0", "source_files": [], "vendored_libraries": libraries],
+                    directory: directory)
+            }
+            let engine = try NativeXcode(
+                project: root,
+                manifest: [
+                    "targets": [[
+                        "name": "Demo", "platform": ["name": "osx", "deployment_target": "13.0"],
+                        "dependencies": specs.keys.sorted().map { ["name": $0] }, "frameworks": "dynamic",
+                    ]]
+                ],
+                resolution: NativeResolution(specs: specs, requests: []), integrateUserProjects: false)
+            try engine.generate()
+            let product = try XCTUnwrap(engine.products.first { engine.productRoots[$0] == "Vendor" })
+            XCTAssertEqual(engine.graph.objects[product]?["path"] as? String, "libVendor-SwiftPods-SwiftPods-SwiftPods.a")
+        }
+    }
+
     func testMetadataMustMatchBinaryArchitectureAndPlatform() throws {
         let root = try directory()
         var metadata = entry("device")
