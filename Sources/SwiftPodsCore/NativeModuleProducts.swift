@@ -1,6 +1,34 @@
 import Foundation
 
 extension NativeXcode {
+    /// Static source products cannot be shared safely by a dynamic pod and its consumers.
+    func validateStaticSourceDependencies() throws {
+        let previous = activeVariants
+        let previousVariant = currentVariant
+        defer {
+            activeVariants = previous
+            currentVariant = previousVariant
+        }
+        for variant in variantPlan?.variants.values.sorted(by: { $0.label < $1.label }) ?? [] {
+            selectVariant(variant)
+            guard isDynamicLibrary(variant.root, platform: variant.platform) else { continue }
+            let dependencies = try dependencyRoots(variant.actualRequests).subtracting([variant.root])
+            for root in dependencies.sorted() where !isDynamicLibrary(root, platform: variant.platform) {
+                guard let spec = resolution.specs[root], let directory = spec.directory,
+                    let dependency = variantPlan?.variants[variantKey(root, variant.platform)]
+                else { continue }
+                let selection = try NativeLibraryFiles(
+                    spec: spec, names: dependency.names, platform: variant.platform, root: directory)
+                guard selection.files.contains(where: { NativeFileSelection.objectSources.contains($0.pathExtension) })
+                else { continue }
+                throw Diagnostic(
+                    "SP-XCODE-STATIC-DEPENDENCY", stage: "integrate",
+                    "Dynamic pod \(variant.root) depends on static source pod \(root); use static linkage for its consumers",
+                    dependencyChain: [variant.root, root])
+            }
+        }
+    }
+
     /// Frameworks sharing a module may belong to separate consumers or configurations.
     func validateFrameworkModules() throws {
         let previous = activeVariants

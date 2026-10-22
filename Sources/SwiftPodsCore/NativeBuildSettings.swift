@@ -73,8 +73,16 @@ enum NativeBuildSettings {
         return result
     }
 
-    static func isCXXSource(_ source: URL) -> Bool {
-        ["mm", "cc", "cpp", "cxx", "c++", "C", "M"].contains(source.pathExtension)
+    static func isCXXSource(_ source: URL, fileType: String? = nil, inputFileType: String? = nil) -> Bool {
+        let clangSource =
+            fileType.map { $0.hasPrefix("sourcecode.c.") || $0.hasPrefix("sourcecode.cpp.") }
+            ?? (NativeFileSelection.objectSources.contains(source.pathExtension) && source.pathExtension != "swift")
+        let effectiveType = clangSource && inputFileType != "automatic" ? inputFileType ?? fileType : fileType
+        if let effectiveType {
+            return ["sourcecode.cpp.cpp", "sourcecode.cpp.objcpp", "sourcecode.cpp.cpp.preprocessed"].contains(
+                effectiveType)
+        }
+        return ["mm", "cc", "cpp", "cxx", "c++", "C", "M"].contains(source.pathExtension)
     }
 
     static func libraryFlags(
@@ -82,7 +90,11 @@ enum NativeBuildSettings {
         hasCXXSources: Bool? = nil
     ) -> [String] {
         let implicitCXX =
-            linkingWithClang && (hasCXXSources ?? sources.contains(where: isCXXSource))
+            linkingWithClang
+            && (hasCXXSources
+                ?? sources.contains {
+                    isCXXSource($0, inputFileType: settings["GCC_INPUT_FILETYPE"] as? String)
+                })
             && (settings["LINK_WITH_STANDARD_LIBRARIES"] as? String ?? "YES") != "NO" && settings["LD"] == nil
             && settings["LDPLUSPLUS"] == nil
         let standardLibrary = settings["CLANG_CXX_LIBRARY"] as? String ?? "libc++"

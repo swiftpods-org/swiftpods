@@ -62,19 +62,18 @@ extension NativeXcode {
         return flags
     }
 
-    func linkerHasCXXSources(_ target: String, graph: NativePBX) -> Bool {
+    func linkerHasCXXSources(_ target: String, graph: NativePBX, settings: [String: Any] = [:]) -> Bool {
         let builds = (graph.objects[target]?["buildPhases"] as? [String] ?? []).filter {
             graph.objects[$0]?["isa"] as? String == "PBXSourcesBuildPhase"
         }.flatMap { graph.objects[$0]?["files"] as? [String] ?? [] }
         return builds.contains { build in
             guard let reference = graph.objects[build]?["fileRef"] as? String,
-                let source = graph.objects[reference]
+                let source = graph.objects[reference], let path = source["path"] as? String
             else { return false }
-            if let type = source["explicitFileType"] as? String ?? source["lastKnownFileType"] as? String {
-                return ["sourcecode.cpp.cpp", "sourcecode.cpp.objcpp"].contains(type)
-            }
-            guard let path = source["path"] as? String else { return false }
-            return NativeBuildSettings.isCXXSource(URL(fileURLWithPath: NativeBuildSetting.decodedLiteral(path)))
+            return NativeBuildSettings.isCXXSource(
+                URL(fileURLWithPath: NativeBuildSetting.decodedLiteral(path)),
+                fileType: source["explicitFileType"] as? String ?? source["lastKnownFileType"] as? String,
+                inputFileType: settings["GCC_INPUT_FILETYPE"] as? String)
         }
     }
 

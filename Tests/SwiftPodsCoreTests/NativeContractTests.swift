@@ -29,6 +29,22 @@ final class NativeContractTests: XCTestCase {
         }
     }
 
+    func testForcedCompilerLanguageControlsImplicitCXXRuntime() {
+        for (extensionName, input, expected) in [
+            ("mm", "sourcecode.c.objc", ["-lc++"]),
+            ("mm", "sourcecode.c.c", ["-lc++"]),
+            ("mm", "automatic", []),
+            ("c", "sourcecode.cpp.cpp", []),
+            ("m", "sourcecode.cpp.objcpp", []),
+            ("swift", "sourcecode.cpp.cpp", ["-lc++"]),
+        ] {
+            XCTAssertEqual(
+                NativeBuildSettings.libraryFlags(
+                    ["c++"], sources: [URL(fileURLWithPath: "/SDK/Bridge." + extensionName)],
+                    settings: ["GCC_INPUT_FILETYPE": input], linkingWithClang: true), expected)
+        }
+    }
+
     func testSwiftVersionUsesIntersectionAndHighestCompatibleSpecVersion() throws {
         let spec = try NativeSpec(data: [
             "name": "Kit", "version": "1", "swift_versions": ["4.2", "5.0", "5.9", "6.0"],

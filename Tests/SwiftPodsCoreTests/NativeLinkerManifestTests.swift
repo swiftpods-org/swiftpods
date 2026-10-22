@@ -126,6 +126,32 @@ final class NativeLinkerManifestTests: XCTestCase {
         XCTAssertFalse(engine.linkerHasCXXSources("TARGET", graph: graph))
     }
 
+    func testForcedCompilerLanguageOverridesFileMetadataButDoesNotAffectSwift() throws {
+        let root = try directory()
+        let engine = try NativeXcode(
+            project: root, manifest: [:], resolution: NativeResolution(specs: [:], requests: []),
+            integrateUserProjects: false)
+        let graph = engine.graph
+        graph.objects["TARGET"] = ["buildPhases": ["SOURCES"]]
+        graph.objects["SOURCES"] = ["isa": "PBXSourcesBuildPhase", "files": ["BUILD"]]
+        graph.objects["BUILD"] = ["fileRef": "FILE"]
+        graph.objects["FILE"] = ["path": "main.mm", "explicitFileType": "sourcecode.cpp.objcpp"]
+        XCTAssertFalse(
+            engine.linkerHasCXXSources(
+                "TARGET", graph: graph, settings: ["GCC_INPUT_FILETYPE": "sourcecode.c.objc"]))
+        XCTAssertTrue(
+            engine.linkerHasCXXSources(
+                "TARGET", graph: graph, settings: ["GCC_INPUT_FILETYPE": "automatic"]))
+        graph.objects["FILE"] = ["path": "main.m", "explicitFileType": "sourcecode.c.objc"]
+        XCTAssertTrue(
+            engine.linkerHasCXXSources(
+                "TARGET", graph: graph, settings: ["GCC_INPUT_FILETYPE": "sourcecode.cpp.objcpp"]))
+        graph.objects["FILE"] = ["path": "main.swift", "lastKnownFileType": "sourcecode.swift"]
+        XCTAssertFalse(
+            engine.linkerHasCXXSources(
+                "TARGET", graph: graph, settings: ["GCC_INPUT_FILETYPE": "sourcecode.cpp.cpp"]))
+    }
+
     func testWhyRetainsPlatformDependentEdgesAndMarksAmbiguousLegacyRecords() throws {
         let ios = ["name": "ios", "deployment_target": "15.0"]
         let mac = ["name": "osx", "deployment_target": "13.0"]

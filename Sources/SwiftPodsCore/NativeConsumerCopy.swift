@@ -152,9 +152,17 @@ extension NativeXcode {
             binary="${destination}"
           fi
           if [ -n "${ARCHS:-}" ] && [ -f "${binary}" ]; then
-        /bin/chmod u+w "${binary}"
-        architectures=$(/usr/bin/lipo -archs "${binary}")
-        for architecture in ${architectures}; do
+            # lipo replaces its output; follow binary links to retain versioned framework layouts.
+            while [ -L "${binary}" ]; do
+              link=$(/usr/bin/readlink "${binary}")
+              case "${link}" in
+                /*) binary="${link}" ;;
+                *) binary="$(dirname "${binary}")/${link}" ;;
+              esac
+            done
+            /bin/chmod u+w "${binary}"
+            architectures=$(/usr/bin/lipo -archs "${binary}")
+            for architecture in ${architectures}; do
               case " ${ARCHS} " in
                 *" ${architecture} "*) ;;
                 *) /usr/bin/lipo -remove "${architecture}" "${binary}" -output "${binary}" ;;

@@ -25,7 +25,15 @@ extension NativeXcode {
         let mode = variant.mode
         let useFramework = mode != "library" && !binaryOnly
         let dynamic = useFramework && mode == "dynamic"
-        let productName = useFramework ? module : targetName
+        var productName = useFramework ? module : targetName
+        if binaryOnly {
+            // The placeholder archive must not shadow a vendored library in linker search paths.
+            let sdkNames = Set(
+                sdks.filter { !$0.isFramework }.map {
+                    ($0.productName as NSString).deletingPathExtension.lowercased()
+                })
+            while sdkNames.contains(("lib" + productName).lowercased()) { productName += "-SwiftPods" }
+        }
         let productFilename = useFramework ? module + ".framework" : "lib" + productName + ".a"
         let minimum =
             (attributes["platforms"] as? [String: Any])?[platform] as? String ?? attributes["deployment_target"]

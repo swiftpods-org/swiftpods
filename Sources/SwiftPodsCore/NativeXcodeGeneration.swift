@@ -7,6 +7,7 @@ extension NativeXcode {
         for variant in variantPlan?.variants.values.sorted(by: { $0.label < $1.label }) ?? [] {
             try generateLibraryTarget(variant)
         }
+        try validateStaticSourceDependencies()
         try connectLibraryTargets()
         try generateSupplementaryTargets()
         try generateConsumerResourceTargets()
@@ -86,7 +87,7 @@ extension NativeXcode {
                 if dynamic {
                     let flags = try consumerLinkerFlags(
                         roots, platform: platform, sources: [], settings: settings,
-                        hasCXXSources: linkerHasCXXSources(id, graph: graph))
+                        hasCXXSources: linkerHasCXXSources(id, graph: graph, settings: settings))
                     settings["OTHER_LDFLAGS"] = nativeStrings(settings["OTHER_LDFLAGS"]) + flags
                 }
                 graph.objects[config]?["buildSettings"] = settings

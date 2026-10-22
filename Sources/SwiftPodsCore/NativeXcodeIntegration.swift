@@ -237,14 +237,18 @@ extension NativeXcode {
                 var configurationValues = user.objects[config]!
                 configurationValues["buildSettings"] = settings
                 let linkerScope = try NativeBuildSettings.resolvedScopes(
-                    configurationValues, graph: user, targetName: name).targetScope
+                    configurationValues, graph: user, targetName: name
+                ).targetScope
                 var linkerSettings = settings
-                for key in ["LINK_WITH_STANDARD_LIBRARIES", "CLANG_CXX_LIBRARY", "LD", "LDPLUSPLUS"] {
+                for key in [
+                    "LINK_WITH_STANDARD_LIBRARIES", "CLANG_CXX_LIBRARY", "LD", "LDPLUSPLUS", "GCC_INPUT_FILETYPE",
+                ] {
                     linkerSettings[key] = try linkerScope.expandedValue(key)
                 }
                 let dependencyFlags = try consumerLinkerFlags(
                     enabled, platform: platform["name"] ?? "ios", sources: [],
-                    settings: linkerSettings, hasCXXSources: linkerHasCXXSources(targetID, graph: user))
+                    settings: linkerSettings,
+                    hasCXXSources: linkerHasCXXSources(targetID, graph: user, settings: linkerSettings))
                 if !dependencyFlags.isEmpty {
                     if linker.isEmpty { linker = ["$(inherited)"] }
                     linker += dependencyFlags
