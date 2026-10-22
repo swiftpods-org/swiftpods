@@ -18,6 +18,7 @@ from scripts.support.local_build import (
     results_directory,
 )
 from scripts.support.reporting import execute
+from Tests.Fixtures.swift_package_fixture import create as create_package
 from Tests.Fixtures.vendor_fixture import fixture_build_arguments, run
 from Tests.Integration.native_integration import project, serialize
 from Tests.Integration.native_xcconfig_tests import create
@@ -217,8 +218,9 @@ class LifecycleFixture:
 
     def package_lifecycle(self):
         work, selected = create(self.root / "packages")
+        package_url = create_package(work / "Package", versions=("1.0.0", "2.0.0"))
         original = (work / "Podfile").read_text()
-        declaration = " spm 'Net', :git => 'https://example.invalid/Net.git', :exact => 'VERSION', :products => ['Net']\n"
+        declaration = " spm 'Net', :git => " + repr(package_url) + ", :exact => 'VERSION', :products => ['Net']\n"
         for version in ["1.0.0", "2.0.0"]:
             (work / "Podfile").write_text(
                 original.replace(

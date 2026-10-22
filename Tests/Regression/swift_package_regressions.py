@@ -1,8 +1,10 @@
 """Validate package declarations and build a consumer of a real local Swift package."""
 
+import json
 import subprocess
 
 from Tests.Fixtures.script_phase_fixture import ruby
+from Tests.Fixtures.swift_package_fixture import create as create_package
 from Tests.Integration.native_xcconfig_tests import create
 from Tests.Regression.consumer_build_regressions import podfile
 from Tests.Regression.header_ownership_regressions import resources_in_app
@@ -75,6 +77,7 @@ def invalid_inputs(fixture):
 
 def package_only_lifecycle(fixture):
     work, project = create(fixture.root / "package-only")
+    package_url = create_package(work / "Package", versions=("1.0.0", "2.0.0"))
     original = podfile(work)
     resolved = work / "External.xcworkspace/xcshareddata/swiftpm/Package.resolved"
     resolved.parent.mkdir(parents=True)
@@ -87,10 +90,21 @@ def package_only_lifecycle(fixture):
         ({"exact": "1.0.0", "products": "Net"}, 1),
         ({"exact": "1.0.0", "products": []}, 0),
     ]:
-        manifest(work, options, base=original)
+        manifest(work, options, url=package_url, base=original)
         fixture.cli(work, "install")
         packages, products = package_objects(project)
         assert len(packages) == 1 and len(products) == count, (packages, products)
+        if count:
+            # Attaching a product alongside pods requires a resolved module graph.
+            pins = json.loads(resolved.read_text())["pins"]
+            assert len(pins) == 1 and pins[0]["identity"] == "package", pins
+            assert pins[0]["state"] == {
+                "revision": git(work / "Package", "rev-parse", "HEAD"),
+                "version": "1.0.0",
+            }, pins
+            contents = resolved.read_bytes()
+        else:
+            assert resolved.read_bytes() == contents
         locked = (work / "Podfile.lock").read_bytes()
         fixture.cli(work, "install", "--deployment")
         assert (work / "Podfile.lock").read_bytes() == locked
@@ -100,9 +114,10 @@ def package_only_lifecycle(fixture):
     fixture.cli(work, "install")
     assert package_objects(project) == ([], [])
     assert resolved.read_bytes() == contents
-    fixture.verified.append(
-        "package_only_references_survive_reinstall_updates_and_product_changes_then_remove_cleanly"
-    )
+    fixture.verified += [
+        "package_only_references_survive_reinstall_updates_and_product_changes_then_remove_cleanly",
+        "linked_package_module_validation_records_pins_and_reinstall_preserves_them",
+    ]
 
 
 def real_package_consumer(fixture):

@@ -5,6 +5,7 @@ import json
 import shutil
 import subprocess
 
+from Tests.Fixtures.swift_package_fixture import create as create_package
 from Tests.Integration.native_integration import project, serialize
 from Tests.Integration.native_xcconfig_tests import create
 from Tests.Regression.source_revision_regressions import concurrent_source_refresh, deleted_svn_path
@@ -39,12 +40,14 @@ def diagnostics(result):
 def package_hooks_and_deintegration(fixture):
     for explicit_save in [False, True]:
         work, selected = create(fixture.root / ("package-hook-" + str(explicit_save)))
+        manual_url = create_package(work / "ManualPackage", name="Manual")
+        net_url = create_package(work / "NetPackage")
         graph = read_project(selected)
         objects = graph["objects"]
         manual = {
             "A" * 24: {
                 "isa": "XCRemoteSwiftPackageReference",
-                "repositoryURL": "https://example.invalid/Manual.git",
+                "repositoryURL": manual_url,
                 "requirement": {"kind": "exactVersion", "version": "1.0.0"},
             },
             "B" * 24: {
@@ -68,7 +71,7 @@ def package_hooks_and_deintegration(fixture):
         body = body.replace(
             "target 'Demo' do\n",
             "target 'Demo' do\n"
-            " spm 'Net', :git => 'https://example.invalid/Net.git', :exact => '1.0.0', :products => ['Net']\n",
+            " spm 'Net', :git => " + repr(net_url) + ", :exact => '1.0.0', :products => ['Net']\n",
         )
         hook = """post_integrate do |installer|
   installer.aggregate_targets.each do |aggregate|
@@ -133,7 +136,7 @@ end
         assert target(graph)["packageProductDependencies"] == ["B" * 24]
         assert not any(
             value.get("productName") == "Net"
-            or value.get("repositoryURL") == "https://example.invalid/Net.git"
+            or value.get("repositoryURL") == net_url
             or value.get("productRef") == product
             for value in objects.values()
         )
@@ -239,32 +242,24 @@ end
         for value in read_project(other)["objects"].values()
     )
     for attribute in ["header_dir", "module_name"]:
-        for selected in ["Other", "Shared"]:
-            work, _ = create(fixture.root / ("duplicate-" + attribute + "-" + selected))
+        for product_name, selected in [
+            ("Shared", "Other"), ("Shared", "Shared"),
+            ("Tools", "Other"), ("Tools", "Shared"),
+        ]:
+            work, _ = create(
+                fixture.root / ("duplicate-" + attribute + "-" + product_name + "-" + selected)
+            )
             spec = work / "Kit/Kit.podspec.json"
             data = json.loads(spec.read_text())
             data[attribute] = "Shared"
             spec.write_text(json.dumps(data))
-            package = work / "Package"
-            sources = package / "Sources" / selected
-            sources.mkdir(parents=True)
-            (sources / "API.swift").write_text("public struct PackageAPI {}\n")
-            (package / "Package.swift").write_text(
-                "// swift-tools-version: 6.0\nimport PackageDescription\n"
-                "let package = Package(name: \"Net\", products: [.library(name: \"Shared\", targets: [\""
-                + selected + "\"])], targets: [.target(name: \"" + selected + "\")])\n"
-            )
-            for args in [
-                ["init", "-b", "main"], ["add", "."],
-                ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "fixture"],
-                ["tag", "1.0.0"],
-            ]:
-                subprocess.run(["git", "-C", str(package), *args], check=True, capture_output=True)
+            package_url = create_package(work / "Package", name=product_name, module=selected)
             body = (work / "Podfile").read_text().split("post_install")[0]
             body = body.replace(
                 "target 'Demo' do\n",
                 "use_frameworks! :linkage => :static\ntarget 'Demo' do\n"
-                " spm 'Net', :git => " + repr(package.as_uri()) + ", :exact => '1.0.0', :products => ['Shared']\n",
+                " spm 'Net', :git => " + repr(package_url)
+                + ", :exact => '1.0.0', :products => [" + repr(product_name) + "]\n",
             )
             (work / "Podfile").write_text(body)
             if selected == "Shared":
@@ -276,6 +271,7 @@ end
         "package_duplicate_check_scoped_to_consumer",
         "package_duplicate_check_uses_actual_module_name",
         "package_product_name_can_match_a_different_pod_module",
+        "package_duplicate_check_runs_when_product_and_module_names_differ",
     ]
 
 

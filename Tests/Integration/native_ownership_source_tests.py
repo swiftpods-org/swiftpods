@@ -7,6 +7,7 @@ import shutil
 from scripts.support.bootstrap import project_state_directory
 from scripts.support.local_build import results_directory
 from scripts.support.reporting import execute
+from Tests.Fixtures.swift_package_fixture import create as create_package
 from Tests.Fixtures.vendor_fixture import run
 from Tests.Integration.native_integration import project, serialize
 from Tests.Integration.native_lifecycle_tests import LifecycleFixture
@@ -136,10 +137,11 @@ def deintegration(fixture):
 def omitted_project(fixture):
     for retained in [False, True]:
         work, selected = fixture_project(fixture, "deleted-target-" + str(retained))
+        package_url = create_package(work / "Package")
         (work / "Podfile").write_text(
             podfile().replace(
                 "target 'Demo' do\n",
-                "target 'Demo' do\n spm 'Net', :git => 'https://example.invalid/Net.git', "
+                "target 'Demo' do\n spm 'Net', :git => " + repr(package_url) + ", "
                 ":exact => '1.0.0', :products => ['Net']\n",
             )
         )

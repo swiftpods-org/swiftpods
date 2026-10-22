@@ -70,9 +70,24 @@ final class NativeSwiftPackageModuleIdentityTests: XCTestCase {
 
     func testActualTargetModuleCollisionIsRejectedEvenWhenTheProductHasAnotherName() throws {
         let (engine, user, graph) = try fixture(product: "Tools", selected: "SDK")
+        XCTAssertTrue(engine.packagesNeedModuleValidation(user, target: "APP", roots: ["Kit"], platform: "osx"))
         XCTAssertThrowsError(try validate(engine, user, graph)) {
             XCTAssertEqual(($0 as? Diagnostic)?.code, "SP-DUPLICATE-SDK")
         }
+    }
+
+    func testDifferentProductNamesStillRequireValidationOfTheirActualModules() throws {
+        let (engine, user, graph) = try fixture(product: "Tools")
+        XCTAssertTrue(engine.packagesNeedModuleValidation(user, target: "APP", roots: ["Kit"], platform: "osx"))
+        try validate(engine, user, graph)
+    }
+
+    func testUnattachedPackagesAndConsumersWithoutPodsDoNotRequireModuleValidation() throws {
+        let (engine, user, _) = try fixture()
+        XCTAssertFalse(engine.packagesNeedModuleValidation(user, target: "APP", roots: [], platform: "osx"))
+        user.objects["APP"]?["packageProductDependencies"] = [] as [String]
+        XCTAssertFalse(engine.packagesNeedModuleValidation(user, target: "APP", roots: ["Kit"], platform: "osx"))
+        XCTAssertNotNil(user.objects["PACKAGE"])
     }
 
     func testTransitiveModuleConditionsFollowTheConsumerPlatform() throws {
@@ -101,6 +116,7 @@ final class NativeSwiftPackageModuleIdentityTests: XCTestCase {
         user.objects["APP"]?["packageProductDependencies"] = [] as [String]
         user.objects["APP"]?["dependencies"] = ["BUILD"]
         user.objects["BUILD"] = ["isa": "PBXTargetDependency", "productRef": "PRODUCT"]
+        XCTAssertTrue(engine.packagesNeedModuleValidation(user, target: "APP", roots: ["Kit"], platform: "osx"))
         XCTAssertThrowsError(try validate(engine, user, graph)) {
             XCTAssertEqual(($0 as? Diagnostic)?.code, "SP-DUPLICATE-SDK")
         }

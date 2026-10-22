@@ -22,12 +22,9 @@ extension NativeXcode {
         return (linked + built).filter { user.objects[$0]?["isa"] as? String == "XCSwiftPackageProductDependency" }
     }
 
-    /// A product name is only a reason to inspect package metadata, never proof of a duplicate module.
+    /// Product names do not reveal the modules supplied by their selected targets.
     func packagesNeedModuleValidation(_ user: NativePBX, target: String, roots: Set<String>, platform: String) -> Bool {
-        let identities = podModuleIdentities(roots, platform: platform)
-        return packageProducts(user, target: target).contains {
-            (user.objects[$0]?["productName"] as? String).map { identities.contains($0) } == true
-        }
+        !podModuleIdentities(roots, platform: platform).isEmpty && !packageProducts(user, target: target).isEmpty
     }
 
     func validateExistingPackages(

@@ -119,6 +119,8 @@ privacy manifests and on-demand resource tags.
 Pod target names that collide with the project, aggregate targets or consumer
 resource targets receive stable suffixes. Their module names stay unchanged;
 their build configurations, hooks and support files remain independent.
+Pod resource bundles also reserve aggregate and consumer resource target names,
+keeping their configurations and resource build phases separate.
 
 Xcconfig selectors accept whitespace before and between conditions; whitespace
 within a condition's name or pattern remains literal. Embedded NUL cannot cause
@@ -164,16 +166,19 @@ and unknown options fail before installation hooks and project writes.
 Products accept a name or an array of names. Omitting products keeps the package
 reference without attaching a product to the target. Removing the declaration
 removes its unused managed reference.
-Existing Swift package references and `Package.resolved` are preserved. CMake
-projects can be regenerated and then reintegrated with `swiftpods install`.
+Existing Swift package references are preserved. Xcode updates `Package.resolved`
+when resolving product requirements. CMake projects can be regenerated and then
+reintegrated with `swiftpods install`.
 Repeated installation avoids duplicate references and phases. Deintegration
 removes recognized managed integration while preserving user-owned content.
 External edits to managed files are detected before replacement.
 
 Package products group targets and may have different names from their modules.
-When a product name matches a pod module, SwiftPods resolves the selected package
-targets before reporting a duplicate. Module checks follow transitive platform
-conditions and custom Clang module maps; host macros and plugins are excluded.
+When a consumer has pods and package products, SwiftPods resolves the selected
+package targets and checks their modules regardless of the product names.
+Module checks follow transitive platform conditions and custom Clang module
+maps; host macros and plugins are excluded. Offline installation reuses a
+matching resolved package graph from the SwiftPods cache.
 
 Xcconfig assignments use `=`. Xcode rejects `+=` and `?=` during a build,
 even when `-showBuildSettings` succeeds. SwiftPods rejects them before hooks

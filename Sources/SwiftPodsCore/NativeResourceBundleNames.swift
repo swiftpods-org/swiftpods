@@ -34,10 +34,10 @@ extension NativeXcode {
     func prepareResourceBundleLabels() throws {
         var preferred: [String: String] = [:]
         var scoped: [String: String] = [:]
-        var reserved = Set(
-            (manifest["targets"] as? [[String: Any]] ?? []).map {
-                $0["label"] as? String ?? "Pods-" + ($0["name"] as? String ?? "")
-            })
+        let consumerLabels = (manifest["targets"] as? [[String: Any]] ?? []).map {
+            $0["label"] as? String ?? "Pods-" + ($0["name"] as? String ?? "")
+        }
+        var reserved = Set(consumerLabels + consumerLabels.map { $0 + "-Resources" })
         let active = activeVariants
         let current = currentVariant
         defer {

@@ -310,6 +310,53 @@ def bundle_identity(fixture):
     )
 
 
+def consumer_resource_bundle_identity(fixture):
+    work, selected = create(fixture.root / "consumer-resource-bundle-collision")
+    graph = read_project(selected)
+    objects = graph["objects"]
+    consumer = next(o for o in objects.values() if o.get("isa") == "PBXNativeTarget")
+    consumer.update(name="A-B", productName="A-B")
+    objects[consumer["productReference"]]["path"] = "A-B.app"
+    for key in objects[consumer["buildConfigurationList"]]["buildConfigurations"]:
+        objects[key]["buildSettings"]["PRODUCT_NAME"] = "A-B"
+    write_project(selected, graph)
+    for path in (selected.parent / "Configs").glob("*.xcconfig"):
+        path.write_text(path.read_text().replace("Pods-Demo", "Pods-A-B"))
+    (selected.parent / "Sources/main.mm").write_text("int main(void) { return 0; }\n")
+    library = work / "Kit"
+    (library / "Loose.txt").write_text("loose payload\n")
+    (library / "Bundled.txt").write_text("bundled payload\n")
+    spec = library / "Kit.podspec.json"
+    data = json.loads(spec.read_text())
+    data.update(
+        name="Pods-A", resources="Loose.txt",
+        resource_bundles={"B-Resources": "Bundled.txt"},
+    )
+    spec.rename(library / "Pods-A.podspec.json")
+    (library / "Pods-A.podspec.json").write_text(json.dumps(data))
+    body = (work / "Podfile").read_text().split("post_install")[0]
+    (work / "Podfile").write_text(
+        body.replace("target 'Demo'", "target 'A-B'").replace("pod 'Kit'", "pod 'Pods-A'")
+    )
+    fixture.cli(work, "install")
+    project = work / "Pods/Pods.xcodeproj/project.pbxproj"
+    before = project.read_bytes()
+    fixture.cli(work, "install", "--deployment", "--offline")
+    assert project.read_bytes() == before
+    label = "consumer-resource-bundle-build"
+    fixture.build(work, "A-B", label)
+    app = resources_in_app(fixture, label, "A-B")
+    bundled = list(app.rglob("Bundled.txt"))
+    loose = list(app.rglob("Loose.txt"))
+    assert len(bundled) == 1 and bundled[0].read_text() == "bundled payload\n"
+    assert "B-Resources.bundle" in str(bundled[0])
+    assert len(loose) == 1 and loose[0].read_text() == "loose payload\n"
+    assert "B-Resources.bundle" not in str(loose[0])
+    fixture.verified.append(
+        "pod_bundle_and_consumer_resources_keep_distinct_configs_phases_and_payloads"
+    )
+
+
 def hook_lookups(fixture):
     work, _ = create(fixture.root / "hook-subspec-platform")
     spec = work / "Kit/Kit.podspec.json"
@@ -365,5 +412,6 @@ def run(fixture):
     module_maps(fixture)
     generated_headers(fixture)
     bundle_identity(fixture)
+    consumer_resource_bundle_identity(fixture)
     hook_lookups(fixture)
     bundle_identifier(fixture)
