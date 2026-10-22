@@ -30,6 +30,70 @@ final class NativeVariantTests: XCTestCase {
         XCTAssertNotEqual(plan.consumers["A"], plan.consumers["B"])
         XCTAssertEqual(Set(plan.variants.values.map { Set($0.names) }), [Set(["Kit/A"]), Set(["Kit/B"])])
     }
+    func testExtensionConsumersRequireSafeAPIsForSharedAndTransitivePods() throws {
+        let kit = try NativeSpec(data: ["name": "Kit", "version": "1.0", "dependencies": ["Peer": []]])
+        let peer = try NativeSpec(data: ["name": "Peer", "version": "1.0"])
+        let resolution = NativeResolution(specs: ["Kit": kit, "Peer": peer], requests: [])
+        for enabled in [false, true] {
+            var consumer = target("Extension", mode: "dynamic", selection: "Kit")
+            consumer["application_extension_api_only"] = enabled
+            let consumers = [target("App", mode: "dynamic", selection: "Kit"), consumer]
+            for targets in [consumers, Array(consumers.reversed())] {
+                let plan = try NativeVariantPlan(manifest: ["targets": targets], resolution: resolution)
+                XCTAssertEqual(plan.variants.count, 2)
+                XCTAssertEqual(plan.consumers["App"], plan.consumers["Extension"])
+                XCTAssertTrue(plan.variants.values.allSatisfy { $0.applicationExtensionAPIOnly == enabled })
+            }
+        }
+    }
+
+    func testExtensionSafetyIsEmittedForEveryLibraryConfiguration() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data("int kit(void) { return 1; }".utf8).write(to: root.appendingPathComponent("Kit.c"))
+        let kit = try NativeSpec(data: [
+            "name": "Kit", "version": "1.0", "source_files": "Kit.c",
+            "pod_target_xcconfig": ["APPLICATION_EXTENSION_API_ONLY": "NO"],
+        ], directory: root)
+        for mode: String? in [nil, "static", "dynamic"] {
+            var consumer = target("Extension", mode: mode, selection: "Kit")
+            consumer["application_extension_api_only"] = true
+            let engine = try NativeXcode(
+                project: root, manifest: ["targets": [consumer]],
+                resolution: NativeResolution(specs: ["Kit": kit], requests: []), integrateUserProjects: false)
+            try engine.generate()
+            let library = try XCTUnwrap(engine.graph.objects.values.first {
+                $0["isa"] as? String == "PBXNativeTarget" && $0["name"] as? String == "Kit"
+            })
+            let list = try XCTUnwrap(library["buildConfigurationList"] as? String)
+            let configs = try XCTUnwrap(engine.graph.objects[list]?["buildConfigurations"] as? [String])
+            XCTAssertFalse(configs.isEmpty)
+            for config in configs {
+                let configuration = try XCTUnwrap(engine.graph.objects[config])
+                let settings = try NativeBuildSettings.resolved(configuration, graph: engine.graph)
+                XCTAssertEqual(settings["APPLICATION_EXTENSION_API_ONLY"] as? String, "YES")
+            }
+        }
+    }
+    func testExtensionSafetyFollowsReboundDependencyVariants() throws {
+        let kit = try NativeSpec(data: ["name": "Kit", "version": "1.0", "dependencies": ["Peer/A": []]])
+        let peer = try NativeSpec(data: [
+            "name": "Peer", "version": "1.0", "subspecs": [["name": "A"], ["name": "B"]],
+        ])
+        let unrelated = try NativeSpec(data: ["name": "Other", "version": "1.0"])
+        var consumer = target("Extension", selection: "Kit")
+        consumer["dependencies"] = [["name": "Kit"], ["name": "Peer/B"]]
+        consumer["application_extension_api_only"] = true
+        let plan = try NativeVariantPlan(
+            manifest: ["targets": [target("App", selection: "Peer/A"), consumer, target("Other", selection: "Other")]],
+            resolution: NativeResolution(specs: ["Kit": kit, "Peer": peer, "Other": unrelated], requests: []))
+        let kitVariant = try XCTUnwrap(plan.variants.values.first { $0.root == "Kit" })
+        let dependency = try XCTUnwrap(plan.variants[kitVariant.bindings["Peer"] ?? ""])
+        XCTAssertEqual(dependency.names, ["Peer/A"])
+        XCTAssertTrue(dependency.applicationExtensionAPIOnly)
+        XCTAssertFalse(try XCTUnwrap(plan.variants.values.first { $0.root == "Other" }).applicationExtensionAPIOnly)
+    }
     func testScopeLabelsPreserveDefaultSelectionAndBuildTypeNames() throws {
         let resolved = NativeResolution(specs: ["Kit": try spec()], requests: [])
         let selected = try NativeVariantPlan(

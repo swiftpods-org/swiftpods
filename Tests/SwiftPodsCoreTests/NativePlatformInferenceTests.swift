@@ -55,6 +55,32 @@ final class NativePlatformInferenceTests: XCTestCase {
 
     private var mac: [String: Any] { ["SDKROOT": "macosx", "MACOSX_DEPLOYMENT_TARGET": "13.0"] }
 
+    func testExtensionSafetyUsesEveryResolvedConsumerConfiguration() throws {
+        for enabled in [false, true] {
+            let graph = try project(
+                [mac, mac.merging(["APPLICATION_EXTENSION_API_ONLY": "$(EXTENSION_SAFE)"]) { _, new in new }],
+                xcconfig: "EXTENSION_SAFE = \(enabled ? "YES" : "NO")\n")
+            let target = try XCTUnwrap((try analyze(graph)["targets"] as? [[String: Any]])?.first)
+            XCTAssertEqual(target["application_extension_api_only"] as? Bool, enabled)
+        }
+        let graph = try project([mac], projectSettings: ["APPLICATION_EXTENSION_API_ONLY": "YES"])
+        let target = try XCTUnwrap((try analyze(graph)["targets"] as? [[String: Any]])?.first)
+        XCTAssertEqual(target["application_extension_api_only"] as? Bool, true)
+    }
+
+    func testExtensionProductTypesRequireSafeAPIsWithoutAnExplicitBuildSetting() throws {
+        for type in [
+            "app-extension", "watchkit-extension", "watchkit2-extension", "tv-app-extension",
+            "app-extension.messages", "application",
+        ] {
+            let graph = try project([mac])
+            graph.objects[NativePBX.identifier("app")]?["productType"] = "com.apple.product-type." + type
+            try graph.save()
+            let target = try XCTUnwrap((try analyze(graph)["targets"] as? [[String: Any]])?.first)
+            XCTAssertEqual(target["application_extension_api_only"] as? Bool, type != "application")
+        }
+    }
+
     func testPlatformInferenceCannotDropAnInvalidConfiguration() throws {
         for invalid: [String: Any] in [
             ["SDKROOT": "custom-sdk", "MACOSX_DEPLOYMENT_TARGET": "13.0"],

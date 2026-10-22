@@ -5,13 +5,53 @@ import contextlib
 import hashlib
 import io
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from scripts import publish_release, release
+from scripts import publish_release, release, sign_release
+
+
+class SigningIdentityTests(unittest.TestCase):
+    def test_certificate_fingerprint_keeps_the_canonical_name_in_release_metadata(self):
+        with tempfile.TemporaryDirectory(prefix="swiftpods-signing-test-") as owner:
+            bundle = Path(owner) / "SwiftPods"
+            (bundle / "bin").mkdir(parents=True)
+            (bundle / "bin/swiftpods").write_bytes(b"fixture executable")
+            fingerprint = "A" * 40
+            name = "Developer ID Application: Fixture (TEAM)"
+
+            def output(command, **options):
+                if command[:2] == ["git", "status"]:
+                    return b""
+                if command[:2] == ["/usr/bin/security", "find-identity"]:
+                    return f'  1) {fingerprint} "{name}"\n  1 valid identities found\n'
+                if command[0] == "/usr/bin/file":
+                    return "Mach-O 64-bit executable arm64"
+                self.fail("Unexpected signing probe: " + repr(command))
+
+            def run(*arguments):
+                if arguments[0] == "/usr/bin/ditto":
+                    Path(arguments[-1]).write_bytes(b"fixture signed archive")
+
+            with (
+                patch.object(sys, "argv", ["sign_release.py", str(bundle), "--identity", fingerprint]),
+                patch.object(sign_release.subprocess, "check_output", side_effect=output),
+                patch.object(sign_release, "manifest", side_effect=lambda path: (path / "compatibility.json").write_text('{}')),
+                patch.object(sign_release, "run", side_effect=run) as commands,
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                sign_release.main()
+            metadata = json.loads((bundle / "compatibility.json").read_text())
+            self.assertEqual(metadata["signing"]["identity"], name)
+            self.assertTrue(any(call.args[:2] == ("/usr/bin/codesign", "--force")
+                                and call.args[call.args.index("--sign") + 1] == fingerprint
+                                for call in commands.call_args_list))
+            self.assertTrue(any("-N" in call.args and call.args[call.args.index("-N") + 1] == name
+                                for call in commands.call_args_list))
 
 
 class ReleaseTests(unittest.TestCase):

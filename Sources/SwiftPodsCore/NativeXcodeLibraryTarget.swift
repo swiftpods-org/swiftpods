@@ -38,6 +38,7 @@ extension NativeXcode {
         }
         if let arc = attributes["requires_arc"] as? Bool { settings["CLANG_ENABLE_OBJC_ARC"] = arc ? "YES" : "NO" }
         settings.merge(NativeSpec.xcconfig(attributes, key: "pod_target_xcconfig")) { _, new in new }
+        if variant.applicationExtensionAPIOnly { settings["APPLICATION_EXTENSION_API_ONLY"] = "YES" }
         if variant.scoped && dynamic {
             // Xcode's shared intermediate TBD directory uses the module
             // name, so its stub can shadow a different static variant.

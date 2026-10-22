@@ -3,10 +3,13 @@
 
 import contextlib
 import io
+import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -38,16 +41,14 @@ class PackageStorageTests(unittest.TestCase):
         self.version = "0.1.0"
         self.build_error = None
         self.build_count = 0
-        self.original_run = subprocess.run
-        self.original_check_output = subprocess.check_output
+        self.original_run = package.run_checked
         self.enterContext(patch.object(package, "ROOT", self.root))
         self.enterContext(patch.object(package, "PROFILE", {"swiftpods_version": self.version}))
         self.enterContext(patch.object(package.tempfile, "tempdir", str(self.temporary)))
         self.enterContext(patch.dict(os.environ, TMPDIR=str(self.temporary)))
         self.enterContext(patch.object(package, "environment", lambda destination: {}))
         self.enterContext(patch.object(package, "manifest", self.write_manifest))
-        self.builder = self.enterContext(patch.object(package.subprocess, "run", side_effect=self.build))
-        self.enterContext(patch.object(package.subprocess, "check_output", side_effect=self.check_output))
+        self.builder = self.enterContext(patch.object(package, "run_checked", side_effect=self.build))
 
     def write_manifest(self, destination):
         # SDK tools can leave their own temporary directories behind.
@@ -58,6 +59,9 @@ class PackageStorageTests(unittest.TestCase):
     def build(self, arguments, **options):
         if arguments[:2] != ["swift", "build"]:
             return self.original_run(arguments, **options)
+        if "--show-bin-path" in arguments:
+            scratch = Path(arguments[arguments.index("--scratch-path") + 1])
+            return subprocess.CompletedProcess(arguments, 0, str(scratch / "release") + "\n")
         self.build_count += 1
         scratch = Path(arguments[arguments.index("--scratch-path") + 1])
         self.assertTrue(scratch.is_relative_to(self.temporary))
@@ -78,12 +82,6 @@ class PackageStorageTests(unittest.TestCase):
         binary.chmod(0o700)
         if self.build_error:
             raise self.build_error
-
-    def check_output(self, arguments, **options):
-        if arguments[:2] == ["swift", "build"]:
-            scratch = Path(arguments[arguments.index("--scratch-path") + 1])
-            return str(scratch / "release") + "\n"
-        return self.original_check_output(arguments, **options)
 
     def run_package(self, *arguments):
         output = io.StringIO()
@@ -144,6 +142,67 @@ class PackageStorageTests(unittest.TestCase):
         self.assertEqual(marker.read_text(), "user data\n")
         self.builder.assert_not_called()
         self.assert_clean()
+
+
+class PackageCancellationTests(unittest.TestCase):
+    def test_sigterm_stops_compiler_descendants_before_removing_temporary_files(self):
+        with tempfile.TemporaryDirectory(prefix="swiftpods-package-cancel-") as owner:
+            root = Path(owner)
+            tools = root / "tools"
+            tools.mkdir()
+            state = root / "descendant.json"
+            compiler = tools / "swift"
+            child = (
+                "import json, os, signal, time; "
+                "signal.signal(signal.SIGINT, signal.SIG_IGN); "
+                "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                "open(os.environ['COMPILER_STATE'] + '.pending', 'w').write(json.dumps("
+                "{'pid': os.getpid(), 'temporary': os.environ['TMPDIR']})); "
+                "os.replace(os.environ['COMPILER_STATE'] + '.pending', os.environ['COMPILER_STATE']); "
+                "time.sleep(60)"
+            )
+            compiler.write_text(
+                f"#!{sys.executable}\nimport subprocess, sys\n"
+                f"subprocess.Popen([sys.executable, '-c', {child!r}]).wait()\n"
+            )
+            compiler.chmod(0o700)
+            env = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ['PATH'],
+                       COMPILER_STATE=str(state), PYTHONDONTWRITEBYTECODE='1')
+            descendant = None
+            with (root / "package.log").open("wb") as log:
+                process = subprocess.Popen(
+                    [sys.executable, "-m", "scripts.package"], cwd=package.ROOT,
+                    env=env, stdout=log, stderr=log, start_new_session=True,
+                )
+                try:
+                    deadline = time.monotonic() + 15
+                    while not state.exists() and time.monotonic() < deadline:
+                        if process.poll() is not None:
+                            self.fail((root / "package.log").read_text())
+                        time.sleep(0.02)
+                    self.assertTrue(state.exists(), "Compiler did not spawn its descendant")
+                    descendant = json.loads(state.read_text())
+                    process.send_signal(signal.SIGTERM)
+                    self.assertEqual(process.wait(timeout=10), 143)
+                    status = subprocess.run(
+                        ['ps', '-o', 'stat=', '-p', str(descendant['pid'])],
+                        capture_output=True, text=True, check=False,
+                    ).stdout.strip()
+                    self.assertTrue(not status or status.startswith('Z'), status)
+                    self.assertFalse(Path(descendant['temporary']).exists())
+                finally:
+                    if process.poll() is None:
+                        process.terminate()
+                        try:
+                            process.wait(timeout=10)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.wait()
+                    if descendant:
+                        try:
+                            os.kill(descendant['pid'], signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
 
 
 class PackageCheckStorageTests(unittest.TestCase):

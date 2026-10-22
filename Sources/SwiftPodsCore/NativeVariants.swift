@@ -18,6 +18,7 @@ struct NativePodVariant {
     var label: String
     var scoped: Bool
     var swiftVersion: String? = nil
+    var applicationExtensionAPIOnly = false
     var consumerTargets: [String] = []
     var consumerKeys: [String] = []
     var headerScope: String {
@@ -98,13 +99,17 @@ struct NativeVariantPlan {
                 supplementary: variant.supplementary, bindings: [:], label: variant.label,
                 scoped: groups[variant.root + ":" + variant.platform]!.count > 1)
             let names = Set(records.filter { $0.bindings[variant.root] == key }.map(\.name))
+            let consumers = targets.filter { names.contains(nativeConsumerKey($0)) }
+            variants[mapped]?.applicationExtensionAPIOnly = consumers.contains {
+                $0["application_extension_api_only"] as? Bool == true
+            }
             variants[mapped]?.consumerKeys = names.sorted()
             variants[mapped]?.consumerTargets = targets.filter { names.contains(nativeConsumerKey($0)) }.compactMap {
                 $0["name"] as? String
             }.sorted()
             if let spec = resolution.specs[variant.root] {
                 variants[mapped]?.swiftVersion = try NativeSwiftVersion.select(
-                    spec: spec, targets: targets.filter { names.contains(nativeConsumerKey($0)) })
+                    spec: spec, targets: consumers)
             }
         }
         for record in records {
@@ -141,6 +146,19 @@ struct NativeVariantPlan {
                     return x == y ? left.key < right.key : x < y
                 }
                 if let dependency = candidates.first { variants[variant.key]?.bindings[root] = dependency.key }
+            }
+        }
+        // Dependency selection may reuse a smaller variant from another consumer.
+        // Carry extension safety through those final bindings as well.
+        var pending = variants.values.filter(\.applicationExtensionAPIOnly).map(\.key)
+        while let key = pending.popLast(), let variant = variants[key] {
+            let required = try Self.closure(variant.actualRequests + variant.supplementary, resolution: resolution)
+            for root in Set(required.map(\.root)) where root != variant.root {
+                guard let dependency = variant.bindings[root],
+                    variants[dependency]?.applicationExtensionAPIOnly == false
+                else { continue }
+                variants[dependency]?.applicationExtensionAPIOnly = true
+                pending.append(dependency)
             }
         }
         for (root, group) in Dictionary(grouping: variants.values, by: \.root) {

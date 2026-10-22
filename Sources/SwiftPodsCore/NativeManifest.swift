@@ -107,6 +107,7 @@ enum NativeManifest {
                 for key in [
                     "MACOSX_DEPLOYMENT_TARGET", "IPHONEOS_DEPLOYMENT_TARGET", "TVOS_DEPLOYMENT_TARGET",
                     "WATCHOS_DEPLOYMENT_TARGET", "XROS_DEPLOYMENT_TARGET", "SWIFT_VERSION",
+                    "APPLICATION_EXTENSION_API_ONLY",
                 ] {
                     values[key] = try scope.expandedValue(key)
                 }
@@ -122,6 +123,14 @@ enum NativeManifest {
                 }
                 return values
             }
+            let extensionProducts: Set<String> = [
+                "com.apple.product-type.app-extension", "com.apple.product-type.watchkit-extension",
+                "com.apple.product-type.watchkit2-extension", "com.apple.product-type.tv-app-extension",
+                "com.apple.product-type.app-extension.messages",
+            ]
+            target["application_extension_api_only"] =
+                extensionProducts.contains(native["productType"] as? String ?? "")
+                || settings.contains { $0["APPLICATION_EXTENSION_API_ONLY"] as? String == "YES" }
             if let components = NativePath.relativeComponents(of: path, to: project), !components.isEmpty {
                 target["project"] = components.joined(separator: "/")
             } else {

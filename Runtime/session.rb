@@ -109,7 +109,7 @@ module SwiftPods
       request.fetch("targets").each do |value|
         entry = @podfile.targets.find { |target| target["_id"] == value["_id"] }
         raise Unsupported, "Analyzed target identity is missing" unless entry
-        %w[platform project swift_version].each do |key|
+        %w[platform project swift_version application_extension_api_only].each do |key|
           value[key].nil? ? entry.delete(key) : entry[key] = value[key]
         end
       end

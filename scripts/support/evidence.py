@@ -68,15 +68,23 @@ def required_reports():
     }
 
 
-def collect_external_artifacts(report, files):
+def collect_external_artifacts(report, files, archived_artifacts=()):
     """Make passed external gates verifiable after their runner is gone."""
+    archived_files = {entry["archive_path"]: files[entry["archive_path"]]
+                      for entry in archived_artifacts}
     artifacts = []
     for gate_name, gate in report.get("external_gates", {}).items():
         if gate.get("status") != "passed":
             continue
         for position, item in enumerate(gate.get("evidence", [])):
             path = Path(item["path"])
-            data = path.read_bytes()
+            archived = next(
+                (entry for entry in archived_artifacts
+                 if entry["gate"] == gate_name and entry["path"] == item["path"]
+                 and entry["sha256"] == item["sha256"]),
+                None,
+            )
+            data = archived_files[archived["archive_path"]] if archived else path.read_bytes()
             if digest(data) != item["sha256"]:
                 raise RuntimeError("External gate evidence changed: " + str(path))
             name = "external/" + gate_name + "/" + str(position) + "/" + path.name
@@ -84,7 +92,7 @@ def collect_external_artifacts(report, files):
             artifacts.append(
                 {
                     "gate": gate_name,
-                    "path": str(path),
+                    "path": item["path"],
                     "archive_path": name,
                     "sha256": item["sha256"],
                 }

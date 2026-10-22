@@ -8,8 +8,19 @@ require "rbconfig"
 require "yaml"
 require "set"
 require_relative "../../Runtime/runtime"
+require_relative "../../Runtime/session"
 
 class RubyAdapterRegressions
+  def test_analyzed_extension_safety_survives_the_dsl_session
+    podfile = SwiftPods::Podfile.new
+    podfile.target("Demo") {}
+    session = SwiftPods::Session.new
+    session.instance_variable_set(:@podfile, podfile)
+    target = podfile.to_hash.fetch("targets").first.merge("application_extension_api_only" => true)
+    result = session.dispatch("operation" => "analyzed_podfile", "targets" => [target])
+    assert(result.fetch("targets").first["application_extension_api_only"] == true, "Extension safety was lost after analysis")
+  end
+
   def test_yaml_booleans_reject_strings_numbers_and_collections
     invalid = ["false", "true", 0, 1, [], {}]
     invalid.each do |value|

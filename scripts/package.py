@@ -10,7 +10,7 @@ import tempfile
 from pathlib import Path
 
 from scripts.support.bootstrap import PROFILE, ROOT, environment, manifest
-from scripts.support.processes import termination_signals
+from scripts.support.processes import run_checked, termination_signals
 
 
 def assemble(destination, scratch):
@@ -29,7 +29,7 @@ def assemble(destination, scratch):
         "--security-path", str(scratch.parent / "security"),
         "-c", "release",
     ]
-    subprocess.run(
+    run_checked(
         build_command + [
             "-Xswiftc",
             "-warnings-as-errors",
@@ -42,16 +42,16 @@ def assemble(destination, scratch):
         ],
         cwd=ROOT,
         env=build_environment,
-        check=True,
     )
     destination.parent.mkdir(parents=True, exist_ok=True)
     binary_directory = Path(
-        subprocess.check_output(
+        run_checked(
             build_command + ["--show-bin-path"],
             cwd=ROOT,
             env=build_environment,
+            stdout=subprocess.PIPE,
             text=True,
-        ).strip()
+        ).stdout.strip()
     )
     with tempfile.TemporaryDirectory(
         prefix=".swiftpods-package-", dir=destination.parent
@@ -73,9 +73,11 @@ def assemble(destination, scratch):
         env["SWIFTPODS_BUNDLE"] = str(staging)
         env["TMPDIR"] = str(build_temporary)
         actual = json.loads(
-            subprocess.check_output(
-                [str(staging / "bin/swiftpods"), "version", "--json"], env=env
-            )
+            run_checked(
+                [str(staging / "bin/swiftpods"), "version", "--json"],
+                env=env,
+                stdout=subprocess.PIPE,
+            ).stdout
         )
         if actual["swiftpods_version"] != PROFILE["swiftpods_version"]:
             raise RuntimeError(

@@ -76,7 +76,7 @@ def main():
         "experimental; certification is limited to the recorded matrix"
     )
     report["signing"] = {
-        "identity": args.identity,
+        "identity": certificate_name,
         "notarization_requested": args.notarize,
     }
     (bundle / "compatibility.json").write_text(

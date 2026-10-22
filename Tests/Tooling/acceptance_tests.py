@@ -26,7 +26,8 @@ from scripts.support.reporting import ROOT, execute
 from Tests import check as check_tools
 from Tests.Fixtures import swift_binary_producer as swift_producer
 from Tests.Fixtures.vendor_fixture import run as fixture_command
-from Tests.Tooling.release_tests import ReleaseTests
+from Tests.Support import collect_external
+from Tests.Tooling.release_tests import ReleaseTests, SigningIdentityTests
 
 
 class EvidenceTests(unittest.TestCase):
@@ -1240,6 +1241,109 @@ class EvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "External gate evidence changed"):
             evidence_tools.collect_external_artifacts(report, {})
 
+    def portable_collection(self):
+        self.report['host']['os'] = 'fixture'
+        for name in self.names:
+            self.write(name, self.report)
+        for replacement in [
+            patch.object(evidence_tools, 'ROOT', self.root),
+            patch.object(evidence_tools, 'required_reports', return_value=set(self.names)),
+            patch.object(reporting, 'source_digest', return_value='source'),
+            patch.object(reporting, 'contract_digest', return_value='contract'),
+            patch.object(reporting, 'source_revision', side_effect=lambda: self.revision),
+            patch.object(reporting, 'toolchain_identity', return_value=self.report['toolchain']),
+            patch.object(collect_external.platform, 'machine', return_value='arm64'),
+            patch.object(collect_external.platform, 'mac_ver', return_value=('fixture', (), '')),
+        ]:
+            self.enterContext(replacement)
+        path, _ = self.evidence_archive()
+        # Current exports always include external_artifacts, even when empty.
+        self.rewrite_evidence(path, lambda index, files: index.update(external_artifacts=[]))
+        for report in (self.root / 'reports').iterdir():
+            report.unlink()
+        (self.root / 'reports').rmdir()
+        self.binary.unlink()
+        os.environ.pop(WORKSPACE_ENV, None)
+        return path
+
+    def rewrite_evidence(self, path, change):
+        with zipfile.ZipFile(path) as archive:
+            files = {name: archive.read(name) for name in archive.namelist()}
+        index = json.loads(files.pop('index.json'))
+        change(index, files)
+        index['files'] = {name: evidence_tools.digest(data) for name, data in files.items()}
+        with zipfile.ZipFile(path, 'w') as archive:
+            archive.writestr('index.json', json.dumps(index))
+            for name, data in files.items():
+                archive.writestr(name, data)
+
+    def testExternalCollectionUsesPortableReportsAfterAllTemporaryFilesAreGone(self):
+        path = self.portable_collection()
+        original = path.read_bytes()
+        external = self.external_gate()
+        destination = self.root / 'collected.zip'
+        result = collect_external.augment(path, external, destination)
+        self.assertEqual(result['stable_acceptance'], 'established')
+        self.assertEqual(path.read_bytes(), original)
+        index = evidence_tools.validate(destination)
+        self.assertEqual(len(index['external_artifacts']), 1)
+        with zipfile.ZipFile(destination) as archive:
+            self.assertEqual(archive.read(index['external_artifacts'][0]['archive_path']), b'fixture')
+        self.assertFalse((self.root / 'reports').exists())
+        self.assertNotIn(WORKSPACE_ENV, os.environ)
+
+    def testExternalCollectionPreservesArchivedGatesWhenAddingAnotherGate(self):
+        self.registry['external_gates'].append('remote_ci')
+        (self.root / 'Profiles/contract.json').write_text(json.dumps(self.registry))
+        path = self.portable_collection()
+        first = self.root / 'first.zip'
+        result = collect_external.augment(path, self.external_gate(), first)
+        self.assertEqual(result['stable_acceptance'], 'not_established')
+        (self.root / 'device.log').unlink()
+        external = self.external_gate()
+        data = json.loads(external.read_text())
+        data['gates']['remote_ci'] = data['gates'].pop('physical_devices')
+        external.write_text(json.dumps(data))
+        # The first gate is now verifiable exclusively from its archived bytes.
+        (self.root / 'device.log').rename(self.root / 'ci.log')
+        data['gates']['remote_ci']['evidence'][0]['path'] = str(self.root / 'ci.log')
+        external.write_text(json.dumps(data))
+        second = self.root / 'second.zip'
+        result = collect_external.augment(first, external, second)
+        self.assertEqual(result['stable_acceptance'], 'established')
+        self.assertEqual(result['passed_external_gates'], ['physical_devices', 'remote_ci'])
+        self.assertEqual(len(evidence_tools.validate(second)['external_artifacts']), 2)
+
+    def testExternalCollectionRejectsChangedInputsWithoutCreatingAnArchive(self):
+        path = self.portable_collection()
+        external = self.external_gate()
+        destination = self.root / 'rejected.zip'
+        (self.root / 'device.log').write_text('changed')
+        with self.assertRaisesRegex(RuntimeError, 'External gate evidence changed'):
+            collect_external.augment(path, external, destination)
+        self.assertFalse(destination.exists())
+        self.assertFalse(list(self.root.glob('.external-evidence-*')))
+        external = self.external_gate()
+        self.revision = {'commit': 'changed', 'dirty': False}
+        with self.assertRaisesRegex(RuntimeError, 'Source checkout does not match'):
+            collect_external.augment(path, external, destination)
+        self.assertFalse(destination.exists())
+
+    def testExternalArtifactIndexPreservesTheDeclaredRelativePath(self):
+        path = self.portable_collection()
+        external = self.external_gate()
+        data = json.loads(external.read_text())
+        data['gates']['physical_devices']['evidence'][0]['path'] = './device.log'
+        external.write_text(json.dumps(data))
+        destination = self.root / 'relative.zip'
+        previous = Path.cwd()
+        try:
+            os.chdir(self.root)
+            collect_external.augment(path, external, destination)
+        finally:
+            os.chdir(previous)
+        self.assertEqual(evidence_tools.validate(destination)['external_artifacts'][0]['path'], './device.log')
+
 
 def main():
     result = unittest.TextTestRunner(verbosity=2).run(
@@ -1247,6 +1351,7 @@ def main():
             [
                 unittest.defaultTestLoader.loadTestsFromTestCase(EvidenceTests),
                 unittest.defaultTestLoader.loadTestsFromTestCase(ReleaseTests),
+                unittest.defaultTestLoader.loadTestsFromTestCase(SigningIdentityTests),
             ]
         )
     )

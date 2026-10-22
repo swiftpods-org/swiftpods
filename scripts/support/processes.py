@@ -48,6 +48,21 @@ def cancel_process_group(process, grace_period=2):
 
 
 @termination_signals()
+def run_checked(arguments, *, timeout=None, **options):
+    """Run a checked command, stopping its entire process group before unwinding."""
+    command = [str(argument) for argument in arguments]
+    process = subprocess.Popen(command, start_new_session=True, **options)
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+        result = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+        result.check_returncode()
+        return result
+    except BaseException:
+        cancel_process_group(process)
+        raise
+
+
+@termination_signals()
 def run_captured(arguments, cwd, log_prefix, env=None, timeout=None):
     """Keep separate durable streams and cancel the owned group on any interruption."""
     command = [str(argument) for argument in arguments]

@@ -109,8 +109,42 @@ def collect(names, external=None):
                 "unverified": report.get("unverified", []),
             }
         )
+    return summarize(reports, content, revision, external_gates(external))
+
+
+def external_gates(external):
+    """Validate newly supplied gates against current sources and artifact bytes."""
+    if external is None:
+        return {}
+    supplied = json.loads(Path(external).read_text())
+    if (
+        supplied.get("source_digest") != source_digest()
+        or supplied.get("contract_digest") != contract_digest()
+    ):
+        raise RuntimeError("External acceptance evidence is stale")
     registry = json.loads((ROOT / "Profiles/contract.json").read_text())
-    available = set(names)
+    gates = supplied.get("gates", {})
+    for name, gate in gates.items():
+        if (
+            name not in registry["external_gates"]
+            or gate.get("status") != "passed"
+            or not gate.get("evidence")
+        ):
+            raise RuntimeError("Invalid external acceptance gate: " + name)
+        for item in gate["evidence"]:
+            file = Path(item["path"])
+            if (
+                not file.is_file()
+                or hashlib.sha256(file.read_bytes()).hexdigest() != item["sha256"]
+            ):
+                raise RuntimeError("External gate evidence changed: " + str(file))
+    return gates
+
+
+def summarize(reports, content, revision, external):
+    """Aggregate verified reports, including reports from a validated portable archive."""
+    registry = json.loads((ROOT / "Profiles/contract.json").read_text())
+    available = set(content)
     requirements, statuses = [], {}
     for entry in registry["requirements"]:
         dependencies = entry.get("requirements", [])
@@ -122,6 +156,7 @@ def collect(names, external=None):
         statuses[entry["id"]] = status
         requirements.append(dict(entry, status=status, missing_reports=missing))
     gates = {name: {"status": "unverified"} for name in registry["external_gates"]}
+    gates.update(external)
     api = []
     for category, entries in registry["api"].items():
         for name, entry in entries.items():
@@ -146,28 +181,6 @@ def collect(names, external=None):
                     else "missing_case_evidence",
                 }
             )
-    if external:
-        supplied = json.loads(Path(external).read_text())
-        if (
-            supplied.get("source_digest") != source
-            or supplied.get("contract_digest") != contract
-        ):
-            raise RuntimeError("External acceptance evidence is stale")
-        for name, gate in supplied.get("gates", {}).items():
-            if (
-                name not in gates
-                or gate.get("status") != "passed"
-                or not gate.get("evidence")
-            ):
-                raise RuntimeError("Invalid external acceptance gate: " + name)
-            for item in gate["evidence"]:
-                file = Path(item["path"])
-                if (
-                    not file.is_file()
-                    or hashlib.sha256(file.read_bytes()).hexdigest() != item["sha256"]
-                ):
-                    raise RuntimeError("External gate evidence changed: " + str(file))
-            gates[name] = gate
     complete = all(value == "covered_by_current_reports" for value in statuses.values())
     differences = classify_differences(registry, content)
     blocking_differences = [
