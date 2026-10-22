@@ -25,8 +25,9 @@ enum NativeSwiftPackageCompileSettings {
         var headers = Set<String>()
         var frameworks = Set<String>()
         var maps = Set<String>()
+        var compilerFlags: [String] = []
         var values: [String: [String]] {
-            let flags = maps.sorted().map { "-fmodule-map-file=" + $0 }
+            let flags = maps.sorted().map { "-fmodule-map-file=" + $0 } + compilerFlags
             return [
                 "SWIFTPODS_SPM_HEADERS": headers.sorted().map(NativeBuildSetting.quoted),
                 "SWIFTPODS_SPM_FRAMEWORKS": frameworks.sorted().map(NativeBuildSetting.quoted),
@@ -62,6 +63,13 @@ enum NativeSwiftPackageCompileSettings {
             // Macro and plugin dependencies run on the host; their implementation
             // modules and transitive dependencies are not consumer interfaces.
             guard !["macro", "plugin"].contains(kind) else { return }
+            if kind == "system", let config = target["pkgConfig"] as? String {
+                let exported = try NativeSwiftPackagePkgConfig.interface(
+                    graph.pkgConfig(config, package: package), directory: package.directory, user: user)
+                result.headers.formUnion(exported.headers)
+                result.frameworks.formUnion(exported.frameworks)
+                result.compilerFlags += exported.compilerFlags
+            }
             if kind == "binary" {
                 let sdk = try graph.binary(target, package: package)
                 if let slice = sdk.slices.first(where: {

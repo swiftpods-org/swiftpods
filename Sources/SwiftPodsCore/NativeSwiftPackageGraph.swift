@@ -17,6 +17,7 @@ final class NativeSwiftPackageGraph {
     let moduleMaps: NativeSwiftPackageModuleMaps
     private var manifests: [String: [String: Any]] = [:]
     private var binaries: [URL: NativeVendorSDK] = [:]
+    private var pkgConfigs: [String: [String]] = [:]
     private let loadManifest: ((Package) throws -> [String: Any])?
 
     init(directory: URL, environment: [String: String], moduleMaps: NativeSwiftPackageModuleMaps,
@@ -113,6 +114,14 @@ final class NativeSwiftPackageGraph {
         }
         manifests[package.directory.path] = value
         return value
+    }
+
+    func pkgConfig(_ name: String, package: Package) throws -> [String] {
+        let key = package.directory.path + ":" + name
+        if let cached = pkgConfigs[key] { return cached }
+        let flags = try NativeSwiftPackagePkgConfig.read(name, directory: package.directory, environment: environment)
+        pkgConfigs[key] = flags
+        return flags
     }
 
     func dependencies(_ package: Package) throws -> [(name: String?, package: Package)] {

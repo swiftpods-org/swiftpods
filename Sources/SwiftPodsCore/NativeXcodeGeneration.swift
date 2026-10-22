@@ -109,7 +109,10 @@ extension NativeXcode {
                         return ownFlags + (try consumerLinkerFlags(
                             roots, platform: platform, sources: [], settings: dependencySettings, hasCXXSources: cxx))
                     }
+                    let linked = try consumerVendorSDKs(roots, platform: platform)
+                    let owned = vendorSDKs[variant.key] ?? []
                     settings["OTHER_LDFLAGS"] = nativeStrings(settings["OTHER_LDFLAGS"]) + flags
+                        + staticSDKLoadFlags(owned + linked)
                 }
                 graph.objects[config]?["buildSettings"] = settings
             }

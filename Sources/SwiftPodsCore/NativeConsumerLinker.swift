@@ -13,14 +13,16 @@ extension NativeXcode {
             .map(isDynamicProduct) ?? (variantPlan?.variants[key]?.mode == "dynamic")
     }
 
-    /// Static SDKs already linked into a dynamic dependency must not be linked again.
+    /// Dynamic dependencies load their complete static SDKs; the final consumer
+    /// must use that copy, including SDKs from the dependency's selected variants.
     func consumerVendorSDKs(_ roots: Set<String>, platform: String) throws -> [NativeVendorSDK] {
         var absorbed = Set<URL>()
         for root in roots.sorted() where isDynamicLibrary(root, platform: platform) {
             guard let variant = variantPlan?.variants[variantKey(root, platform)] else { continue }
             let dependencies = try dependencyRoots(variant.actualRequests).union([root])
             for dependency in dependencies {
-                for sdk in vendorSDKs[variantKey(dependency, platform)] ?? [] where !sdk.dynamic {
+                let key = variant.bindings[dependency] ?? variantKey(dependency, platform)
+                for sdk in vendorSDKs[key] ?? [] where !sdk.dynamic {
                     absorbed.insert(sdk.url)
                 }
             }
@@ -28,6 +30,23 @@ extension NativeXcode {
         var seen = Set<URL>()
         return roots.sorted().flatMap { vendorSDKs[variantKey($0, platform)] ?? [] }.filter {
             !absorbed.contains($0.url) && seen.insert($0.url).inserted
+        }
+    }
+
+    /// An ordinary archive link only loads referenced objects. Load the complete
+    /// SDK before excluding it from consumers that may use its other public APIs.
+    func staticSDKLoadFlags(_ sdks: [NativeVendorSDK]) -> [String] {
+        var seen = Set<URL>()
+        return sdks.filter { !$0.dynamic && seen.insert($0.url).inserted }.flatMap { sdk in
+            let source = consumerSDKPath(sdk)
+            // Pods targets do not inherit the consumer xcconfig's PODS_* aliases.
+            var path = sdk.isXCFramework
+                ? "$(BUILD_DIR)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)/" + NativeBuildSetting.literal(source.relative)
+                : source.setting
+            if sdk.isFramework {
+                path += "/" + NativeBuildSetting.literal(String(sdk.productName.dropLast(10)))
+            }
+            return ["-force_load", NativeBuildSetting.quoted(path)]
         }
     }
 
