@@ -140,11 +140,13 @@ final class NativeSwiftPackageGraph {
             return URL(fileURLWithPath: path, relativeTo: package.directory).standardizedFileURL
         }
         let kind = target["type"] as? String ?? "regular"
-        if kind == "system" { return package.directory }
         let name = target["name"] as? String ?? ""
         let bases = kind == "test" ? ["Tests"] : ["Sources", "Source", "src", "srcs"]
         let named = bases.map { package.directory.appendingPathComponent($0 + "/" + name) }
         if let path = named.first(where: { FileManager.default.fileExists(atPath: $0.path) }) { return path }
+        // Modern system targets use Sources/<name>; legacy packages put their
+        // module map at the package root. Explicit paths still take precedence.
+        if kind == "system" { return package.directory }
         let targets = try manifest(package)["targets"] as? [[String: Any]] ?? []
         let sources = targets.filter { !["test", "binary", "plugin", "system"].contains($0["type"] as? String ?? "regular") }
         if kind != "test", sources.count == 1,

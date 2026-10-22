@@ -141,6 +141,78 @@ final class NativeSwiftPackageCompileSettingsTests: XCTestCase {
         XCTAssertTrue(String(decoding: try XCTUnwrap(maps.files.values.first), as: UTF8.self).contains("Public/Only_Core/Only_Core.h"))
     }
 
+    func testMacroImplementationsAndTheirHostDependenciesDoNotExportCompilerInterfaces() throws {
+        let (_, user, previous) = try fixture()
+        let package = previous.directory.appendingPathComponent("checkouts/SDK")
+        for name in ["SwiftAPI", "Implementation"] {
+            let sources = package.appendingPathComponent("Sources/" + name)
+            try FileManager.default.createDirectory(at: sources, withIntermediateDirectories: true)
+            try Data("// Swift source\n".utf8).write(to: sources.appendingPathComponent("Source.swift"))
+        }
+        let support = package.appendingPathComponent("Sources/CompilerSupport/include")
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        try Data("int compiler_support(void);\n".utf8).write(to: support.appendingPathComponent("CompilerSupport.h"))
+        let graph = try NativeSwiftPackageGraph(
+            directory: previous.directory, environment: [:], moduleMaps: previous.moduleMaps
+        ) { _ in
+            ["products": [["name": "SDK", "targets": ["Core", "SwiftAPI"]]], "targets": [
+                ["name": "Core", "type": "regular", "publicHeadersPath": "Public"],
+                ["name": "SwiftAPI", "type": "regular", "dependencies": [["target": ["Implementation", NSNull()]]]],
+                [
+                    "name": "Implementation", "type": "macro",
+                    "dependencies": [["target": ["CompilerSupport", NSNull()]]],
+                ],
+                ["name": "CompilerSupport", "type": "regular"],
+            ]]
+        }
+        let exported = try NativeSwiftPackageCompileSettings.interface(
+            [declaration()], graph: graph,
+            destination: .init(sdk: "macosx", platform: "osx", variant: "device", architecture: "arm64"), user: user)
+        XCTAssertEqual(
+            exported.headers, [user.buildSettingPath(package.appendingPathComponent("Sources/Core/Public"))])
+        XCTAssertEqual(exported.maps, [
+            user.buildSettingPath(package.appendingPathComponent("Sources/Core/Public/module.modulemap")),
+            "$(GENERATED_MODULEMAP_DIR)/SwiftAPI.modulemap",
+        ])
+        XCTAssertTrue(graph.moduleMaps.files.isEmpty)
+    }
+
+    func testSystemLibraryUsesItsOwnModuleMapInEachSupportedSourceDirectory() throws {
+        let (_, user, previous) = try fixture()
+        let package = previous.directory.appendingPathComponent("checkouts/SDK")
+        let legacy = package.appendingPathComponent("module.modulemap")
+        try Data("module Legacy { export * }\n".utf8).write(to: legacy)
+        for base in ["Sources", "Source", "src", "srcs"] {
+            let sources = package.appendingPathComponent(base + "/CSystem")
+            try FileManager.default.createDirectory(at: sources, withIntermediateDirectories: true)
+            let map = sources.appendingPathComponent("module.modulemap")
+            try Data("module CSystem [system] { header \"/sdk/include/sqlite3.h\" export * }\n".utf8).write(to: map)
+            let graph = try NativeSwiftPackageGraph(
+                directory: previous.directory, environment: [:], moduleMaps: previous.moduleMaps
+            ) { _ in
+                ["products": [["name": "SDK", "targets": ["CSystem"]]],
+                    "targets": [["name": "CSystem", "type": "system"]]]
+            }
+            let exported = try NativeSwiftPackageCompileSettings.interface(
+                [declaration()], graph: graph,
+                destination: .init(sdk: "macosx", platform: "osx", variant: "device", architecture: "arm64"), user: user)
+            XCTAssertEqual(exported.headers, [user.buildSettingPath(sources)])
+            XCTAssertEqual(exported.maps, [user.buildSettingPath(map)])
+            XCTAssertTrue(graph.moduleMaps.files.isEmpty)
+            try FileManager.default.removeItem(at: sources)
+        }
+    }
+
+    func testSystemLibraryKeepsExplicitPathsAndLegacyRootLayouts() throws {
+        let (_, _, graph) = try fixture()
+        let package = try graph.package("https://example.invalid/sdk.git")
+        XCTAssertEqual(
+            try graph.targetDirectory(["name": "Legacy", "type": "system"], package: package), package.directory)
+        XCTAssertEqual(
+            try graph.targetDirectory(["name": "Custom", "type": "system", "path": "Bindings"], package: package),
+            package.directory.appendingPathComponent("Bindings"))
+    }
+
     func testResolutionPinsCanBeRecoveredInsideAndOutsideThePodfileDirectory() throws {
         let (root, _, _) = try fixture()
         let project = root.appendingPathComponent("Project")

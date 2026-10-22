@@ -13,9 +13,9 @@ struct NativeResolver {
     func resolve(_ dependencies: [NativeDependency]) throws -> NativeResolution {
         var failure: Error?
         var conflicts = Set<String>()
-        func cycle(in requests: [NativeDependency]) -> [String]? {
+        func cycle(in requests: [NativeDependency], platform: String) -> [String]? {
             var edges: [String: Set<String>] = [:]
-            for request in requests {
+            for request in requests where request.platform == platform {
                 if let parent = request.chain.last { edges[parent, default: []].insert(request.name) }
             }
             var visited = Set<String>()
@@ -48,11 +48,14 @@ struct NativeResolver {
         ) throws -> NativeResolution? {
             try NativeCancellation.check()
             guard !queue.isEmpty else {
-                if let cycle = cycle(in: requests) {
-                    failure = Diagnostic(
-                        "SP-RESOLVE-CONFLICT", stage: "resolve",
-                        "Circular dependency: " + cycle.joined(separator: " -> "), dependencyChain: cycle)
-                    return nil
+                // Each platform builds its own graph, even when versions are shared.
+                for platform in Set(requests.map(\.platform)).sorted() {
+                    if let cycle = cycle(in: requests, platform: platform) {
+                        failure = Diagnostic(
+                            "SP-RESOLVE-CONFLICT", stage: "resolve",
+                            "Circular dependency: " + cycle.joined(separator: " -> "), dependencyChain: cycle)
+                        return nil
+                    }
                 }
                 for (root, spec) in selected where spec.version.isPrerelease {
                     if !update.contains(root), let version = try locked[root].map(PodVersion.init),

@@ -78,6 +78,38 @@ final class NativeEngineTests: XCTestCase {
             XCTAssertEqual(diagnostic?.dependencyChain, ["A", "B", "C", "A"])
         }
     }
+    func testResolverKeepsPlatformDependencyGraphsSeparate() throws {
+        let a = try NativeSpec(data: [
+            "name": "A", "version": "1.0", "ios": ["dependencies": ["B": [">= 0"]]],
+        ])
+        let b = try NativeSpec(data: [
+            "name": "B", "version": "1.0", "osx": ["dependencies": ["A": [">= 0"]]],
+        ])
+        let resolver = NativeResolver(candidates: { $0.root == "A" ? [a] : [b] })
+        let ios = try NativeDependency(["name": "A"], platform: "ios", deployment: "15.0")
+        let mac = try NativeDependency(["name": "B"], platform: "osx", deployment: "13.0")
+        for requests in [[ios, mac], [mac, ios]] {
+            let result = try resolver.resolve(requests)
+            XCTAssertEqual(
+                Set(result.requests.map { $0.name + ":" + $0.platform }), ["A:ios", "B:ios", "A:osx", "B:osx"])
+        }
+    }
+    func testResolverRejectsCycleWithinOneOfSeveralPlatforms() throws {
+        let a = try NativeSpec(data: [
+            "name": "A", "version": "1.0", "ios": ["dependencies": ["B": [">= 0"]]],
+        ])
+        let b = try NativeSpec(data: [
+            "name": "B", "version": "1.0", "ios": ["dependencies": ["A": [">= 0"]]],
+        ])
+        let resolver = NativeResolver(candidates: { $0.root == "A" ? [a] : [b] })
+        XCTAssertThrowsError(try resolver.resolve([
+            NativeDependency(["name": "A"], platform: "osx", deployment: "13.0"),
+            NativeDependency(["name": "A"], platform: "ios", deployment: "15.0"),
+        ])) { error in
+            XCTAssertEqual((error as? Diagnostic)?.code, "SP-RESOLVE-CONFLICT")
+            XCTAssertEqual((error as? Diagnostic)?.dependencyChain, ["A", "B", "A"])
+        }
+    }
     func testResolverRejectsCycleThroughDefaultSubspec() throws {
         let kit = try NativeSpec(data: [
             "name": "Kit", "version": "1.0", "default_subspecs": ["Core"],

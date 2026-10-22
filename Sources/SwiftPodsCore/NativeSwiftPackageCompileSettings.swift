@@ -58,7 +58,11 @@ enum NativeSwiftPackageCompileSettings {
             guard let target = targets.first(where: { $0["name"] as? String == name }) else {
                 throw Diagnostic("SP-SPM-TARGET", stage: "integrate", "Package target not found: " + name, file: package.location)
             }
-            if target["type"] as? String == "binary" {
+            let kind = target["type"] as? String ?? "regular"
+            // Macro and plugin dependencies run on the host; their implementation
+            // modules and transitive dependencies are not consumer interfaces.
+            guard !["macro", "plugin"].contains(kind) else { return }
+            if kind == "binary" {
                 let sdk = try graph.binary(target, package: package)
                 if let slice = sdk.slices.first(where: {
                     $0.platform == destination.platform && $0.variant == destination.variant
@@ -78,7 +82,6 @@ enum NativeSwiftPackageCompileSettings {
                     }
                 }
             } else {
-                let kind = target["type"] as? String ?? "regular"
                 let directory = try graph.targetDirectory(target, package: package)
                 let headers = directory.appendingPathComponent(target["publicHeadersPath"] as? String ?? (kind == "system" ? "." : "include"))
                 if FileManager.default.fileExists(atPath: headers.path) {
