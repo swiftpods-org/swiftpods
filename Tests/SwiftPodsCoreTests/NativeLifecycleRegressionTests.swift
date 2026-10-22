@@ -40,7 +40,7 @@ final class NativeLifecycleRegressionTests: XCTestCase {
         for version in ["1.0.0", "2.0.0"] {
             let packages = NativeSwiftPackageIntegrator()
             try packages.prepare(user, record: record)
-            try packages.integrate([package(version)], targetID: "APP", user: user, installedModules: [])
+            try packages.integrate([package(version)], targetID: "APP", user: user)
             record = packages.finish(user)
             let own = user.objects.values.first { $0["repositoryURL"] as? String == package()["git"] as? String }
             XCTAssertEqual((own?["requirement"] as? [String: String])?["version"], version)
@@ -60,7 +60,7 @@ final class NativeLifecycleRegressionTests: XCTestCase {
         let user = try project()
         let first = NativeSwiftPackageIntegrator()
         try first.prepare(user, record: nil)
-        try first.integrate([package()], targetID: "APP", user: user, installedModules: [])
+        try first.integrate([package()], targetID: "APP", user: user)
         let record = first.finish(user)
         let products = user.objects["APP"]?["packageProductDependencies"] as? [String] ?? []
         // A user attaches the same product to a different target after install.
@@ -77,7 +77,7 @@ final class NativeLifecycleRegressionTests: XCTestCase {
         let user = try project()
         let first = NativeSwiftPackageIntegrator()
         try first.prepare(user, record: nil)
-        try first.integrate([package()], targetID: "APP", user: user, installedModules: [])
+        try first.integrate([package()], targetID: "APP", user: user)
         let record = first.finish(user)
         let reference = NativePBX.identifier("swiftpods:package:" + (package()["git"] as! String))
         user.objects[reference]?["requirement"] = ["kind": "branch", "branch": "user-edit"]
@@ -88,7 +88,7 @@ final class NativeLifecycleRegressionTests: XCTestCase {
         manual.objects["ROOT"]?["packageReferences"] = ["MANUAL"]
         let conflict = NativeSwiftPackageIntegrator()
         try conflict.prepare(manual, record: nil)
-        XCTAssertThrowsError(try conflict.integrate([package()], targetID: "APP", user: manual, installedModules: []))
+        XCTAssertThrowsError(try conflict.integrate([package()], targetID: "APP", user: manual))
         XCTAssertEqual((manual.objects["MANUAL"]?["requirement"] as? [String: String])?["branch"], "user-edit")
     }
 
@@ -96,13 +96,13 @@ final class NativeLifecycleRegressionTests: XCTestCase {
         let user = try project()
         let first = NativeSwiftPackageIntegrator()
         try first.prepare(user, record: nil)
-        try first.integrate([package()], targetID: "APP", user: user, installedModules: [])
+        try first.integrate([package()], targetID: "APP", user: user)
         _ = first.finish(user)
         let next = NativeSwiftPackageIntegrator()
         try next.prepare(user, record: nil)
-        try next.integrate([package("2.0.0")], targetID: "APP", user: user, installedModules: [])
+        try next.integrate([package("2.0.0")], targetID: "APP", user: user)
         XCTAssertThrowsError(
-            try next.integrate([package("3.0.0")], targetID: "TESTS", user: user, installedModules: []))
+            try next.integrate([package("3.0.0")], targetID: "TESTS", user: user))
         let record = next.finish(user)
         XCTAssertFalse((record["objects"] as? [String: Any] ?? [:]).isEmpty)
     }

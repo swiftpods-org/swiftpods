@@ -222,9 +222,9 @@ final class NativeSwiftPackageGraph {
 }
 
 extension NativeXcode {
-    func resolveSwiftPackageCompilerGraph() throws -> NativeSwiftPackageGraph? {
+    func resolveSwiftPackageCompilerGraph(required: Bool = false) throws -> NativeSwiftPackageGraph? {
         let targets = manifest["targets"] as? [[String: Any]] ?? []
-        guard try targets.contains(where: {
+        guard try required || targets.contains(where: {
             try NativeSwiftPackageDeclaration.list($0["packages"]).contains { !$0.link && !$0.products.isEmpty }
         }) else { return nil }
         let storage = ProjectStorage(project: project)

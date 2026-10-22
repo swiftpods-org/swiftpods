@@ -116,6 +116,10 @@ meaning. Custom configurations control the products linked, embedded and copied
 into each consumer. Resources include bundles, localization, asset catalogs,
 privacy manifests and on-demand resource tags.
 
+Pod target names that collide with the project, aggregate targets or consumer
+resource targets receive stable suffixes. Their module names stay unchanged;
+their build configurations, hooks and support files remain independent.
+
 Xcconfig selectors accept whitespace before and between conditions; whitespace
 within a condition's name or pattern remains literal. Embedded NUL cannot cause
 patterns or contexts to match a truncated prefix. Include directives accept
@@ -165,6 +169,11 @@ projects can be regenerated and then reintegrated with `swiftpods install`.
 Repeated installation avoids duplicate references and phases. Deintegration
 removes recognized managed integration while preserving user-owned content.
 External edits to managed files are detected before replacement.
+
+Package products group targets and may have different names from their modules.
+When a product name matches a pod module, SwiftPods resolves the selected package
+targets before reporting a duplicate. Module checks follow transitive platform
+conditions and custom Clang module maps; host macros and plugins are excluded.
 
 Xcconfig assignments use `=`. Xcode rejects `+=` and `?=` during a build,
 even when `-showBuildSettings` succeeds. SwiftPods rejects them before hooks

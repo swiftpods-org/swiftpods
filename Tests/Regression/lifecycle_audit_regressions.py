@@ -239,24 +239,43 @@ end
         for value in read_project(other)["objects"].values()
     )
     for attribute in ["header_dir", "module_name"]:
-        work, _ = create(fixture.root / ("duplicate-" + attribute))
-        spec = work / "Kit/Kit.podspec.json"
-        data = json.loads(spec.read_text())
-        data[attribute] = "Shared"
-        spec.write_text(json.dumps(data))
-        body = (work / "Podfile").read_text().split("post_install")[0]
-        body = body.replace(
-            "target 'Demo' do\n",
-            "use_frameworks! :linkage => :static\ntarget 'Demo' do\n"
-            " spm 'Net', :git => 'https://example.invalid/Net.git', :exact => '1.0.0', :products => ['Shared']\n",
-        )
-        (work / "Podfile").write_text(body)
-        assert "SP-DUPLICATE-SDK" in diagnostics(
-            fixture.cli(work, "install", succeeds=False)
-        )
+        for selected in ["Other", "Shared"]:
+            work, _ = create(fixture.root / ("duplicate-" + attribute + "-" + selected))
+            spec = work / "Kit/Kit.podspec.json"
+            data = json.loads(spec.read_text())
+            data[attribute] = "Shared"
+            spec.write_text(json.dumps(data))
+            package = work / "Package"
+            sources = package / "Sources" / selected
+            sources.mkdir(parents=True)
+            (sources / "API.swift").write_text("public struct PackageAPI {}\n")
+            (package / "Package.swift").write_text(
+                "// swift-tools-version: 6.0\nimport PackageDescription\n"
+                "let package = Package(name: \"Net\", products: [.library(name: \"Shared\", targets: [\""
+                + selected + "\"])], targets: [.target(name: \"" + selected + "\")])\n"
+            )
+            for args in [
+                ["init", "-b", "main"], ["add", "."],
+                ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "fixture"],
+                ["tag", "1.0.0"],
+            ]:
+                subprocess.run(["git", "-C", str(package), *args], check=True, capture_output=True)
+            body = (work / "Podfile").read_text().split("post_install")[0]
+            body = body.replace(
+                "target 'Demo' do\n",
+                "use_frameworks! :linkage => :static\ntarget 'Demo' do\n"
+                " spm 'Net', :git => " + repr(package.as_uri()) + ", :exact => '1.0.0', :products => ['Shared']\n",
+            )
+            (work / "Podfile").write_text(body)
+            if selected == "Shared":
+                assert "SP-DUPLICATE-SDK" in diagnostics(fixture.cli(work, "install", succeeds=False))
+            else:
+                fixture.cli(work, "install")
+                fixture.cli(work, "install", "--deployment", "--offline")
     fixture.verified += [
         "package_duplicate_check_scoped_to_consumer",
         "package_duplicate_check_uses_actual_module_name",
+        "package_product_name_can_match_a_different_pod_module",
     ]
 
 

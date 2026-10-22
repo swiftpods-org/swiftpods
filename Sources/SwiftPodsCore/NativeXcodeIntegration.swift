@@ -12,6 +12,7 @@ extension NativeXcode {
             packages[path] = integrator
         }
         var needsCompilerGraph = false
+        var needsModuleValidation = false
         for target in manifest["targets"] as? [[String: Any]] ?? [] {
             selectConsumer(target)
             let path = try projectPath(target)
@@ -22,10 +23,12 @@ extension NativeXcode {
             needsCompilerGraph = needsCompilerGraph || declarations.contains { !$0.link && !$0.products.isEmpty }
             let roots = try configuredDependencyRoots(target).values.reduce(into: Set<String>()) { $0.formUnion($1) }
             try packages[path.path]!.integrate(
-                target["packages"] as? [[String: Any]] ?? [], targetID: targetID, user: user,
-                installedModules: podModuleIdentities(roots, platform: (target["platform"] as? [String: String])?["name"] ?? "ios"))
+                target["packages"] as? [[String: Any]] ?? [], targetID: targetID, user: user)
+            needsModuleValidation = needsModuleValidation || packagesNeedModuleValidation(
+                user, target: targetID, roots: roots, platform: (target["platform"] as? [String: String])?["name"] ?? "ios")
         }
-        if needsCompilerGraph {
+        let resolvesPackages = needsCompilerGraph || needsModuleValidation
+        if resolvesPackages {
             // Xcode must see all current package requirements together, including manual references.
             for (path, user) in userProjects {
                 _ = packages[path]!.finish(user)
@@ -39,7 +42,7 @@ extension NativeXcode {
                 recordPackageWrite?(update.path)
             }
         }
-        let compilerGraph = try resolveSwiftPackageCompilerGraph()
+        let compilerGraph = try resolveSwiftPackageCompilerGraph(required: needsModuleValidation)
         var originalAttributes: [String: [String: Any]] = [:]
         var swiftRuntimePath: String?
         let previousAttributes = integrationSettings["_project_attributes"] as? [String: [String: Any]] ?? [:]
@@ -111,7 +114,7 @@ extension NativeXcode {
             }
             if usesSwift && swiftRuntimePath == nil { swiftRuntimePath = try swiftRuntimeSearchPath() }
             try validateExistingPackages(
-                user, target: targetID, roots: eligibleRoots, platform: platform["name"] ?? "ios")
+                user, target: targetID, roots: eligibleRoots, platform: platform["name"] ?? "ios", graph: compilerGraph)
             var sdkNames: [String: String] = [:]
             for sdk in targetSDKs {
                 if let before = sdkNames[sdk.productName], before != sdk.url.path {
@@ -349,7 +352,7 @@ extension NativeXcode {
         }
         integrationSettings["_swift_packages"] = packageRecords
         try packageModuleMaps.save()
-        for update in needsCompilerGraph ? [] : workspaceUpdates {
+        for update in resolvesPackages ? [] : workspaceUpdates {
             try update.save()
             workspaceFingerprints[update.path.path] = try FileFingerprint.tree(update.path)
             written.append(update.path)

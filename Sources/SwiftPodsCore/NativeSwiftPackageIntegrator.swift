@@ -119,7 +119,7 @@ final class NativeSwiftPackageIntegrator {
         return ["objects": objects, "targets": targets, "phases": phases, "dependencies": dependencies]
     }
 
-    func integrate(_ packages: [[String: Any]], targetID: String, user: NativePBX, installedModules: Set<String>) throws
+    func integrate(_ packages: [[String: Any]], targetID: String, user: NativePBX) throws
     {
         let declarations = try packages.map { try NativeSwiftPackageDeclaration($0) }
         guard let rootID = user.root["rootObject"] as? String else { return }
@@ -160,11 +160,6 @@ final class NativeSwiftPackageIntegrator {
             user.objects[rootID]?["packageReferences"] = refs
             declaredReferences.insert(reference)
             for product in package.products {
-                guard !installedModules.contains(product) else {
-                    throw Diagnostic(
-                        "SP-DUPLICATE-SDK", stage: "integrate",
-                        "Module \(product) is declared as both pod and Swift package")
-                }
                 var products = user.objects[targetID]?["packageProductDependencies"] as? [String] ?? []
                 let existingProduct = products.first(where: {
                     user.objects[$0]?["package"] as? String == reference

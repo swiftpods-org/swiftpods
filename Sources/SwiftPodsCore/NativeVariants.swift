@@ -174,6 +174,20 @@ struct NativeVariantPlan {
                 variants[variant.key]?.label += "-" + String(digest(Data(variant.key.utf8)).prefix(16))
             }
         }
+        // Target names also own configuration IDs, hook mappings and support paths.
+        let consumerLabels = targets.map { $0["label"] as? String ?? "Pods-" + ($0["name"] as? String ?? "") }
+        let reserved = Set((["Pods"] + consumerLabels + consumerLabels.map { $0 + "-Resources" }).map { $0.lowercased() })
+        var used = reserved.union(variants.values.map { $0.label.lowercased() })
+        for variant in variants.values.sorted(by: { $0.key < $1.key }) where reserved.contains(variant.label.lowercased()) {
+            let base = variant.label + "-" + String(digest(Data(variant.key.utf8)).prefix(16))
+            var label = base
+            var suffix = 0
+            while !used.insert(label.lowercased()).inserted {
+                suffix += 1
+                label = base + "-" + String(suffix)
+            }
+            variants[variant.key]?.label = label
+        }
         let frameworks = variants.values.filter { $0.mode != "library" }
         for group in Dictionary(
             grouping: frameworks,

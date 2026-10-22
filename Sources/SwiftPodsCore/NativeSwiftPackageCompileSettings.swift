@@ -49,25 +49,10 @@ enum NativeSwiftPackageCompileSettings {
         var result = Interface()
         var visited = Set<String>()
 
-        func visitProduct(_ name: String, package: NativeSwiftPackageGraph.Package) throws {
-            let document = try graph.manifest(package)
-            guard let product = (document["products"] as? [[String: Any]])?.first(where: { $0["name"] as? String == name }),
-                let targets = product["targets"] as? [String]
-            else { throw Diagnostic("SP-SPM-PRODUCT", stage: "integrate", "Package product not found: " + name, file: package.location) }
-            for target in targets { try visitTarget(target, package: package) }
-        }
-
-        func visitTarget(_ name: String, package: NativeSwiftPackageGraph.Package) throws {
+        func add(_ target: [String: Any], package: NativeSwiftPackageGraph.Package) throws {
+            let name = target["name"] as? String ?? ""
             guard visited.insert(package.directory.path + ":" + name).inserted else { return }
-            let document = try graph.manifest(package)
-            let targets = document["targets"] as? [[String: Any]] ?? []
-            guard let target = targets.first(where: { $0["name"] as? String == name }) else {
-                throw Diagnostic("SP-SPM-TARGET", stage: "integrate", "Package target not found: " + name, file: package.location)
-            }
             let kind = target["type"] as? String ?? "regular"
-            // Macro and plugin dependencies run on the host; their implementation
-            // modules and transitive dependencies are not consumer interfaces.
-            guard !["macro", "plugin"].contains(kind) else { return }
             if kind == "system", let config = target["pkgConfig"] as? String {
                 let exported = try NativeSwiftPackagePkgConfig.interface(
                     graph.pkgConfig(config, package: package), directory: package.directory, user: user)
@@ -115,47 +100,32 @@ enum NativeSwiftPackageCompileSettings {
                     if swift { result.maps.insert("$(GENERATED_MODULEMAP_DIR)/" + NativeBuildSetting.scalarLiteral(name) + ".modulemap") }
                 }
             }
-            for dependency in target["dependencies"] as? [[String: Any]] ?? [] {
-                guard let values = (dependency["target"] ?? dependency["byName"] ?? dependency["product"]) as? [Any],
-                    let dependencyName = values.first as? String
-                else { throw Diagnostic("SP-SPM-DEPENDENCY", stage: "integrate", "Invalid package target dependency", file: name) }
-                if let condition = values.last as? [String: Any], let platforms = condition["platformNames"] as? [String],
-                    !platforms.isEmpty && !platforms.contains(destination.manifestPlatform)
-                { continue }
-                if let condition = values.last as? [String: Any], condition.contains(where: {
-                    $0.key != "platformNames" && !($0.value is NSNull)
-                        && ($0.value as? [Any])?.isEmpty != true && ($0.value as? [String: Any])?.isEmpty != true
-                }) {
-                    throw Diagnostic("SP-SPM-CONDITION", stage: "integrate", "Unsupported package dependency condition", file: name)
-                }
-                if dependency["target"] != nil || (dependency["byName"] != nil && targets.contains { $0["name"] as? String == dependencyName }) {
-                    try visitTarget(dependencyName, package: package)
-                } else {
-                    if dependency["product"] != nil, values.count > 2,
-                        let aliases = values[2] as? [String: String], !aliases.isEmpty
-                    {
-                        throw Diagnostic("SP-SPM-ALIASES", stage: "integrate", "Module aliases cannot be exported as Objective-C compiler interfaces", file: dependencyName)
-                    }
-                    let explicit = values.count > 1 ? values[1] as? String : nil
-                    var matches: [NativeSwiftPackageGraph.Package] = []
-                    for entry in try graph.dependencies(package) {
-                        if let explicit, ![entry.package.identity, entry.name ?? ""].contains(where: { $0.lowercased() == explicit.lowercased() }) { continue }
-                        if (try graph.manifest(entry.package)["products"] as? [[String: Any]] ?? []).contains(where: { $0["name"] as? String == dependencyName }) {
-                            matches.append(entry.package)
-                        }
-                    }
-                    guard matches.count == 1, let resolved = matches.first else {
-                        throw Diagnostic("SP-SPM-PRODUCT", stage: "integrate", "Dependency product is missing or ambiguous: " + dependencyName, file: package.location)
-                    }
-                    try visitProduct(dependencyName, package: resolved)
-                }
-            }
         }
         for declaration in declarations where !declaration.link {
             let package = try graph.package(declaration.url)
-            for product in declaration.products { try visitProduct(product, package: package) }
+            for entry in try NativeSwiftPackageTargets.list(
+                declaration.products, package: package, graph: graph, platform: destination.manifestPlatform)
+            { try add(entry.target, package: entry.package) }
         }
         return result
+    }
+
+    private static func sdks(_ platform: String) -> [(String, String, String)] {
+        [
+            "osx": [("macosx", "osx", "device")],
+            "ios": [("iphoneos", "ios", "device"), ("iphonesimulator", "ios", "simulator"), ("macosx", "ios", "maccatalyst")],
+            "tvos": [("appletvos", "tvos", "device"), ("appletvsimulator", "tvos", "simulator")],
+            "watchos": [("watchos", "watchos", "device"), ("watchsimulator", "watchos", "simulator")],
+            "visionos": [("xros", "visionos", "device"), ("xrsimulator", "visionos", "simulator")],
+        ][platform] ?? []
+    }
+
+    static func destinations(_ platform: String, sdkContext: NativeSDKContext) -> [Destination] {
+        sdks(platform).flatMap { sdk, platform, variant in
+            sdkContext.architectures(sdk, target: variant == "maccatalyst" ? "iosmac" : sdk).map {
+                Destination(sdk: sdk, platform: platform, variant: variant, architecture: $0)
+            }
+        }
     }
 
     static func apply(
@@ -165,19 +135,10 @@ enum NativeSwiftPackageCompileSettings {
         for key in settings.keys where key.hasPrefix("SWIFTPODS_SPM_") {
             throw Diagnostic("SP-SPM-CONFLICT", stage: "integrate", "Reserved package compiler setting is user-owned: " + key)
         }
-        let sdks: [(String, String, String)] = [
-            "osx": [("macosx", "osx", "device")],
-            "ios": [("iphoneos", "ios", "device"), ("iphonesimulator", "ios", "simulator"), ("macosx", "ios", "maccatalyst")],
-            "tvos": [("appletvos", "tvos", "device"), ("appletvsimulator", "tvos", "simulator")],
-            "watchos": [("watchos", "watchos", "device"), ("watchsimulator", "watchos", "simulator")],
-            "visionos": [("xros", "visionos", "device"), ("xrsimulator", "visionos", "simulator")],
-        ][platform] ?? []
+        let sdks = sdks(platform)
         var rows: [(destination: Destination, interface: Interface)] = []
-        for (sdk, platform, variant) in sdks {
-            for architecture in sdkContext.architectures(sdk, target: variant == "maccatalyst" ? "iosmac" : sdk) {
-                let destination = Destination(sdk: sdk, platform: platform, variant: variant, architecture: architecture)
-                rows.append((destination, try interface(declarations, graph: graph, destination: destination, user: user)))
-            }
+        for destination in destinations(platform, sdkContext: sdkContext) {
+            rows.append((destination, try interface(declarations, graph: graph, destination: destination, user: user)))
         }
         guard let first = rows.first else { return }
         for variable in first.interface.values.keys.sorted() {

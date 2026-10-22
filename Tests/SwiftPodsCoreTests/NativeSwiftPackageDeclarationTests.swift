@@ -68,7 +68,7 @@ final class NativeSwiftPackageDeclarationTests: XCTestCase {
         for _ in 0..<2 {
             let integrator = NativeSwiftPackageIntegrator()
             try integrator.prepare(user, record: record)
-            try integrator.integrate([declaration(["link": false])], targetID: "APP", user: user, installedModules: [])
+            try integrator.integrate([declaration(["link": false])], targetID: "APP", user: user)
             record = integrator.finish(user)
             let dependencies = try XCTUnwrap(user.objects["APP"]?["dependencies"] as? [String])
             XCTAssertEqual(dependencies.count, 2)
@@ -80,7 +80,7 @@ final class NativeSwiftPackageDeclarationTests: XCTestCase {
         }
         let linked = NativeSwiftPackageIntegrator()
         try linked.prepare(user, record: record)
-        try linked.integrate([declaration()], targetID: "APP", user: user, installedModules: [])
+        try linked.integrate([declaration()], targetID: "APP", user: user)
         record = linked.finish(user)
         XCTAssertEqual(user.objects["APP"]?["dependencies"] as? [String], ["USER_DEPENDENCY"])
         XCTAssertEqual((user.objects["LINK"]?["files"] as? [String])?.count, 1)
@@ -96,7 +96,7 @@ final class NativeSwiftPackageDeclarationTests: XCTestCase {
         let user = try graph()
         let integrator = NativeSwiftPackageIntegrator()
         try integrator.prepare(user, record: nil)
-        try integrator.integrate([declaration(["link": false])], targetID: "APP", user: user, installedModules: [])
+        try integrator.integrate([declaration(["link": false])], targetID: "APP", user: user)
         let record = integrator.finish(user)
         let dependencies = try XCTUnwrap(user.objects["APP"]?["dependencies"] as? [String])
         user.objects["OTHER"] = ["isa": "PBXNativeTarget", "dependencies": dependencies]
@@ -112,7 +112,7 @@ final class NativeSwiftPackageDeclarationTests: XCTestCase {
         let user = try graph()
         let integrator = NativeSwiftPackageIntegrator()
         try integrator.prepare(user, record: nil)
-        try integrator.integrate([declaration(["link": false])], targetID: "APP", user: user, installedModules: [])
+        try integrator.integrate([declaration(["link": false])], targetID: "APP", user: user)
         _ = integrator.finish(user)
         let removal = NativeSwiftPackageIntegrator()
         try removal.prepare(user, record: nil)
@@ -212,7 +212,7 @@ final class NativeSwiftPackageDeclarationTests: XCTestCase {
         for version in ["1.0.0", "2.0.0"] {
             data["exact"] = version
             try integrator.prepare(user, record: record)
-            try integrator.integrate([data], targetID: "APP", user: user, installedModules: [])
+            try integrator.integrate([data], targetID: "APP", user: user)
             record = integrator.finish(user)
             XCTAssertEqual((user.objects["ROOT"]?["packageReferences"] as? [String])?.count, 1)
             let package = try XCTUnwrap(
@@ -232,7 +232,7 @@ final class NativeSwiftPackageDeclarationTests: XCTestCase {
         try integrator.prepare(user, record: nil)
         XCTAssertThrowsError(
             try integrator.integrate(
-                [declaration(), declaration(["products": [42]])], targetID: "APP", user: user, installedModules: []))
+                [declaration(), declaration(["products": [42]])], targetID: "APP", user: user))
         XCTAssertEqual(try jsonData(user.objects), before)
     }
 
