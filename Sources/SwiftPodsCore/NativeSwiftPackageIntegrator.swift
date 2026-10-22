@@ -46,6 +46,13 @@ final class NativeSwiftPackageIntegrator {
     }
 
     func finish(_ user: NativePBX) -> [String: Any] {
+        // Aggregate dependencies may be added after package resolution. Keep
+        // managed build-only edges after them on the first and later installs.
+        for (target, owned) in targetDependencies {
+            guard let current = user.objects[target]?["dependencies"] as? [String] else { continue }
+            let managed = Set(owned)
+            user.objects[target]?["dependencies"] = current.filter { !managed.contains($0) } + current.filter { managed.contains($0) }
+        }
         // A managed reference can also be used by a user-owned product or target.
         // Remove it only once every real user is gone; container lists are not users.
         var removed = true

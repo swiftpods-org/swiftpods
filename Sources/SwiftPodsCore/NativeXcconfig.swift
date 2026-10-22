@@ -20,6 +20,20 @@ extension NativeXcode {
         // PODS_ROOT remains directly visible to legacy project hooks.
         let retained: Set<String> = ["PODS_ROOT", "EXCLUDED_SOURCE_FILE_NAMES"]
         for (key, value) in settings where !retained.contains(key) {
+            if let variable = NativeSwiftPackageCompileSettings.references[key],
+                nativeStrings(value).contains("$(" + variable + ")")
+            {
+                let reference = "$(" + variable + ")"
+                var additions = nativeStrings(value).filter { $0 != reference }
+                for old in nativeStrings(original[key]) {
+                    if let index = additions.firstIndex(of: old) { additions.remove(at: index) }
+                }
+                generated[key] = ["$(inherited)"] + additions.filter { !["$(inherited)", "${inherited}"].contains($0) }
+                var kept = nativeStrings(original[key] ?? ["$(inherited)"])
+                if !kept.contains(reference) { kept.append(reference) }
+                direct[key] = kept
+                continue
+            }
             if let before = original[key], try jsonData(["value": before]) == jsonData(["value": value]) { continue }
             if let before = original[key] {
                 let previous = nativeStrings(before)

@@ -60,7 +60,11 @@ public final class ProjectState {
             && ((url.lastPathComponent == "project.pbxproj"
                 && url.deletingLastPathComponent().pathExtension == "xcodeproj")
                 || (url.lastPathComponent == "contents.xcworkspacedata"
-                    && url.deletingLastPathComponent().pathExtension == "xcworkspace"))
+                    && url.deletingLastPathComponent().pathExtension == "xcworkspace")
+                || (url.lastPathComponent == "Package.resolved"
+                    && url.deletingLastPathComponent().lastPathComponent == "swiftpm"
+                    && url.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent == "xcshareddata"
+                    && url.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().pathExtension == "xcworkspace"))
     }
     public func registerProject(_ file: URL) throws {
         let canonical = file.standardizedFileURL.resolvingSymlinksInPath()
@@ -318,6 +322,7 @@ public final class ProjectState {
                     enumerator.skipDescendants()
                 } else if url.pathExtension == "xcworkspace" {
                     paths.insert(relative + "/contents.xcworkspacedata")
+                    paths.insert(relative + "/xcshareddata/swiftpm/Package.resolved")
                     enumerator.skipDescendants()
                 }
             }

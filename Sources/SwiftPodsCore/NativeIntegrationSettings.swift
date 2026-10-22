@@ -31,7 +31,16 @@ enum NativeIntegrationSettings {
         var result = current
         let originals = record["original"] as? [String: Any] ?? [:]
         for (key, written) in record["written"] as? [String: Any] ?? [:] {
-            guard let value = result[key], try equal(value, written) else { continue }
+            guard let value = result[key] else { continue }
+            guard try equal(value, written) else {
+                if let variable = NativeSwiftPackageCompileSettings.references[key],
+                    nativeStrings(written).contains("$(" + variable + ")"),
+                    !nativeStrings(originals[key]).contains("$(" + variable + ")")
+                {
+                    result[key] = NativeSwiftPackageCompileSettings.removingReferences(value, key: key)
+                }
+                continue
+            }
             if let original = originals[key], !(original is NSNull) {
                 result[key] = original
             } else {

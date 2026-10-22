@@ -7,6 +7,9 @@ from Tests.Integration.native_xcconfig_tests import create
 from Tests.Regression.consumer_build_regressions import podfile
 from Tests.Regression.header_ownership_regressions import resources_in_app
 from Tests.Regression.input_contract_regressions import commit, git
+from Tests.Regression.swift_package_compiler_regressions import (
+    run as compiler_regressions,
+)
 from Tests.Regression.workspace_resource_regressions import read_project
 
 
@@ -147,3 +150,4 @@ def run(fixture):
     invalid_inputs(fixture)
     package_only_lifecycle(fixture)
     real_package_consumer(fixture)
+    compiler_regressions(fixture)

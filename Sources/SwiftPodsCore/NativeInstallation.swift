@@ -289,7 +289,9 @@ extension NativeCommandSession {
             project: project, manifest: manifest, resolution: resolution,
             integrateUserProjects: !options.contains("--no-integrate")
                 && installationOptions["integrate_targets"] as? Bool != false,
-            projectBindings: projectBindings)
+            projectBindings: projectBindings, packageEnvironment: environment.merging(overrides) { _, new in new },
+            updateSwiftPackages: action == "update" && args.allSatisfy { CommandOptions.hasOptionPrefix($0) },
+            cleanSwiftPackages: options.contains("--clean-install"), recordPackageWrite: writeEvent)
         if let previous = acceptedLegacyChecksum, let xcode {
             var aliases = xcode.integrationSettings["_manifest_checksum_aliases"] as? [String: String] ?? [:]
             aliases[previous] = manifestChecksum

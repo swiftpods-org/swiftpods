@@ -69,14 +69,26 @@ final class NativeXcode {
     var resourceBundleLabels: [String: String] = [:]
     var customModuleMaps: [String: URL] = [:]
     var vendorSDKs: [String: [NativeVendorSDK]] = [:]
-    let linkerSDKContext = NativeSDKContext()
+    lazy var linkerSDKContext = NativeSDKContext(environment: packageEnvironment)
+    let packageEnvironment: [String: String]
+    let updateSwiftPackages: Bool
+    let cleanSwiftPackages: Bool
+    let recordPackageWrite: ((URL) -> Void)?
+    lazy var packageModuleMaps = NativeSwiftPackageModuleMaps(
+        directory: project.appendingPathComponent("Pods/Target Support Files/SwiftPods-SPM"))
     init(
         project: URL, manifest: [String: Any], resolution: NativeResolution, integrateUserProjects: Bool = true,
-        projectBindings: [String: String]? = nil
+        projectBindings: [String: String]? = nil,
+        packageEnvironment: [String: String] = ProcessInfo.processInfo.environment, updateSwiftPackages: Bool = false,
+        cleanSwiftPackages: Bool = false, recordPackageWrite: ((URL) -> Void)? = nil
     ) throws {
         self.project = project
         self.manifest = manifest
         self.resolution = resolution
+        self.packageEnvironment = packageEnvironment
+        self.updateSwiftPackages = updateSwiftPackages
+        self.cleanSwiftPackages = cleanSwiftPackages
+        self.recordPackageWrite = recordPackageWrite
         graph = try NativePBX(project.appendingPathComponent("Pods/Pods.xcodeproj/project.pbxproj"))
         if FileManager.default.fileExists(atPath: graph.url.path),
             let previous = try? NativePBX(graph.url, existing: true)

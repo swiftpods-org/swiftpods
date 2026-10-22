@@ -11,6 +11,35 @@ extension NativeXcode {
             try integrator.prepare(user, record: packageRecords[path])
             packages[path] = integrator
         }
+        var needsCompilerGraph = false
+        for target in manifest["targets"] as? [[String: Any]] ?? [] {
+            selectConsumer(target)
+            let path = try projectPath(target)
+            guard let user = userProjects[path.path], let targetID = user.objects.first(where: {
+                $0.value["isa"] as? String == "PBXNativeTarget" && $0.value["name"] as? String == target["name"] as? String
+            })?.key else { continue }
+            let declarations = try NativeSwiftPackageDeclaration.list(target["packages"])
+            needsCompilerGraph = needsCompilerGraph || declarations.contains { !$0.link && !$0.products.isEmpty }
+            let roots = try configuredDependencyRoots(target).values.reduce(into: Set<String>()) { $0.formUnion($1) }
+            try packages[path.path]!.integrate(
+                target["packages"] as? [[String: Any]] ?? [], targetID: targetID, user: user,
+                installedModules: podModuleIdentities(roots, platform: (target["platform"] as? [String: String])?["name"] ?? "ios"))
+        }
+        if needsCompilerGraph {
+            // Xcode must see all current package requirements together, including manual references.
+            for (path, user) in userProjects {
+                _ = packages[path]!.finish(user)
+                try user.save()
+                recordPackageWrite?(user.url)
+            }
+            for update in workspaceUpdates {
+                try update.save()
+                workspaceFingerprints[update.path.path] = try FileFingerprint.tree(update.path)
+                written.append(update.path)
+                recordPackageWrite?(update.path)
+            }
+        }
+        let compilerGraph = try resolveSwiftPackageCompilerGraph()
         var originalAttributes: [String: [String: Any]] = [:]
         var swiftRuntimePath: String?
         let previousAttributes = integrationSettings["_project_attributes"] as? [String: [String: Any]] ?? [:]
@@ -288,15 +317,18 @@ extension NativeXcode {
                 if !searchRoots.isEmpty {
                     settings["SWIFT_INCLUDE_PATHS"] = nativeStrings(settings["SWIFT_INCLUDE_PATHS"]) + publicHeaders
                 }
+                let declarations = try NativeSwiftPackageDeclaration.list(target["packages"])
+                if let compilerGraph, declarations.contains(where: { !$0.link && !$0.products.isEmpty }) {
+                    try NativeSwiftPackageCompileSettings.apply(
+                        declarations, graph: compilerGraph, platform: platform["name"] ?? "ios", user: user,
+                        sdkContext: linkerSDKContext, settings: &settings)
+                }
                 settings = try consumerConfiguration(
                     target, configuration: config, user: user, recordKey: recordKey, original: original,
                     settings: settings)
                 user.objects[config]?["buildSettings"] = settings
                 integrationSettings[recordKey] = try NativeIntegrationSettings.record(before: original, after: settings)
             }
-            try packages[path.path]!.integrate(
-                target["packages"] as? [[String: Any]] ?? [], targetID: targetID, user: user,
-                installedModules: podModuleIdentities(eligibleRoots, platform: platform["name"] ?? "ios"))
         }
         var attributeRecords: [String: [String: Any]] = [:]
         for user in userProjects.values {
@@ -316,7 +348,8 @@ extension NativeXcode {
             written.append(user.url)
         }
         integrationSettings["_swift_packages"] = packageRecords
-        for update in workspaceUpdates {
+        try packageModuleMaps.save()
+        for update in needsCompilerGraph ? [] : workspaceUpdates {
             try update.save()
             workspaceFingerprints[update.path.path] = try FileFingerprint.tree(update.path)
             written.append(update.path)
