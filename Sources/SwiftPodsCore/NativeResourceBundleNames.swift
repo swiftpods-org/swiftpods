@@ -42,9 +42,7 @@ extension NativeXcode {
                 if kind == .test, attributes["requires_app_host"] as? Bool == true,
                     attributes["app_host_name"] == nil
                 {
-                    reserved.insert(
-                        "AppHost-" + variant.label + "-"
-                            + (try spec.testType(request.name, platform: request.platform)).label + "-Tests")
+                    reserved.insert(try defaultAppHostLabel(spec, request: request))
                 }
                 owners.append((request.name, label, attributes))
             }

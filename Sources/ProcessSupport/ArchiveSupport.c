@@ -1,6 +1,8 @@
 #include "ArchiveHeaders/archive.h"
 #include "ArchiveHeaders/archive_entry.h"
 #include "ProcessSupport.h"
+#include <CoreFoundation/CoreFoundation.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -35,6 +37,35 @@ typedef struct {
     int hardlink;
 } entry_path;
 
+/* Compare paths as they can alias on macOS volumes. Preserve traversal
+   components: lexical normalization before following links would hide escapes. */
+static char *filesystem_key(const char *path) {
+    CFStringRef input = CFStringCreateWithCString(kCFAllocatorDefault, path, kCFStringEncodingUTF8);
+    if (!input)
+        return NULL;
+    CFMutableStringRef key = CFStringCreateMutableCopy(kCFAllocatorDefault, 0, input);
+    CFRelease(input);
+    if (!key)
+        return NULL;
+    CFLocaleRef locale = CFLocaleCreate(kCFAllocatorDefault, CFSTR("en_US_POSIX"));
+    if (!locale) {
+        CFRelease(key);
+        return NULL;
+    }
+    CFStringNormalize(key, kCFStringNormalizationFormD);
+    CFStringFold(key, kCFCompareCaseInsensitive, locale);
+    CFStringNormalize(key, kCFStringNormalizationFormD);
+    CFRelease(locale);
+    CFIndex maximum = CFStringGetMaximumSizeForEncoding(CFStringGetLength(key), kCFStringEncodingUTF8);
+    char *result = maximum < 0 || maximum == LONG_MAX ? NULL : malloc((size_t)maximum + 1);
+    if (result && !CFStringGetCString(key, result, maximum + 1, kCFStringEncodingUTF8)) {
+        free(result);
+        result = NULL;
+    }
+    CFRelease(key);
+    return result;
+}
+
 static char *normalized_name(const char *name) {
     char *copy = strdup(name), *result = calloc(strlen(name) + 1, 1), *state = NULL;
     if (!copy || !result) {
@@ -57,10 +88,12 @@ static char *normalized_name(const char *name) {
         strcat(result, part);
     }
     free(copy);
-    return result;
+    char *key = filesystem_key(result);
+    free(result);
+    return key;
 }
 
-static int resolves_inside(const char *input, const entry_path *entries, size_t count) {
+static int resolves_inside(const char *input, const entry_path *entries, size_t count, int follow_final_symlink) {
     char *pending = strdup(input);
     if (!pending)
         return 0;
@@ -94,6 +127,13 @@ static int resolves_inside(const char *input, const entry_path *entries, size_t 
                 if (!entries[index].target || strcmp(entries[index].name, resolved))
                     continue;
                 if (!entries[index].hardlink) {
+                    /* A hardlink preserves a final symlink's inode. Its relative
+                       target would then be interpreted from a different parent. */
+                    if (!follow_final_symlink && (!state || !*state)) {
+                        free(resolved);
+                        free(pending);
+                        return 0;
+                    }
                     char *slash = strrchr(resolved, '/');
                     if (slash)
                         *slash = '\0';
@@ -130,6 +170,10 @@ static int resolves_inside(const char *input, const entry_path *entries, size_t 
 
 int sp_validate_archive(const char *path, char *message, size_t capacity) {
     struct archive *reader = archive_read_new();
+    if (!reader) {
+        snprintf(message, capacity, "Cannot allocate archive reader");
+        return 1;
+    }
     archive_read_support_filter_all(reader);
     archive_read_support_format_all(reader);
     int status = archive_read_open_filename(reader, path, 10240);
@@ -143,8 +187,9 @@ int sp_validate_archive(const char *path, char *message, size_t capacity) {
         const char *hardlink = archive_entry_hardlink(entry);
         mode_t type = archive_entry_filetype(entry);
         int depth = path_depth(name, 0);
-        if (depth < 0 || (symlink && path_depth(symlink, depth > 0 ? depth - 1 : 0) < 0) ||
-            (hardlink && path_depth(hardlink, 0) < 0) ||
+        if (depth < 0 || (symlink && hardlink) || (type == AE_IFLNK && !symlink) ||
+            (symlink && (!*symlink || path_depth(symlink, depth > 0 ? depth - 1 : 0) < 0)) ||
+            (hardlink && (!*hardlink || path_depth(hardlink, 0) < 0)) ||
             (type != AE_IFREG && type != AE_IFDIR && type != AE_IFLNK && !hardlink)) {
             snprintf(message, capacity, "Archive contains an escaping path, unsafe link or special file: %s",
                      name ? name : "(missing)");
@@ -159,7 +204,7 @@ int sp_validate_archive(const char *path, char *message, size_t capacity) {
         }
         entries = grown;
         entries[count].name = normalized_name(name);
-        entries[count].target = (symlink || hardlink) ? strdup(symlink ? symlink : hardlink) : NULL;
+        entries[count].target = (symlink || hardlink) ? filesystem_key(symlink ? symlink : hardlink) : NULL;
         entries[count].hardlink = hardlink != NULL;
         count++;
         if (!entries[count - 1].name ||
@@ -179,18 +224,25 @@ int sp_validate_archive(const char *path, char *message, size_t capacity) {
     for (size_t link = 0; !failed && link < count; link++) {
         if (!entries[link].target)
             continue;
-        if (!resolves_inside(entries[link].name, entries, count)) {
-            snprintf(message, capacity, "Archive link chain escapes its root or cycles: %s", entries[link].name);
-            failed = 1;
-            break;
-        }
         for (size_t index = 0; index < count; index++) {
             size_t length = strlen(entries[link].name);
+            if (!strcmp(entries[index].name, entries[link].name) &&
+                (!entries[index].target || entries[index].hardlink != entries[link].hardlink ||
+                 strcmp(entries[index].target, entries[link].target))) {
+                snprintf(message, capacity, "Archive has conflicting link entries: %s", entries[link].name);
+                failed = 1;
+                break;
+            }
             if (!strncmp(entries[index].name, entries[link].name, length) && entries[index].name[length] == '/') {
                 snprintf(message, capacity, "Archive writes through a link ancestor: %s", entries[index].name);
                 failed = 1;
                 break;
             }
+        }
+        if (!failed && !resolves_inside(entries[link].name, entries, count, !entries[link].hardlink)) {
+            snprintf(message, capacity, "Archive link chain escapes its root, cycles or hardlinks a symlink: %s",
+                     entries[link].name);
+            failed = 1;
         }
     }
     for (size_t index = 0; index < count; index++) {

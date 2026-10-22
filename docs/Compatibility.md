@@ -76,6 +76,11 @@ replacing dependency resolution.
 `swiftpods install --deployment` rejects changes requiring a new lockfile.
 `--offline` requires cached specifications and sources. A missing or corrupted
 cache entry is an error; it does not authorize selecting another version.
+Content-cache inputs may be symbolic links to regular files; publication stores
+an independent immutable snapshot without changing the source file's permissions.
+Archive validation accounts for case and canonical Unicode path aliases on macOS.
+It rejects conflicting link entries, writes through link ancestors and hardlinks
+that would relocate symbolic links, before extraction begins.
 
 ## Hooks and project objects
 
@@ -124,8 +129,14 @@ resource targets receive stable suffixes. Their module names stay unchanged;
 their build configurations, hooks and support files remain independent.
 Case variants such as `Foo` and `foo` also receive distinct target labels and
 archive names, including when a literal target already uses a generated suffix.
+Unicode equivalents such as `Straße` and `STRASSE` use the same protection.
+Consumer aggregate names and their `-Resources` names are allocated together,
+including consumers with the same name in different projects.
+App/test specs and generated app hosts also reserve the existing target namespace.
 Pod resource bundles also reserve aggregate and consumer resource target names,
 keeping their configurations and resource build phases separate.
+Bundle products that differ only in case are rejected when they share a build
+output or a consumer destination, preventing resources from being overwritten.
 
 Xcconfig selectors accept whitespace before and between conditions; whitespace
 within a condition's name or pattern remains literal. Embedded NUL cannot cause
@@ -187,6 +198,8 @@ matching resolved package graph from the SwiftPods cache.
 Linked Swift packages retain their module aliases during duplicate checks.
 Pod custom module maps supply their declared module names; nonmodular static
 pods do not claim a module just because their podspec has a module name.
+Vendored SDK checks use the selected slice's Clang module map and Swift module
+names, independently of the binary product's filename.
 
 Xcconfig assignments use `=`. Xcode rejects `+=` and `?=` during a build,
 even when `-showBuildSettings` succeeds. SwiftPods rejects them before hooks

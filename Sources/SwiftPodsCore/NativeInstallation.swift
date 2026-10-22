@@ -77,6 +77,9 @@ extension NativeCommandSession {
         let projectBindings = NativeIntegrationLocation.projectBindings(
             projectDeclarations, analyzed: manifest, root: project)
         if let dsl { manifest = try dsl.object("analyzed_podfile", ["targets": manifest["targets"] ?? []]) }
+        // Generated labels belong to the build graph, not the user's locked declarations.
+        let declarations = manifest
+        manifest = try NativeConsumerLabels.normalized(manifest, project: project)
         guard let targets = manifest["targets"] as? [[String: Any]], !targets.isEmpty else {
             throw Diagnostic("SP-DSL-TARGET", stage: "resolve", "Podfile needs at least one concrete target")
         }
@@ -103,7 +106,7 @@ extension NativeCommandSession {
         let lock = try NativeLock(lockURL)
         let checksum = NativeLock.sha1(try Data(contentsOf: manifestPath))
         let contractManifest = NativeIntegrationLocation.contractManifest(
-            manifest, bindings: projectBindings, root: project)
+            declarations, bindings: projectBindings, root: project)
         let manifestChecksum = digest(try jsonData(contractManifest))
         var acceptedLegacyChecksum: String?
         if options.contains("--deployment"), let previous = lock.manifestChecksum, previous != manifestChecksum {

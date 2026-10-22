@@ -28,9 +28,7 @@ extension NativeXcode {
                     }
                     host = target
                 } else {
-                    let name =
-                        "AppHost-" + libraryLabel(request.root, request.platform) + "-"
-                        + (try spec.testType(request.name, platform: request.platform)).label + "-Tests"
+                    let name = try defaultAppHostLabel(spec, request: request)
                     if let existing = apps[variantKey(name, request.platform)] {
                         host = existing
                     } else {
@@ -75,6 +73,7 @@ extension NativeXcode {
     func supplementaryLabel(_ spec: NativeSpec, request: NativeDependency, kind: NativeSpecKind) throws
         -> String
     {
+        if let label = supplementaryLabels[try supplementaryLabelIdentity(request)] { return label }
         let infix =
             kind == .test ? "-" + (try spec.testType(request.name, platform: request.platform)).label + "-" : "-"
         return libraryLabel(request.root, request.platform) + infix
@@ -288,7 +287,7 @@ extension NativeXcode {
         var bundleDestinations = Set<String>()
         for product in libraryBundles {
             let name = graph.objects[product]?["path"] as? String ?? ""
-            guard bundleDestinations.insert(name).inserted else {
+            guard bundleDestinations.insert(name.lowercased()).inserted else {
                 throw Diagnostic(
                     "SP-XCODE-RESOURCE", stage: "integrate", "Resource bundle product name is already used",
                     file: name)
@@ -305,7 +304,7 @@ extension NativeXcode {
                 throw Diagnostic(
                     "SP-XCODE-RESOURCE", stage: "integrate", "Invalid resource bundle name", file: request.name)
             }
-            guard bundleDestinations.insert(bundle + ".bundle").inserted else {
+            guard bundleDestinations.insert(bundle.lowercased() + ".bundle").inserted else {
                 throw Diagnostic(
                     "SP-XCODE-RESOURCE", stage: "integrate", "Resource bundle product name is already used",
                     file: bundle)

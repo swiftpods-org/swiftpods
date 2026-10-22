@@ -59,7 +59,14 @@ final class ContentStore {
     }
 
     func put(file: URL, origin: [String: Any]) throws -> [String: Any] {
-        let hash = try FileFingerprint.file(file)
+        // copyItem preserves a symlink, while hashing and chmod follow it.
+        // Publish a snapshot of the physical regular file instead.
+        let source = file.resolvingSymlinksInPath()
+        guard (try? FileManager.default.attributesOfItem(atPath: source.path)[.type]) as? FileAttributeType == .typeRegular
+        else {
+            throw Diagnostic("SP-CACHE-SOURCE", stage: "cache", "Cache input must resolve to a regular file", file: file.path)
+        }
+        let hash = try FileFingerprint.file(source)
         let destination = try object(hash)
         try FileManager.default.createDirectory(
             at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -74,8 +81,10 @@ final class ContentStore {
             let pending = destination.deletingLastPathComponent().appendingPathComponent(
                 ".pending-" + UUID().uuidString)
             defer { try? FileManager.default.removeItem(at: pending) }
-            try FileManager.default.copyItem(at: file, to: pending)
-            guard try FileFingerprint.file(pending) == hash else {
+            try FileManager.default.copyItem(at: source, to: pending)
+            guard try FileManager.default.attributesOfItem(atPath: pending.path)[.type] as? FileAttributeType == .typeRegular,
+                try FileFingerprint.file(pending) == hash
+            else {
                 throw Diagnostic("SP-CACHE-CHANGED", stage: "cache", "Download changed while being published")
             }
             try FileManager.default.setAttributes([.posixPermissions: 0o444], ofItemAtPath: pending.path)

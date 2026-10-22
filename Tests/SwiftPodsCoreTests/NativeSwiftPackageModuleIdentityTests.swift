@@ -158,6 +158,82 @@ final class NativeSwiftPackageModuleIdentityTests: XCTestCase {
         }
     }
 
+    private func vendor(_ engine: NativeXcode, framework: Bool, module: String?) throws -> NativeVendorSDK {
+        let root = engine.project.appendingPathComponent("Vendor")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let source = root.appendingPathComponent("Value.c")
+        let object = root.appendingPathComponent("Value.o")
+        try Data("int vendor_value(void) { return 42; }\n".utf8).write(to: source)
+        try command("/usr/bin/xcrun", ["clang", "-Werror", "-c", source.path, "-o", object.path])
+        let library = root.appendingPathComponent(framework ? "SDK.framework/SDK" : "Slice/libSDK.a")
+        let headers = library.deletingLastPathComponent().appendingPathComponent("Headers")
+        try FileManager.default.createDirectory(at: headers, withIntermediateDirectories: true)
+        try command("/usr/bin/ar", ["rcs", library.path, object.path])
+        let map = framework
+            ? library.deletingLastPathComponent().appendingPathComponent("Modules/module.modulemap")
+            : headers.appendingPathComponent("module.modulemap")
+        if let module {
+            try FileManager.default.createDirectory(at: map.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(("module " + module + " { export * }\n").utf8).write(to: map)
+        }
+        if framework { return try NativeVendorSDK(library.deletingLastPathComponent()) }
+        let container = root.appendingPathComponent("Library.xcframework")
+        try FileManager.default.createDirectory(at: container, withIntermediateDirectories: true)
+        try FileManager.default.moveItem(at: library.deletingLastPathComponent(), to: container.appendingPathComponent("Slice"))
+        #if arch(arm64)
+            let architecture = "arm64"
+        #else
+            let architecture = "x86_64"
+        #endif
+        let info: [String: Any] = [
+            "XCFrameworkFormatVersion": "1.0",
+            "AvailableLibraries": [[
+                "LibraryIdentifier": "Slice", "LibraryPath": "libSDK.a", "HeadersPath": "Headers",
+                "SupportedPlatform": "macos", "SupportedArchitectures": [architecture],
+            ]],
+        ]
+        try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
+            .write(to: container.appendingPathComponent("Info.plist"))
+        return try NativeVendorSDK(container)
+    }
+
+    func testVendoredModuleMapsReplaceTheBinaryProductBasename() throws {
+        for framework in [false, true] {
+            let (engine, user, graph) = try fixture(product: "Tools", selected: "SDK", module: "Wrapper")
+            engine.vendorSDKs["Kit:osx"] = [try vendor(engine, framework: framework, module: "Other")]
+            try validate(engine, user, graph)
+        }
+    }
+
+    func testActualVendoredModulesConflictEvenWhenTheBinaryHasAnotherName() throws {
+        for framework in [false, true] {
+            let (engine, user, graph) = try fixture(product: "Tools", selected: "Other", module: "Wrapper")
+            engine.vendorSDKs["Kit:osx"] = [try vendor(engine, framework: framework, module: "Other")]
+            XCTAssertThrowsError(try validate(engine, user, graph)) {
+                XCTAssertEqual(($0 as? Diagnostic)?.code, "SP-DUPLICATE-SDK")
+            }
+        }
+    }
+
+    func testNonmodularVendoredBinariesDoNotClaimTheirProductBasename() throws {
+        for framework in [false, true] {
+            let (engine, user, graph) = try fixture(product: "Tools", selected: "SDK", module: "Wrapper")
+            engine.vendorSDKs["Kit:osx"] = [try vendor(engine, framework: framework, module: nil)]
+            try validate(engine, user, graph)
+        }
+    }
+
+    func testVendoredSwiftModulesAreCheckedAlongsideClangModuleMaps() throws {
+        let (engine, user, graph) = try fixture(product: "Tools", selected: "SDK", module: "Wrapper")
+        let sdk = try vendor(engine, framework: true, module: "Other")
+        try FileManager.default.createDirectory(
+            at: sdk.url.appendingPathComponent("Modules/SDK.swiftmodule"), withIntermediateDirectories: true)
+        engine.vendorSDKs["Kit:osx"] = [sdk]
+        XCTAssertThrowsError(try validate(engine, user, graph)) {
+            XCTAssertEqual(($0 as? Diagnostic)?.code, "SP-DUPLICATE-SDK")
+        }
+    }
+
     func testLinkedPackageAliasesUseTheActualRenamedModule() throws {
         for module in ["Shared", "AliasedShared"] {
             let (engine, user, previous) = try fixture(product: "Tools", module: module)

@@ -48,34 +48,138 @@ final class NativeGeneratedNameCollisionTests: XCTestCase {
     }
 
     func testCaseVariantsKeepDistinctArchivesConfigurationsAndSupportPaths() throws {
-        let original = try fixture(name: "Foo")
-        let upper = try XCTUnwrap(original.resolution.specs["Foo"])
-        let lower = try NativeSpec(
-            data: upper.data.merging(["name": "foo", "module_name": "LowerAPI"]) { _, new in new },
+        func filesystemKey(_ value: String) -> String {
+            value.folding(options: .caseInsensitive, locale: Locale(identifier: "en_US_POSIX"))
+        }
+        for (first, second) in [("Foo", "foo"), ("Σ", "ς"), ("Straße", "STRASSE"), ("ﬀ", "ff")] {
+            let original = try fixture(name: first)
+            let upper = try XCTUnwrap(original.resolution.specs[first])
+            let lower = try NativeSpec(
+                data: upper.data.merging(["name": second, "module_name": "LowerAPI"]) { _, new in new },
+                directory: original.project)
+            var manifest = original.manifest
+            var targets = try XCTUnwrap(manifest["targets"] as? [[String: Any]])
+            targets[0]["dependencies"] = [["name": first], ["name": second]]
+            manifest["targets"] = targets
+            let engine = try NativeXcode(
+                project: original.project, manifest: manifest,
+                resolution: NativeResolution(specs: [first: upper, second: lower], requests: []),
+                integrateUserProjects: false)
+            try engine.generate()
+            let keys = [first + ":osx", second + ":osx"]
+            let labels = keys.compactMap { engine.variantPlan?.variants[$0]?.label }
+            XCTAssertEqual(Set(labels.map(filesystemKey)).count, 2, first + "/" + second)
+            let products = try keys.map {
+                let target = try XCTUnwrap(engine.libraryTargets[$0])
+                let product = try XCTUnwrap(engine.graph.objects[target]?["productReference"] as? String)
+                return try XCTUnwrap(engine.graph.objects[product]?["path"] as? String)
+            }
+            XCTAssertEqual(Set(products.map(filesystemKey)).count, 2, first + "/" + second)
+            let paths = try labels.map {
+                let config = try XCTUnwrap(engine.configurations[$0]?["Debug"])
+                let file = try XCTUnwrap(engine.graph.objects[config]?["baseConfigurationReference"] as? String)
+                return filesystemKey(try NativeBuildSettings.file(file, graph: engine.graph).path)
+            }
+            XCTAssertEqual(Set(paths).count, 2, first + "/" + second)
+            let outputs = products.map { engine.project.appendingPathComponent($0) }
+            try Data("first archive".utf8).write(to: outputs[0])
+            try Data("second archive".utf8).write(to: outputs[1])
+            XCTAssertEqual(try Data(contentsOf: outputs[0]), Data("first archive".utf8))
+        }
+    }
+
+    func testUnicodeAliasesOfReservedTargetLabelsAreDisambiguated() {
+        let labels = NativeTargetNames.assign(["pod": "Straße"], reserved: ["STRASSE"])
+        XCTAssertNotEqual(
+            labels["pod"]?.folding(options: .caseInsensitive, locale: Locale(identifier: "en_US_POSIX")), "strasse")
+    }
+
+    func testConsumerAggregatesAndResourceTargetsKeepDistinctNamesAndConfigurations() throws {
+        for (first, second) in [("App", "app"), ("A", "A-Resources"), ("Straße", "STRASSE")] {
+            let original = try fixture(name: "Kit", consumer: first)
+            var manifest = original.manifest
+            var targets = try XCTUnwrap(manifest["targets"] as? [[String: Any]])
+            var peer = targets[0]
+            peer["name"] = second
+            targets.append(peer)
+            manifest["targets"] = targets
+            let engine = try NativeXcode(
+                project: original.project, manifest: manifest, resolution: original.resolution,
+                integrateUserProjects: false)
+            try engine.generate()
+            let names = try engine.targetIDs.map { try XCTUnwrap(engine.graph.objects[$0]?["name"] as? String) }
+            let keys = names.map { $0.folding(options: .caseInsensitive, locale: Locale(identifier: "en_US_POSIX")) }
+            XCTAssertEqual(Set(keys).count, keys.count, first + "/" + second)
+            let lists = try engine.targetIDs.map {
+                try XCTUnwrap(engine.graph.objects[$0]?["buildConfigurationList"] as? String)
+            }
+            XCTAssertEqual(Set(lists).count, lists.count)
+        }
+    }
+
+    func testConsumerLabelsAreStableAcrossOrderingAndIndependentProjects() throws {
+        let root = FileManager.default.temporaryDirectory
+        let targets: [[String: Any]] = [
+            ["name": "App", "project": "First.xcodeproj"], ["name": "App", "project": "Second.xcodeproj"],
+        ]
+        let first = try NativeConsumerLabels.normalized(["targets": targets], project: root)
+        let repeated = try NativeConsumerLabels.normalized(first, project: root)
+        XCTAssertEqual(try jsonData(first), try jsonData(repeated))
+        let reordered = try NativeConsumerLabels.normalized(["targets": Array(targets.reversed())], project: root)
+        let entries = try XCTUnwrap(first["targets"] as? [[String: Any]])
+        let reversed = try XCTUnwrap(reordered["targets"] as? [[String: Any]])
+        XCTAssertEqual(try jsonData(entries), try jsonData(Array(reversed.reversed())))
+        XCTAssertEqual(Set(entries.compactMap { $0["label"] as? String }).count, 2)
+        XCTAssertThrowsError(try NativeConsumerLabels.normalized(["targets": [targets[0], targets[0]]], project: root)) {
+            XCTAssertEqual(($0 as? Diagnostic)?.code, "SP-XCODE-TARGET")
+        }
+    }
+
+    func testSupplementaryCaseVariantsKeepDistinctTargetsAndProducts() throws {
+        let original = try fixture(name: "Kit")
+        let base = try XCTUnwrap(original.resolution.specs["Kit"])
+        let spec = try NativeSpec(
+            data: base.data.merging(["appspecs": [["name": "Example"], ["name": "example"]]]) { _, new in new },
             directory: original.project)
         var manifest = original.manifest
         var targets = try XCTUnwrap(manifest["targets"] as? [[String: Any]])
-        targets[0]["dependencies"] = [["name": "Foo"], ["name": "foo"]]
+        targets[0]["dependencies"] = [["name": "Kit", "options": ["appspecs": ["Example", "example"]]]]
         manifest["targets"] = targets
         let engine = try NativeXcode(
             project: original.project, manifest: manifest,
-            resolution: NativeResolution(specs: ["Foo": upper, "foo": lower], requests: []),
+            resolution: NativeResolution(specs: ["Kit": spec], requests: []), integrateUserProjects: false)
+        try engine.generate()
+        let products = try engine.supplementaryTargets.values.flatMap(\.values).map {
+            let product = try XCTUnwrap(engine.graph.objects[$0]?["productReference"] as? String)
+            return try XCTUnwrap(engine.graph.objects[product]?["path"] as? String)
+                .folding(options: .caseInsensitive, locale: Locale(identifier: "en_US_POSIX"))
+        }
+        XCTAssertEqual(products.count, 2)
+        XCTAssertEqual(Set(products).count, 2)
+    }
+
+    func testDefaultAppHostCannotCollideWithALibraryTarget() throws {
+        let original = try fixture(name: "Kit")
+        let base = try XCTUnwrap(original.resolution.specs["Kit"])
+        let spec = try NativeSpec(
+            data: base.data.merging(["testspecs": [["name": "Tests", "requires_app_host": true]]]) { _, new in new },
+            directory: original.project)
+        let literal = "AppHost-Kit-Unit-Tests"
+        let peer = try NativeSpec(data: ["name": literal, "version": "1.0"], directory: original.project)
+        var manifest = original.manifest
+        var targets = try XCTUnwrap(manifest["targets"] as? [[String: Any]])
+        targets[0]["dependencies"] = [
+            ["name": "Kit", "options": ["testspecs": ["Tests"]]], ["name": literal],
+        ]
+        manifest["targets"] = targets
+        let engine = try NativeXcode(
+            project: original.project, manifest: manifest,
+            resolution: NativeResolution(specs: ["Kit": spec, literal: peer], requests: []),
             integrateUserProjects: false)
         try engine.generate()
-        let labels = ["Foo:osx", "foo:osx"].compactMap { engine.variantPlan?.variants[$0]?.label }
-        XCTAssertEqual(Set(labels.map { $0.lowercased() }).count, 2)
-        let products = try ["Foo:osx", "foo:osx"].map {
-            let target = try XCTUnwrap(engine.libraryTargets[$0])
-            let product = try XCTUnwrap(engine.graph.objects[target]?["productReference"] as? String)
-            return try XCTUnwrap(engine.graph.objects[product]?["path"] as? String)
-        }
-        XCTAssertEqual(Set(products.map { $0.lowercased() }).count, 2)
-        let paths = try labels.map {
-            let config = try XCTUnwrap(engine.configurations[$0]?["Debug"])
-            let file = try XCTUnwrap(engine.graph.objects[config]?["baseConfigurationReference"] as? String)
-            return try NativeBuildSettings.file(file, graph: engine.graph).path.lowercased()
-        }
-        XCTAssertEqual(Set(paths).count, 2)
+        let names = engine.targetIDs.compactMap { engine.graph.objects[$0]?["name"] as? String }
+        XCTAssertEqual(Set(names).count, names.count)
+        XCTAssertTrue(names.contains(literal))
     }
 
     func testGeneratedSuffixCannotOverwriteAnUnambiguousLiteralName() {

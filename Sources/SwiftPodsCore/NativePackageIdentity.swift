@@ -1,7 +1,9 @@
 import Foundation
 
 extension NativeXcode {
-    func podModuleIdentities(_ roots: Set<String>, platform: String) throws -> Set<String> {
+    func podModuleIdentities(
+        _ roots: Set<String>, platform: String, destination: NativeSwiftPackageCompileSettings.Destination
+    ) throws -> Set<String> {
         var names = Set<String>()
         for root in roots.sorted() {
             guard let spec = resolution.specs[root], let directory = spec.directory,
@@ -23,9 +25,13 @@ extension NativeXcode {
             if swift { names.insert(spec.moduleName) }
         }
         for sdk in roots.flatMap({ vendorSDKs[variantKey($0, platform)] ?? [] }) {
-            var name = (sdk.productName as NSString).deletingPathExtension
-            if sdk.productName.hasSuffix(".a"), name.hasPrefix("lib") { name = String(name.dropFirst(3)) }
-            names.insert(name)
+            for slice in sdk.slices
+            where (slice.platform == destination.platform || slice.platform == "unknown")
+                && (slice.variant == destination.variant || slice.variant == "unknown")
+                && slice.architectures.contains(destination.architecture)
+            {
+                names.formUnion(try NativeVendorModules.names(slice))
+            }
         }
         return names
     }
@@ -45,9 +51,13 @@ extension NativeXcode {
     func validateExistingPackages(
         _ user: NativePBX, target: String, roots: Set<String>, platform: String, graph: NativeSwiftPackageGraph?
     ) throws {
-        let identities = try podModuleIdentities(roots, platform: platform)
-        guard let graph, !identities.isEmpty else { return }
-        for dependency in packageProducts(user, target: target) {
+        let products = packageProducts(user, target: target)
+        guard let graph, !products.isEmpty else { return }
+        let destinations = try NativeSwiftPackageCompileSettings.destinations(platform, sdkContext: linkerSDKContext).map {
+            ($0, try podModuleIdentities(roots, platform: platform, destination: $0))
+        }
+        guard destinations.contains(where: { !$0.1.isEmpty }) else { return }
+        for dependency in products {
             guard let value = user.objects[dependency], let product = value["productName"] as? String else { continue }
             let package: NativeSwiftPackageGraph.Package
             if let reference = value["package"] as? String, let object = user.objects[reference] {
@@ -73,7 +83,7 @@ extension NativeXcode {
                 }
                 package = resolved
             }
-            for destination in NativeSwiftPackageCompileSettings.destinations(platform, sdkContext: linkerSDKContext) {
+            for (destination, identities) in destinations where !identities.isEmpty {
                 let modules = try NativeSwiftPackageModules.names(
                     product, package: package, graph: graph, destination: destination)
                 if let duplicate = identities.intersection(modules).sorted().first {

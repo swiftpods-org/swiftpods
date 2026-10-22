@@ -3,6 +3,7 @@ import Foundation
 extension NativeXcode {
     /// Builds the dependency project in dependency order before user integration.
     func generate() throws {
+        try prepareSupplementaryLabels()
         try prepareResourceBundleLabels()
         let variants = variantPlan?.variants.values.sorted(by: { $0.label < $1.label }) ?? []
         // Reserve SDK names before creating any products; a later pod can supply

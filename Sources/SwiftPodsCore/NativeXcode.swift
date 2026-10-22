@@ -18,6 +18,7 @@ final class NativeXcode {
     var libraryTargets: [String: String] = [:]
     var resourceBundleTargets: [String: [String]] = [:]
     var supplementaryTargets: [String: [String: String]] = [:]
+    var supplementaryLabels: [String: String] = [:]
     var supplementaryBundleTargets: [String: [String: [String]]] = [:]
     var variantPlan: NativeVariantPlan?
     var activeVariants: [String: String] = [:]
@@ -77,11 +78,12 @@ final class NativeXcode {
     lazy var packageModuleMaps = NativeSwiftPackageModuleMaps(
         directory: project.appendingPathComponent("Pods/Target Support Files/SwiftPods-SPM"))
     init(
-        project: URL, manifest: [String: Any], resolution: NativeResolution, integrateUserProjects: Bool = true,
+        project: URL, manifest inputManifest: [String: Any], resolution: NativeResolution, integrateUserProjects: Bool = true,
         projectBindings: [String: String]? = nil,
         packageEnvironment: [String: String] = ProcessInfo.processInfo.environment, updateSwiftPackages: Bool = false,
         cleanSwiftPackages: Bool = false, recordPackageWrite: ((URL) -> Void)? = nil
     ) throws {
+        let manifest = try NativeConsumerLabels.normalized(inputManifest, project: project)
         self.project = project
         self.manifest = manifest
         self.resolution = resolution

@@ -78,7 +78,7 @@ extension NativeXcode {
                 && graph.objects[$0]?["explicitFileType"] as? String == "wrapper.cfbundle"
         }.map { product in
             let name = graph.objects[product]?["path"] as? String ?? ""
-            guard destinations.insert(name).inserted else {
+            guard destinations.insert(name.lowercased()).inserted else {
                 throw Diagnostic(
                     "SP-XCODE-RESOURCE", stage: "integrate",
                     "Multiple dependencies copy the resource bundle " + name + " into the same target")

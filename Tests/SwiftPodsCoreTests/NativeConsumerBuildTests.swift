@@ -189,4 +189,52 @@ final class NativeConsumerBuildTests: XCTestCase {
             }
         }
     }
+
+    func testLibraryRejectsCaseVariantBundleProductsInTheSameOutputDirectory() throws {
+        let root = try directory()
+        let spec = try NativeSpec(
+            data: ["name": "Kit", "version": "1.0", "resource_bundles": ["Shared": "*.txt", "shared": "*.txt"]],
+            directory: root)
+        let engine = try engine(root, specs: [spec], dependencies: [["name": "Kit"]])
+        XCTAssertThrowsError(try engine.generate()) {
+            XCTAssertEqual(($0 as? Diagnostic)?.code, "SP-XCODE-RESOURCE")
+        }
+    }
+
+    func testConsumerRejectsCaseVariantBundlesFromDifferentLibraries() throws {
+        let root = try directory()
+        let specs = try [("Kit", "Shared"), ("Peer", "shared")].map { name, bundle in
+            try NativeSpec(
+                data: ["name": name, "version": "1.0", "resource_bundles": [bundle: "*.txt"]], directory: root)
+        }
+        let engine = try engine(root, specs: specs, dependencies: [["name": "Kit"], ["name": "Peer"]])
+        try engine.generate()
+        XCTAssertThrowsError(try engine.consumerBundleCopies(roots: ["Kit", "Peer"], platform: "osx")) {
+            XCTAssertEqual(($0 as? Diagnostic)?.code, "SP-XCODE-RESOURCE")
+        }
+    }
+
+    func testSupplementaryConsumerRejectsCaseVariantOwnAndTransitiveBundles() throws {
+        for transitive in [false, true] {
+            let root = try directory()
+            var data: [String: Any] = [
+                "name": "Kit", "version": "1.0", "resource_bundles": ["Shared": "*.txt"],
+                "appspecs": [["name": "Example", "resource_bundles": transitive ? [:] : ["shared": "*.txt"]]],
+            ]
+            var specs: [NativeSpec] = []
+            if transitive {
+                data["dependencies"] = ["Peer": []]
+                specs.append(
+                    try NativeSpec(
+                        data: ["name": "Peer", "version": "1.0", "resource_bundles": ["shared": "*.txt"]],
+                        directory: root))
+            }
+            specs.append(try NativeSpec(data: data, directory: root))
+            let engine = try engine(
+                root, specs: specs, dependencies: [["name": "Kit", "options": ["appspecs": ["Example"]]]])
+            XCTAssertThrowsError(try engine.generate()) {
+                XCTAssertEqual(($0 as? Diagnostic)?.code, "SP-XCODE-RESOURCE")
+            }
+        }
+    }
 }

@@ -265,10 +265,16 @@ extension NativeXcode {
         } else {
             staticResources[variantKey(name, platform)] = directPaths
         }
+        var bundleProducts = Set<String>()
         for (bundle, paths) in try selection.resourceBundles().sorted(by: { $0.key < $1.key }) {
             guard bundle.range(of: #"\A[A-Za-z0-9_][A-Za-z0-9_.+-]*\z"#, options: .regularExpression) != nil else {
                 throw Diagnostic(
                     "SP-XCODE-RESOURCE", stage: "integrate", "Invalid resource bundle name", file: name)
+            }
+            guard bundleProducts.insert(bundle.lowercased()).inserted else {
+                throw Diagnostic(
+                    "SP-XCODE-RESOURCE", stage: "integrate", "Resource bundle product name is already used",
+                    file: bundle)
             }
             let bundleIdentity = try resourceBundleIdentity(bundle, variant: variant.key, owner: name)
             let bundleLabel = resourceBundleLabels[bundleIdentity] ?? targetName + "-" + bundle

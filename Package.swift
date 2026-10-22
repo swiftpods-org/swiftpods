@@ -8,7 +8,8 @@ let package = Package(
     targets: [
         .target(
             name: "ProcessSupport", exclude: ["ArchiveHeaders/LICENSE.txt", "ArchiveHeaders/PROVENANCE.json"],
-            publicHeadersPath: "include", linkerSettings: [.linkedLibrary("archive.2")]),
+            publicHeadersPath: "include",
+            linkerSettings: [.linkedLibrary("archive.2"), .linkedFramework("CoreFoundation")]),
         .target(name: "SwiftPodsCore", dependencies: ["ProcessSupport"]),
         .executableTarget(name: "swiftpods", dependencies: ["SwiftPodsCore"]),
         .testTarget(name: "SwiftPodsCoreTests", dependencies: ["SwiftPodsCore"]),
