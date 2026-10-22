@@ -212,7 +212,7 @@ end
         for obj in pods.values()
     )
     public = list(work.glob("Pods/Headers/Public/*/PublicKit/Left/Common.h"))
-    assert public and public[0].resolve() == module / "include/Left/Common.h"
+    assert public and public[0].resolve() == (module / "include/Left/Common.h").resolve()
     build("Pods/Pods.xcodeproj", "NativeKit")
     build()
     assert (
@@ -275,7 +275,11 @@ end
     )
     lint_spec = module / "Lint.podspec.json"
     lint_data = dict(source)
-    lint_data["testspecs"] = [{"name": "Failing", "source_files": "LintTests/*.m"}]
+    # Xcode's macOS XCTest libraries require 14.0; the library still targets 13.0.
+    lint_data["testspecs"] = [{
+        "name": "Failing", "source_files": "LintTests/*.m",
+        "osx": {"deployment_target": "14.0"},
+    }]
     lint_spec.write_text(json.dumps(lint_data))
     rejected_lint = cli("lib", "lint", lint_spec, "--platforms=osx", success=False)
     assert any(

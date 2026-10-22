@@ -2,6 +2,7 @@
 """Regression corpus for locked sources, versions and the public hook file API."""
 
 import argparse
+import hashlib
 import json
 import re
 import subprocess
@@ -279,6 +280,7 @@ def main():
         return match[1]
 
     # Relaxing a requirement keeps a compatible installed version locked.
+    prerelease_pins = {}
     for engine in engines:
         work = parent / ("relaxed-" + engine)
         work.mkdir()
@@ -298,14 +300,26 @@ def main():
         (work / "Podfile").write_text(text)
         (native if engine == "native" else reference)(work, "install", "--repo-update")
         locked = (work / "Podfile.lock").read_bytes()
-        (work / "Podfile").write_text(text.replace(", '= 2.0.pre'", ""))
-        (native if engine == "native" else reference)(work, "install", success=False)
+        relaxed = text.replace(", '= 2.0.pre'", "")
+        (work / "Podfile").write_text(relaxed)
+        (native if engine == "native" else reference)(work, "install", success=engine == "native")
+        assert pin(work, "PreviewKit") == "2.0.pre"
+        if engine == "native":
+            locked = (work / "Podfile.lock").read_bytes()
+            native(work, "install", "--deployment", "--offline")
         assert (work / "Podfile.lock").read_bytes() == locked
+        prerelease_pins[engine] = {
+            "input_sha256": hashlib.sha256(relaxed.encode()).hexdigest(),
+            "install_succeeded": engine == "native",
+            "pinned": pin(work, "PreviewKit"),
+        }
         arguments = ["update", "PreviewKit"] + (
             ["--repo-update"] if engine == "native" else []
         )
         (native if engine == "native" else reference)(work, *arguments)
         assert pin(work, "PreviewKit") == "1.0"
+        prerelease_pins[engine]["updated"] = pin(work, "PreviewKit")
+    assert len({value["input_sha256"] for value in prerelease_pins.values()}) == 1
     # A shared dependency remains pinned until explicitly selected for update.
     spec(second, "SharedKit", "1.0", "shared")
     spec(second, "RootA", "1.0", "first", {"SharedKit": [">= 1"]})
@@ -655,7 +669,7 @@ def main():
     ]
     verified += [
         "compatible requirement edits retain installed version pins",
-        "removing a prerelease requirement conflicts with its locked prerelease; explicit update selects a stable version",
+        "compatible prerelease pins survive install and offline deployment; explicit update selects a stable version",
         "new direct declaration does not unlock an existing transitive dependency",
         "targeted update keeps distinct shared edges pinned; explicitly selecting the shared dependency unlocks it",
         "targeted update preserves identical shared edges until the shared dependency is explicitly selected",
@@ -714,6 +728,11 @@ def main():
     ]
     cases += ["Installer.target_installation_results_lifecycle"]
     cases += ["Resolver.shared_pins_preserved", "Resolver.shared_pins_explicit_update"]
+    cases += [
+        "Resolver.prerelease_pin_input",
+        "Resolver.prerelease_pin_behavior",
+        "Resolver.prerelease_pin_explicit_update",
+    ]
     cases += [
         "Targets.none_own_dependency_input",
         "Targets.none_own_dependency_enabled",
@@ -785,6 +804,7 @@ def main():
         "verified_cases": cases,
         "none_own_dependency": inheritance,
         "mutable_checkout_inputs": checkout_cases,
+        "prerelease_pins": prerelease_pins,
         "serialized_values": serialized_values,
         "structured_values": structured_values,
         "scheme_whitespace": scheme_values,
@@ -802,6 +822,14 @@ def main():
     if args.gem_home:
         report["reference"] = "1.17.0"
         report["differences"] = [
+            {
+                "id": "Resolver.compatible_prerelease_pins",
+                "feature": "Resolver",
+                "reference": "rejects install after prerelease permission is removed despite the compatible immutable pin",
+                "native": "preserves the existing prerelease pin until explicitly updated",
+                "parity": False,
+                "observation": prerelease_pins,
+            },
             {
                 "id": "Glob.character_class_matching",
                 "feature": "Glob",

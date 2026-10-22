@@ -1821,6 +1821,26 @@
       "existing lockfiles"
     ],
     "improvements": {
+      "Resolver.compatible_prerelease_pins": {
+        "feature": "Resolver",
+        "kind": "implementation_improvement",
+        "preserves_input_contract": true,
+        "report": "native-compatibility-reference.json",
+        "evidence": {
+          "native-compatibility.json": [
+            "Resolver.prerelease_pin_input",
+            "Resolver.prerelease_pin_behavior",
+            "Resolver.prerelease_pin_explicit_update"
+          ],
+          "native-compatibility-reference.json": [
+            "Resolver.prerelease_pin_input",
+            "Resolver.prerelease_pin_behavior",
+            "Resolver.prerelease_pin_explicit_update"
+          ]
+        },
+        "rationale": "Preserve a compatible immutable prerelease pin across requirement relaxation and offline deployment; explicit update re-evaluates prerelease permission.",
+        "documentation": "docs/Compatibility.md"
+      },
       "BridgeSupport.aggregate_header_path": {
         "feature": "BridgeSupport",
         "kind": "reference_bug_fix",

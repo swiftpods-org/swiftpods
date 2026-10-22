@@ -42,6 +42,13 @@ final class NativeHeaderOwnershipTests: XCTestCase {
         XCTAssertEqual(labels, NativeResourceBundleNames.assign(preferred, reserved: ["Reserved"]))
     }
 
+    func testResourceTargetLabelsReserveCaseVariantsOfOtherTargets() {
+        let preferred = ["111": "Kit-Shared", "222": "kit-shared", "333": "pods-app-resources"]
+        let labels = NativeResourceBundleNames.assign(preferred, reserved: ["Pods-App-Resources"])
+        XCTAssertEqual(Set(labels.values.map { $0.lowercased() }).count, 3)
+        XCTAssertFalse(labels.values.contains { $0.lowercased() == "pods-app-resources" })
+    }
+
     func testPrivateAndProjectLibraryHeadersStayOutsideConsumerSearchPaths() throws {
         let root = try directory()
         for name in ["Kit.h", "Private.h", "Project.h", "Internal.h"] {

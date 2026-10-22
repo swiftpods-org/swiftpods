@@ -57,6 +57,9 @@ subspec selections and deployment minimums. Warning and configuration options
 do not grant permission to select prerelease versions.
 An existing prerelease pin remains valid after compatible requirement changes;
 updating that pod requires explicit prerelease permission to select it again.
+This differs from CocoaPods 1.17.0, which rejects installation after prerelease
+permission is removed. The unchanged-input comparison is recorded as
+`Resolver.compatible_prerelease_pins` in the compatibility contract.
 
 Explicitly selected `.C` and `.M` sources compile as C++ and Objective-C++.
 Pod identities accept Unicode and graphic symbols while rejecting hidden names,
@@ -119,6 +122,8 @@ privacy manifests and on-demand resource tags.
 Pod target names that collide with the project, aggregate targets or consumer
 resource targets receive stable suffixes. Their module names stay unchanged;
 their build configurations, hooks and support files remain independent.
+Case variants such as `Foo` and `foo` also receive distinct target labels and
+archive names, including when a literal target already uses a generated suffix.
 Pod resource bundles also reserve aggregate and consumer resource target names,
 keeping their configurations and resource build phases separate.
 
@@ -179,6 +184,9 @@ package targets and checks their modules regardless of the product names.
 Module checks follow transitive platform conditions and custom Clang module
 maps; host macros and plugins are excluded. Offline installation reuses a
 matching resolved package graph from the SwiftPods cache.
+Linked Swift packages retain their module aliases during duplicate checks.
+Pod custom module maps supply their declared module names; nonmodular static
+pods do not claim a module just because their podspec has a module name.
 
 Xcconfig assignments use `=`. Xcode rejects `+=` and `?=` during a build,
 even when `-showBuildSettings` succeeds. SwiftPods rejects them before hooks

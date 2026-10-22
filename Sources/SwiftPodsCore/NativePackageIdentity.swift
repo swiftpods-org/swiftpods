@@ -1,12 +1,27 @@
 import Foundation
 
 extension NativeXcode {
-    func podModuleIdentities(_ roots: Set<String>, platform: String) -> Set<String> {
-        var names = Set(
-            roots.compactMap { root -> String? in
-                guard let spec = resolution.specs[root] else { return nil }
-                return spec.moduleName
-            })
+    func podModuleIdentities(_ roots: Set<String>, platform: String) throws -> Set<String> {
+        var names = Set<String>()
+        for root in roots.sorted() {
+            guard let spec = resolution.specs[root], let directory = spec.directory,
+                let variant = variantPlan?.variants[variantKey(root, platform)]
+            else { continue }
+            let attributes = try NativeVariantPlan.attributes(spec, names: variant.names, platform: platform)
+            let selection = try NativeLibraryFiles(
+                spec: spec, names: variant.names, platform: platform, root: directory)
+            let swift = selection.files.contains { $0.pathExtension == "swift" }
+            if let path = attributes["module_map"] as? String {
+                let contents = try String(contentsOf: directory.appendingPathComponent(path), encoding: .utf8)
+                names.formUnion(
+                    try NativeClangModuleMap(contents).modules.map { $0.name.components(separatedBy: ".")[0] })
+            } else if (attributes["module_map"] as? Bool != false || variant.mode != "library")
+                && requiresModule(variant, attributes: attributes, sources: selection.files)
+            {
+                names.insert(spec.moduleName)
+            }
+            if swift { names.insert(spec.moduleName) }
+        }
         for sdk in roots.flatMap({ vendorSDKs[variantKey($0, platform)] ?? [] }) {
             var name = (sdk.productName as NSString).deletingPathExtension
             if sdk.productName.hasSuffix(".a"), name.hasPrefix("lib") { name = String(name.dropFirst(3)) }
@@ -24,13 +39,13 @@ extension NativeXcode {
 
     /// Product names do not reveal the modules supplied by their selected targets.
     func packagesNeedModuleValidation(_ user: NativePBX, target: String, roots: Set<String>, platform: String) -> Bool {
-        !podModuleIdentities(roots, platform: platform).isEmpty && !packageProducts(user, target: target).isEmpty
+        !roots.isEmpty && !packageProducts(user, target: target).isEmpty
     }
 
     func validateExistingPackages(
         _ user: NativePBX, target: String, roots: Set<String>, platform: String, graph: NativeSwiftPackageGraph?
     ) throws {
-        let identities = podModuleIdentities(roots, platform: platform)
+        let identities = try podModuleIdentities(roots, platform: platform)
         guard let graph, !identities.isEmpty else { return }
         for dependency in packageProducts(user, target: target) {
             guard let value = user.objects[dependency], let product = value["productName"] as? String else { continue }

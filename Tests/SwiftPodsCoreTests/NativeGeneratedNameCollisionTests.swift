@@ -47,6 +47,47 @@ final class NativeGeneratedNameCollisionTests: XCTestCase {
         }
     }
 
+    func testCaseVariantsKeepDistinctArchivesConfigurationsAndSupportPaths() throws {
+        let original = try fixture(name: "Foo")
+        let upper = try XCTUnwrap(original.resolution.specs["Foo"])
+        let lower = try NativeSpec(
+            data: upper.data.merging(["name": "foo", "module_name": "LowerAPI"]) { _, new in new },
+            directory: original.project)
+        var manifest = original.manifest
+        var targets = try XCTUnwrap(manifest["targets"] as? [[String: Any]])
+        targets[0]["dependencies"] = [["name": "Foo"], ["name": "foo"]]
+        manifest["targets"] = targets
+        let engine = try NativeXcode(
+            project: original.project, manifest: manifest,
+            resolution: NativeResolution(specs: ["Foo": upper, "foo": lower], requests: []),
+            integrateUserProjects: false)
+        try engine.generate()
+        let labels = ["Foo:osx", "foo:osx"].compactMap { engine.variantPlan?.variants[$0]?.label }
+        XCTAssertEqual(Set(labels.map { $0.lowercased() }).count, 2)
+        let products = try ["Foo:osx", "foo:osx"].map {
+            let target = try XCTUnwrap(engine.libraryTargets[$0])
+            let product = try XCTUnwrap(engine.graph.objects[target]?["productReference"] as? String)
+            return try XCTUnwrap(engine.graph.objects[product]?["path"] as? String)
+        }
+        XCTAssertEqual(Set(products.map { $0.lowercased() }).count, 2)
+        let paths = try labels.map {
+            let config = try XCTUnwrap(engine.configurations[$0]?["Debug"])
+            let file = try XCTUnwrap(engine.graph.objects[config]?["baseConfigurationReference"] as? String)
+            return try NativeBuildSettings.file(file, graph: engine.graph).path.lowercased()
+        }
+        XCTAssertEqual(Set(paths).count, 2)
+    }
+
+    func testGeneratedSuffixCannotOverwriteAnUnambiguousLiteralName() {
+        let literal = "Kit-" + String(digest(Data("a".utf8)).prefix(16))
+        let preferred = ["a": "Kit", "b": "kit", "c": literal]
+        let labels = NativeTargetNames.assign(preferred, reserved: [])
+        XCTAssertEqual(labels["c"], literal)
+        XCTAssertNotEqual(labels["a"], literal)
+        XCTAssertEqual(Set(labels.values.map { $0.lowercased() }).count, 3)
+        XCTAssertEqual(labels, NativeTargetNames.assign(preferred, reserved: []))
+    }
+
     func testConsumerSupportConfigurationCannotOverwritePodSettings() throws {
         let engine = try fixture(name: "Pods-App")
         try engine.generate()

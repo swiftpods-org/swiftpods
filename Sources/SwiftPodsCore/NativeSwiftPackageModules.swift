@@ -16,10 +16,10 @@ enum NativeSwiftPackageModules {
             }
         }
         for entry in try NativeSwiftPackageTargets.list(
-            [product], package: package, graph: graph, platform: destination.manifestPlatform)
+            [product], package: package, graph: graph, platform: destination.manifestPlatform, allowAliases: true)
         {
             let target = entry.target
-            let name = NativeSwiftPackageC99.moduleName(target["name"] as? String ?? "")
+            let name = entry.moduleName
             let kind = target["type"] as? String ?? "regular"
             if kind == "binary" {
                 let sdk = try graph.binary(target, package: entry.package)

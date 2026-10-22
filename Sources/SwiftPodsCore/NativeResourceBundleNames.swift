@@ -4,25 +4,7 @@ enum NativeResourceBundleNames {
     /// Display names are compatible when unambiguous; identities never depend
     /// on concatenating user-controlled names with a separator.
     static func assign(_ preferred: [String: String], reserved: Set<String>) -> [String: String] {
-        let counts = Dictionary(grouping: preferred.keys, by: { preferred[$0]! }).mapValues(\.count)
-        var used = reserved.union(preferred.values)
-        var result: [String: String] = [:]
-        for key in preferred.keys.sorted() {
-            let label = preferred[key]!
-            if counts[label] == 1 && !reserved.contains(label) {
-                result[key] = label
-                continue
-            }
-            let base = label + "-" + String(key.prefix(16))
-            var candidate = base
-            var suffix = 0
-            while !used.insert(candidate).inserted {
-                suffix += 1
-                candidate = base + "-" + String(suffix)
-            }
-            result[key] = candidate
-        }
-        return result
+        NativeTargetNames.assign(preferred, reserved: reserved, suffix: { String($0.prefix(16)) })
     }
 }
 
