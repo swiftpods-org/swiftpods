@@ -178,7 +178,7 @@ final class NativeXcode {
             return target
         }
         variantPlan = try NativeVariantPlan(manifest: analyzed, resolution: resolution)
-        try validateFrameworkModules()
+        try validateModules()
     }
     func workspacePath() -> URL? {
         guard let first = userProjects.values.sorted(by: { $0.url.path < $1.url.path }).first else { return nil }

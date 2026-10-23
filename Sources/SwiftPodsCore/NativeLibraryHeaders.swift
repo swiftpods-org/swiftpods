@@ -39,6 +39,8 @@ extension NativeXcode {
             }
         }
         // Both visibility trees must be valid before replacing the first link.
+        try removeObsoleteLibraryHeaders(
+            in: [publicBase, privateBase], keeping: copies.map(\.destination), source: directory)
         for (source, destination) in copies {
             try FileManager.default.createDirectory(
                 at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -139,6 +141,30 @@ extension NativeXcode {
             if headerName != module { customModuleMaps[variant.key] = modulemap }
         } else if FileManager.default.fileExists(atPath: modulemap.path) {
             try FileManager.default.removeItem(at: modulemap)
+        }
+    }
+
+    /// Variant directories own their header links, including links from installations
+    /// predating this cleanup. Leave regular files and links to other trees alone.
+    private func removeObsoleteLibraryHeaders(in bases: [URL], keeping destinations: [URL], source: URL) throws {
+        func identity(_ path: URL) -> String {
+            path.standardizedFileURL.path.folding(options: .caseInsensitive, locale: Locale(identifier: "en_US_POSIX"))
+        }
+        let retained = Set(destinations.map(identity))
+        for base in bases {
+            let entries = FileManager.default.enumerator(at: base, includingPropertiesForKeys: [.isSymbolicLinkKey])
+            while let entry = entries?.nextObject() as? URL {
+                try NativeCancellation.check()
+                guard NativeFileSelection.headers.contains(entry.pathExtension), !retained.contains(identity(entry)),
+                    let target = try? FileManager.default.destinationOfSymbolicLink(atPath: entry.path)
+                else { continue }
+                let original = URL(fileURLWithPath: target, relativeTo: entry.deletingLastPathComponent())
+                    .standardizedFileURL
+                guard NativePath.isDescendant(original, of: source),
+                    (try? original.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) != true
+                else { continue }
+                try FileManager.default.removeItem(at: entry)
+            }
         }
     }
 

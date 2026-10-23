@@ -13,7 +13,8 @@ final class NativeHeaderInvariantTests: XCTestCase {
 
     private func modules(
         _ names: [String], consumers: [[String]] = [["First", "Second"]],
-        explicit: Bool = false, framework: Bool = false
+        explicit: Bool = false, framework: Bool = false, modular: Bool = true,
+        attributes: [String: Any] = [:], separateConfigurations: Bool = false
     ) throws -> NativeXcode {
         let root = try directory()
         var specs: [String: NativeSpec] = [:]
@@ -23,16 +24,24 @@ final class NativeHeaderInvariantTests: XCTestCase {
             try Data("#pragma once\n".utf8).write(to: source.appendingPathComponent(name + ".h"))
             try Data(("int " + name.lowercased() + "(void) { return 7; }\n").utf8).write(
                 to: source.appendingPathComponent(name + ".c"))
+            try Data("public func value() -> Int { 7 }\n".utf8).write(
+                to: source.appendingPathComponent(name + ".swift"))
+            try Data(("module " + module + " { header \"" + name + ".h\" export * }\n").utf8).write(
+                to: source.appendingPathComponent("Author.modulemap"))
             specs[name] = try NativeSpec(
-                data: ["name": name, "version": "1.0", "module_name": module, "source_files": "*.{c,h}"],
+                data: ["name": name, "version": "1.0", "module_name": module, "source_files": "*.{c,h}"]
+                    .merging(attributes) { _, new in new },
                 directory: source)
         }
         let targets: [[String: Any]] = consumers.enumerated().map { index, dependencies in
             var target: [String: Any] = [
                 "name": "App" + String(index), "platform": ["name": "osx", "deployment_target": "13.0"],
-                "modular_headers": !explicit,
-                "dependencies": dependencies.map { name -> [String: Any] in
-                    explicit ? ["name": name, "options": ["modular_headers": true]] : ["name": name]
+                "modular_headers": !explicit && modular,
+                "dependencies": dependencies.enumerated().map { offset, name -> [String: Any] in
+                    var options: [String: Any] = explicit ? ["modular_headers": true] : [:]
+                    if separateConfigurations { options["configurations"] = [offset == 0 ? "Debug" : "Release"] }
+                    if attributes["testspecs"] != nil { options["testspecs"] = ["Tests"] }
+                    return ["name": name, "options": options]
                 },
             ]
             if framework { target["frameworks"] = "static" }
@@ -64,6 +73,36 @@ final class NativeHeaderInvariantTests: XCTestCase {
     func testStaticFrameworkModuleConflictsRemainDiagnosed() throws {
         XCTAssertThrowsError(try modules(["Shared", "Shared"], framework: true)) {
             XCTAssertEqual(($0 as? Diagnostic)?.code, "SP-XCODE-MODULE-CONFLICT")
+        }
+    }
+
+    func testNonmodularAndDisabledStaticLibraryMapsMayShareNames() throws {
+        XCTAssertNoThrow(try modules(["Shared", "Shared"], modular: false))
+        XCTAssertNoThrow(try modules(["Shared", "Shared"], attributes: ["module_map": false]))
+        XCTAssertNoThrow(
+            try modules(
+                ["Shared", "Shared"],
+                attributes: ["module_map": false, "testspecs": [["name": "Tests", "source_files": "*.swift"]]]))
+    }
+
+    func testStaticLibraryModuleConflictsRespectConfigurations() throws {
+        XCTAssertNoThrow(try modules(["Shared", "Shared"], separateConfigurations: true))
+    }
+
+    func testSwiftAndSpecDefinedLibraryModulesRejectConflicts() throws {
+        let cases: [[String: Any]] = [
+            ["source_files": "*.swift", "module_map": false],
+            ["pod_target_xcconfig": ["DEFINES_MODULE": "YES"]],
+            ["module_map": "Author.modulemap"],
+            [
+                "module_map": false,
+                "pod_target_xcconfig": ["DEFINES_MODULE": "YES", "MODULEMAP_FILE": "Author.modulemap"],
+            ],
+        ]
+        for attributes in cases {
+            XCTAssertThrowsError(try modules(["Shared", "Shared"], modular: false, attributes: attributes)) {
+                XCTAssertEqual(($0 as? Diagnostic)?.code, "SP-XCODE-MODULE-CONFLICT")
+            }
         }
     }
 
@@ -131,5 +170,62 @@ final class NativeHeaderInvariantTests: XCTestCase {
         XCTAssertEqual(first, second)
         XCTAssertEqual(try Data(contentsOf: second.appendingPathComponent("PublicAPI.h")), original)
         XCTAssertEqual(try Data(contentsOf: header), original)
+    }
+
+    func testRemovedSourcesDoNotLeaveDanglingPublicOrPrivateHeaderLinks() throws {
+        let (project, source) = try fixture()
+        let publicRoot = try headers(project: project, source: source)
+        let privateRoot = URL(
+            fileURLWithPath: publicRoot.path.replacingOccurrences(of: "/Headers/Public/", with: "/Headers/Private/"))
+        for root in [publicRoot, privateRoot] {
+            XCTAssertNotNil(
+                try? FileManager.default.destinationOfSymbolicLink(
+                    atPath: root.appendingPathComponent("Internal.h").path))
+        }
+        try FileManager.default.removeItem(at: source.appendingPathComponent("Internal.h"))
+        try Data("#define PUBLIC_API 11\n".utf8).write(to: source.appendingPathComponent("PublicAPI.h"))
+        _ = try headers(project: project, source: source)
+        for root in [publicRoot, privateRoot] {
+            XCTAssertNil(
+                try? FileManager.default.destinationOfSymbolicLink(
+                    atPath: root.appendingPathComponent("Internal.h").path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: root.appendingPathComponent("PublicAPI.h").path))
+        }
+    }
+
+    func testHeaderCleanupPreservesRegularFilesAndForeignLinksWithoutFollowingDirectories() throws {
+        let (project, source) = try fixture()
+        let publicRoot = try headers(project: project, source: source)
+        let regular = publicRoot.appendingPathComponent("Notes.h")
+        let bytes = Data("// Local notes\n".utf8)
+        try bytes.write(to: regular)
+        let external = try directory()
+        let externalHeader = external.appendingPathComponent("External.h")
+        try bytes.write(to: externalHeader)
+        let foreign = publicRoot.appendingPathComponent("Foreign.h")
+        try FileManager.default.createSymbolicLink(at: foreign, withDestinationURL: externalHeader)
+        let nestedLink = external.appendingPathComponent("Keep.h")
+        try FileManager.default.createSymbolicLink(
+            at: nestedLink, withDestinationURL: source.appendingPathComponent("Internal.h"))
+        let alias = publicRoot.appendingPathComponent("ForeignDirectory")
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: external)
+        let localDirectory = source.appendingPathComponent("Docs.h")
+        try FileManager.default.createDirectory(at: localDirectory, withIntermediateDirectories: true)
+        let localAlias = publicRoot.appendingPathComponent("LinkedDocs.h")
+        try FileManager.default.createSymbolicLink(at: localAlias, withDestinationURL: localDirectory)
+        let notes = source.appendingPathComponent("Notes.txt")
+        try bytes.write(to: notes)
+        let notesAlias = publicRoot.appendingPathComponent("SourceNotes.txt")
+        try FileManager.default.createSymbolicLink(at: notesAlias, withDestinationURL: notes)
+        try Data("#define PUBLIC_API 11\n".utf8).write(to: source.appendingPathComponent("PublicAPI.h"))
+        _ = try headers(project: project, source: source)
+        XCTAssertEqual(try Data(contentsOf: regular), bytes)
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: foreign.path), externalHeader.path)
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: alias.path), external.path)
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: localAlias.path), localDirectory.path)
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: notesAlias.path), notes.path)
+        XCTAssertEqual(
+            try FileManager.default.destinationOfSymbolicLink(atPath: nestedLink.path),
+            source.appendingPathComponent("Internal.h").path)
     }
 }

@@ -66,10 +66,11 @@ extension NativeXcode {
         }
     }
 
-    /// Frameworks sharing a module may belong to separate consumers or configurations.
-    func validateFrameworkModules() throws {
+    /// Modules may share a name only across separate consumers or configurations.
+    func validateModules() throws {
         let previous = activeVariants
         defer { activeVariants = previous }
+        var libraryModules: [String: Bool] = [:]
         for target in manifest["targets"] as? [[String: Any]] ?? [] {
             selectConsumer(target)
             let platform = target["platform"] as? [String: String] ?? [:]
@@ -84,19 +85,45 @@ extension NativeXcode {
                 var modules: [String: String] = [:]
                 for root in roots.sorted() {
                     guard let spec = resolution.specs[root],
-                        let variant = variantPlan?.variants[variantKey(root, platform["name"] ?? "ios")],
-                        variant.mode != "library"
+                        let variant = variantPlan?.variants[variantKey(root, platform["name"] ?? "ios")]
                     else { continue }
+                    if variant.mode == "library" {
+                        if libraryModules[variant.key] == nil {
+                            libraryModules[variant.key] = try exportsLibraryModule(variant, spec: spec)
+                        }
+                        guard libraryModules[variant.key] == true else { continue }
+                    }
                     let module = spec.moduleName.lowercased()
                     if let other = modules[module], other != root {
                         throw Diagnostic(
                             "SP-XCODE-MODULE-CONFLICT", stage: "integrate",
-                            "Pods \(other) and \(root) provide the same framework module \(spec.moduleName) in \(configuration)",
+                            "Pods \(other) and \(root) provide the same module \(spec.moduleName) in \(configuration)",
                             file: target["name"] as? String)
                     }
                     modules[module] = root
                 }
             }
         }
+    }
+
+    private func exportsLibraryModule(_ variant: NativePodVariant, spec: NativeSpec) throws -> Bool {
+        guard let directory = spec.directory else { return false }
+        let attributes = try NativeVariantPlan.attributes(spec, names: variant.names, platform: variant.platform)
+        let selection = try NativeLibraryFiles(
+            spec: spec, names: variant.names, platform: variant.platform, root: directory)
+        if selection.files.isEmpty {
+            let vendors = try selection.paths("vendored_frameworks") + selection.paths("vendored_libraries")
+            // Binary-only pods do not generate a source module for their archive wrapper.
+            if !vendors.isEmpty { return false }
+        }
+        let supplementary = try variant.supplementary.flatMap { request in
+            try NativeFileSelection.sourceFiles(
+                spec.supplementaryAttributes(request.name, platform: variant.platform), root: directory)
+        }
+        let sources = selection.files + supplementary
+        if selection.files.contains(where: { $0.pathExtension == "swift" }) { return true }
+        guard requiresModule(variant, attributes: attributes, sources: sources) else { return false }
+        let config = NativeSpec.xcconfig(attributes, key: "pod_target_xcconfig")
+        return attributes["module_map"] as? Bool != false || config["MODULEMAP_FILE"] != nil
     }
 }

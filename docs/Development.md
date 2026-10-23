@@ -46,6 +46,12 @@ after a fresh install or an offline deployment reinstall. Reinstall tests change
 the selected files without changing the podspec, so unchanged declaration hashes
 cannot hide stale generated links.
 
+Unit controls cover Swift and explicitly defined library modules, disabled maps,
+and separate consumers or configurations. Header cleanup removes obsolete source
+links from each variant's public and private trees, including dangling links from
+older installs. Regular files, links to other source trees and linked directories
+are preserved.
+
 The matrix runs all cases before reporting its failures. Assertions remain
 active for known defects; a nonzero result blocks the build until the
 implementation meets the expected behavior. Compiler warnings fail the checks.
