@@ -57,7 +57,9 @@ extension NativeXcode {
             {
                 var files = graph.objects[phase]?["files"] as? [String] ?? []
                 let references =
-                    sdks.filter { dynamic ? linkedSDKs.contains($0.url) : $0.isXCFramework }
+                    sdks.filter {
+                        dynamic ? linkedSDKs.contains($0.url) && ($0.dynamic || $0.isXCFramework) : $0.isXCFramework
+                    }
                     .map { file($0.url.path, type: $0.fileType) }
                     + products.filter {
                         dynamic && matchesProduct($0, roots: roots, platform: platform) && productRoots[$0] != nil
@@ -86,7 +88,7 @@ extension NativeXcode {
             ]
             for config in configurations[label].map({ Array($0.values) }) ?? [] {
                 var settings = graph.objects[config]?["buildSettings"] as? [String: Any] ?? [:]
-                if !dynamic { excludeStaticSDKLinkInputs(sdks, settings: &settings) }
+                excludeStaticSDKLinkInputs(dynamic ? sdks.filter { !$0.dynamic } : sdks, settings: &settings)
                 for (key, paths) in searchPaths {
                     var values = nativeStrings(settings[key])
                     if values.isEmpty { values = ["$(inherited)"] }

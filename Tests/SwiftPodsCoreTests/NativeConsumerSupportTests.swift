@@ -70,6 +70,84 @@ final class NativeConsumerSupportTests: XCTestCase {
             })
     }
 
+    func testBundleCopiesRefreshNestedFilesEvenWhenSizeAndTimestampsMatch() throws {
+        let engine = try engine()
+        let user = try NativePBX(engine.project.appendingPathComponent("Demo.xcodeproj/project.pbxproj"))
+        let target = user.add("target", ["isa": "PBXNativeTarget", "buildPhases": []])
+        let source = engine.project.appendingPathComponent("Shared.bundle/Contents/value.txt")
+        try FileManager.default.createDirectory(
+            at: source.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let date = Date(timeIntervalSince1970: 1_700_000_000)
+        let bundle = source.deletingLastPathComponent().deletingLastPathComponent()
+        try engine.consumerCopyPhase(
+            ["Debug": [NativeConsumerCopy(source: engine.consumerPath(bundle), destination: "Shared.bundle")]],
+            kind: "resources", label: "Pods-Demo", target: target, user: user)
+        var environment = ProcessInfo.processInfo.environment
+        environment.merge([
+            "PODS_ROOT": engine.project.appendingPathComponent("Pods").path,
+            "TARGET_BUILD_DIR": engine.project.appendingPathComponent("Build").path,
+            "UNLOCALIZED_RESOURCES_FOLDER_PATH": "Resources", "CONFIGURATION": "Debug",
+            "DERIVED_FILE_DIR": engine.project.appendingPathComponent("Derived").path,
+        ]) { _, new in new }
+        let script = engine.project.appendingPathComponent("Pods/Target Support Files/Pods-Demo/Pods-Demo-resources.sh")
+        let destination = engine.project.appendingPathComponent("Build/Resources/Shared.bundle/Contents/value.txt")
+        for value in ["first", "other"] {
+            try Data(value.utf8).write(to: source)
+            try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: source.path)
+            let copied = try ToolProcess.run("/bin/sh", [script.path], environment: environment)
+            XCTAssertEqual(copied.status, 0, String(decoding: copied.error, as: UTF8.self))
+            XCTAssertEqual(try String(contentsOf: destination, encoding: .utf8), value)
+        }
+    }
+
+    func testCombinedCopyPlansRejectAliasedDestinationsBeforeChangingProjectsOrSupportFiles() throws {
+        for kind in ["resources", "frameworks"] {
+            for (first, second) in [
+                ("Shared.bundle", "Shared.bundle"), ("Shared.bundle", "shared.bundle"),
+                ("Straße.bundle", "STRASSE.bundle"),
+            ] {
+                let engine = try engine()
+                let user = try NativePBX(engine.project.appendingPathComponent("Demo.xcodeproj/project.pbxproj"))
+                let target = user.add("target", ["isa": "PBXNativeTarget", "buildPhases": []])
+                let original = try jsonData(user.objects)
+                let copies = [
+                    NativeConsumerCopy(
+                        source: NativeConsumerPath(variable: "BUILT_PRODUCTS_DIR", relative: "Generated.bundle"),
+                        destination: first),
+                    NativeConsumerCopy(
+                        source: NativeConsumerPath(variable: "BUILT_PRODUCTS_DIR", relative: "Loose.bundle"),
+                        destination: second),
+                ]
+                XCTAssertThrowsError(
+                    try engine.consumerCopyPhase(
+                        ["Debug": copies], kind: kind, label: "Pods-Demo", target: target, user: user)
+                ) {
+                    XCTAssertEqual(
+                        ($0 as? Diagnostic)?.code, kind == "frameworks" ? "SP-DUPLICATE-SDK" : "SP-XCODE-RESOURCE")
+                }
+                XCTAssertEqual(try jsonData(user.objects), original)
+                XCTAssertFalse(
+                    FileManager.default.fileExists(
+                        atPath: engine.project.appendingPathComponent("Pods/Target Support Files").path))
+            }
+        }
+    }
+
+    func testCopyNamespacesAreIndependentAcrossConfigurationsAndPermitIdenticalCopies() throws {
+        let engine = try engine()
+        let user = try NativePBX(engine.project.appendingPathComponent("Demo.xcodeproj/project.pbxproj"))
+        let target = user.add("target", ["isa": "PBXNativeTarget", "buildPhases": []])
+        let first = NativeConsumerCopy(
+            source: NativeConsumerPath(variable: "BUILT_PRODUCTS_DIR", relative: "First.bundle"),
+            destination: "Shared.bundle")
+        let second = NativeConsumerCopy(
+            source: NativeConsumerPath(variable: "BUILT_PRODUCTS_DIR", relative: "Second.bundle"),
+            destination: "Shared.bundle")
+        try engine.consumerCopyPhase(
+            ["Debug": [first, first], "Release": [second]], kind: "resources", label: "Pods-Demo", target: target,
+            user: user)
+    }
+
     func testResourceCompilerOutputsPreserveLocalizationAndCompiledExtensions() throws {
         let engine = try engine()
         let root = engine.project

@@ -59,6 +59,7 @@ def required_reports():
     registry = json.loads((ROOT / "Profiles/contract.json").read_text())
     return {
         "native-units.json",
+        "ruby-compatibility.json",
         "native-distribution.json",
         *[suite["report"] for suite in registry["suites"]],
         *[

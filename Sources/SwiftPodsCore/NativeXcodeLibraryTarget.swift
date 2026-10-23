@@ -92,7 +92,10 @@ extension NativeXcode {
         }
         let modular =
             !binaryOnly && requiresModule(variant, attributes: attributes, sources: all + supplementarySources)
-        settings["DEFINES_MODULE"] = modular ? "YES" : "NO"
+        let disabledFrameworkMap =
+            useFramework && attributes["module_map"] as? Bool == false
+            && !all.contains(where: { $0.pathExtension == "swift" }) && settings["MODULEMAP_FILE"] == nil
+        settings["DEFINES_MODULE"] = modular && !disabledFrameworkMap ? "YES" : "NO"
         try compileSettings(attributes, root: directory, label: targetName, settings: &settings)
         var sources: [String] = []
         var headers: [String] = []
@@ -126,10 +129,12 @@ extension NativeXcode {
                     sourceTree: "SDKROOT"), target: targetName,
                 settings: weakFrameworks.contains(framework) ? ["ATTRIBUTES": ["Weak"]] : [:])
         }
-        for sdk in sdks where dynamic || sdk.isXCFramework {
+        for sdk in sdks where (dynamic && sdk.dynamic) || sdk.isXCFramework {
             frameworks.append(buildFile(file(sdk.url.path, type: sdk.fileType), target: targetName))
         }
-        if !dynamic { excludeStaticSDKLinkInputs(sdks, settings: &settings) }
+        // Dynamic products force-load static SDKs once; XCFramework references
+        // still prepare the selected slice without adding another link input.
+        excludeStaticSDKLinkInputs(dynamic ? sdks.filter { !$0.dynamic } : sdks, settings: &settings)
         settings["OTHER_LDFLAGS"] =
             ["$(inherited)"] + nativeStrings(settings["OTHER_LDFLAGS"])
             + (dynamic ? [] : NativeBuildSettings.libraryFlags(

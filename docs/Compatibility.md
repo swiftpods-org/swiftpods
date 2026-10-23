@@ -42,6 +42,10 @@ and lockfile are unchanged. Changes to requirements must satisfy the remaining
 pins. `swiftpods update NAME` unlocks the selected dependency and the necessary
 transitive dependencies while retaining unrelated pins.
 
+Deployment upgrades recognize older analyzed manifests that omit inferred
+extension safety. Migration records the current context; subsequent dependency
+or safety-context changes still require updating the lockfile.
+
 `update` refreshes spec repositories and CDN indexes by default;
 `--no-repo-update` uses their cached state. `install --repo-update` refreshes
 those catalogs while preserving locked source payloads. Offline operations use
@@ -51,6 +55,10 @@ cached catalogs and sources without fetching them.
 manifest and the latest published version. `--ignore-prerelease` limits the
 latest-version check to stable releases. Quick lint checks types throughout
 nested library, test and app specifications without building their sources.
+
+Full lint retains Xcode's optional AppIntents extraction skip message as a note
+when no AppIntents dependency exists. Compiler warnings and other metadata
+warnings remain failures.
 
 Resolution considers combined version requirements, explicit prereleases,
 subspec selections and deployment minimums. Warning and configuration options
@@ -107,6 +115,10 @@ See [project hooks](Projects-and-Configurations.md#project-hooks) and
 
 ## Xcode integration
 
+Consumer labels and build configuration names must be single filename components.
+Path separators, null bytes and the `.` and `..` components fail with a diagnostic
+before generated support files are written, including in hardened mode.
+
 The build contract covers static libraries, static frameworks and dynamic
 frameworks, with source and binary dependencies. Device, simulator and Mac
 Catalyst destinations select distinct binary slices, even when they share a CPU
@@ -137,6 +149,8 @@ Pod resource bundles also reserve aggregate and consumer resource target names,
 keeping their configurations and resource build phases separate.
 Bundle products that differ only in case are rejected when they share a build
 output or a consumer destination, preventing resources from being overwritten.
+The final copy plan also rejects conflicts between generated bundles and loose
+resources, and between embedded SDK filenames, within each build configuration.
 
 Xcconfig selectors accept whitespace before and between conditions; whitespace
 within a condition's name or pattern remains literal. Embedded NUL cannot cause
@@ -196,10 +210,19 @@ Module checks follow transitive platform conditions and custom Clang module
 maps; host macros and plugins are excluded. Offline installation reuses a
 matching resolved package graph from the SwiftPods cache.
 Linked Swift packages retain their module aliases during duplicate checks.
+Alias propagation follows dependency products reachable from package roots,
+using enabled traits and explicit Xcode trait selections. Sibling public product
+declarations can rename a dependency shared by other consumers.
+Private unused targets and test targets do not introduce public module aliases.
+Independent consumers assigning different aliases to the same physical module
+receive a conflict diagnostic. A more-dependent rename may resolve that conflict.
 Pod custom module maps supply their declared module names; nonmodular static
 pods do not claim a module just because their podspec has a module name.
 Vendored SDK checks use the selected slice's Clang module map and Swift module
 names, independently of the binary product's filename.
+Dynamic pod wrappers force-load static SDKs once while retaining XCFramework
+slice preparation. Consumer copy phases inspect nested framework and resource
+contents on each build, using checksums to refresh files with unchanged timestamps.
 
 Xcconfig assignments use `=`. Xcode rejects `+=` and `?=` during a build,
 even when `-showBuildSettings` succeeds. SwiftPods rejects them before hooks

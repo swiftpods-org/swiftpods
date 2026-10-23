@@ -694,6 +694,44 @@ class EvidenceTests(unittest.TestCase):
         registered = {suite["script"] for suite in suites if not suite["reference"]}
         self.assertFalse(discovered - registered, sorted(discovered - registered))
 
+    def testFullPackagedRunnerAndEvidenceRequireTheSameReports(self):
+        registry = dict(
+            self.registry,
+            suites=[
+                {
+                    "script": "fixture.py",
+                    "report": "fixture.json",
+                    "reference": False,
+                    "apple": False,
+                }
+            ],
+        )
+        (self.root / "Profiles/contract.json").write_text(json.dumps(registry))
+        (self.root / "Profiles/baseline.json").write_text("{}")
+        collected = []
+
+        def record(stages, command, report=None, env=None):
+            if report:
+                stages.reports.append(report)
+
+        def collect(names, external=None):
+            collected.extend(names)
+            return {"status": "passed", "stable_acceptance": "not_established"}
+
+        with (
+            patch.object(check_tools, "ROOT", self.root),
+            patch.object(evidence_tools, "ROOT", self.root),
+            patch.object(check_tools.VerificationStages, "run", record),
+            patch.object(check_tools, "select_ruby", return_value=(self.binary, {})),
+            patch.object(check_tools, "collect", collect),
+            patch.object(
+                sys, "argv", ["check.py", "--full", "--package", str(self.root / "SwiftPods")]
+            ),
+        ):
+            check_tools.main(self.root / "workspace")
+            self.assertEqual(set(collected), evidence_tools.required_reports())
+            self.assertEqual(len(collected), len(set(collected)))
+
     def testStandardAcceptanceRunsRubyRegressionsBeforeFixtures(self):
         registry = dict(
             self.registry,

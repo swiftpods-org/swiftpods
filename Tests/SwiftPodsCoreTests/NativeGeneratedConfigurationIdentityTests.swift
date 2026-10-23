@@ -33,6 +33,49 @@ final class NativeGeneratedConfigurationIdentityTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: neighbor, encoding: .utf8), "SWIFT_VERSION = 99.0\n")
     }
 
+    private func portable(_ graph: NativePBX, physical: URL, ref: String, encoded: Bool) throws -> String {
+        let relative = NativePath.relativePath(of: physical, to: graph.sourceRoot)
+        let path = encoded ? NativeBuildSetting.literal(relative) : relative
+        let replacement = graph.add(
+            "swiftpods:xcconfig:" + path,
+            ["isa": "PBXFileReference", "path": path, "sourceTree": "SOURCE_ROOT"])
+        for id in graph.objects.keys where graph.objects[id]?["baseConfigurationReference"] as? String == ref {
+            graph.objects[id]?["baseConfigurationReference"] = replacement
+        }
+        graph.objects.removeValue(forKey: ref)
+        return replacement
+    }
+
+    func testPortableMissingConfigurationsRelocateUsingTheProjectRoot() throws {
+        let (graph, root, physical, ref) = try fixture()
+        let portable = try portable(graph, physical: physical, ref: ref, encoded: true)
+        let destination = root.appendingPathComponent("Moved")
+        let neighbor = physical.deletingLastPathComponent().appendingPathComponent("Pods-Demo.debug-$$cash.xcconfig")
+        try Data("SWIFT_VERSION = 99.0\n".utf8).write(to: neighbor)
+        try NativeIntegrationLocation.relocateGeneratedConfigurations(graph, from: root, to: destination)
+        let relative = NativePath.relativePath(of: physical, to: root)
+        let expected = destination.appendingPathComponent(relative)
+        XCTAssertEqual(try NativeBuildSettings.file(portable, graph: graph).path, expected.path)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: expected.path))
+        XCTAssertEqual(try String(contentsOf: neighbor, encoding: .utf8), "SWIFT_VERSION = 99.0\n")
+    }
+
+    func testPortableRawLegacyReferencesUseTheGeneratedProjectsPhysicalIdentity() throws {
+        let (graph, root, physical, ref) = try fixture(name: "Debug-$$Cash", encoded: false)
+        let portable = try portable(graph, physical: physical, ref: ref, encoded: false)
+        let pods = try NativePBX(root.appendingPathComponent("Pods/Pods.xcodeproj/project.pbxproj"))
+        _ = pods.add(
+            "file:" + physical.path,
+            ["isa": "PBXFileReference", "path": physical.path, "sourceTree": "<absolute>"])
+        try pods.save()
+        let neighbor = physical.deletingLastPathComponent().appendingPathComponent("Pods-Demo.debug-$cash.xcconfig")
+        try Data("SWIFT_VERSION = 99.0\n".utf8).write(to: neighbor)
+        try NativeIntegrationLocation.relocateGeneratedConfigurations(graph, from: root, to: root)
+        XCTAssertEqual(try NativeBuildSettings.file(portable, graph: graph).path, physical.path)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: physical.path))
+        XCTAssertEqual(try String(contentsOf: neighbor, encoding: .utf8), "SWIFT_VERSION = 99.0\n")
+    }
+
     func testRawLegacyConfigurationUsesItsDeclaredNameWhenBothSpellingsExist() throws {
         let (graph, root, physical, ref) = try fixture(name: "Debug-$$Cash", encoded: false)
         try Data().write(to: physical)

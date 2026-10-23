@@ -97,8 +97,9 @@ def assert_restored(fixture, selected, original, label):
     assert restored == original
 
 
-def legacy_upgrade(fixture):
-    base = fixture.root / "legacy-unicode-project"
+def legacy_upgrade(fixture, previously_migrated=False):
+    suffix = "-aliased" if previously_migrated else ""
+    base = fixture.root / ("legacy-unicode-project" + suffix)
     work, selected = internal_project(base)
     podfile = work / "Podfile"
     podfile.write_text(
@@ -153,11 +154,23 @@ print(SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined())
         "_manifest_checksum_aliases",
     ]:
         ownership.pop(key, None)
+    if previously_migrated:
+        earlier = json.loads(json.dumps(manifest))
+        for target in earlier["targets"]:
+            target["project"] = selected.name
+        encoded = subprocess.run(
+            ["swift", "-warnings-as-errors", "-e", encoder],
+            input=json.dumps(earlier), capture_output=True, text=True,
+            cwd=ROOT, timeout=90, check=True,
+        )
+        earlier_checksum = encoded.stdout.strip()
+        assert re.fullmatch("[0-9a-f]{64}", earlier_checksum)
+        ownership["_manifest_checksum_aliases"] = {checksum: earlier_checksum}
     receipt.write_text(json.dumps(ownership))
     lock = (work / "Podfile.lock").read_bytes()
     for _ in range(2):
         reinstall(fixture, work, selected)
-    relocated = fixture.root / "legacy-unicode-project-relocated"
+    relocated = fixture.root / ("legacy-unicode-project-relocated" + suffix)
     shutil.move(base, relocated)
     work, selected = relocated / "work", relocated / "work/\u0301Demo.xcodeproj"
     for _ in range(2):
@@ -165,6 +178,19 @@ print(SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined())
         assert (work / "Podfile.lock").read_bytes() == lock
         assert (work / "Pods/Manifest.lock").read_bytes() == lock
     before = (selected / "project.pbxproj").read_bytes()
+    graph = read_project(selected)
+    for config in graph["objects"].values():
+        if config.get("isa") == "XCBuildConfiguration" and config["buildSettings"].get("PRODUCT_NAME"):
+            config["buildSettings"]["APPLICATION_EXTENSION_API_ONLY"] = "YES"
+    (selected / "project.pbxproj").write_text("// !$*UTF8*$!\n" + serialize(graph))
+    changed = (selected / "project.pbxproj").read_bytes()
+    rejected = fixture.cli(work, "install", "--deployment", "--offline", succeeds=False)
+    assert any(event.get("code") == "SP-DEPLOYMENT-LOCK" for event in rejected.get("events", [])), rejected
+    assert (work / "Podfile.lock").read_bytes() == lock
+    assert (selected / "project.pbxproj").read_bytes() == changed
+    (selected / "project.pbxproj").write_bytes(before)
+    prefix = "previously_migrated_" if previously_migrated else ""
+    fixture.verified.append(prefix + "legacy_checksum_alias_binds_the_migrated_extension_safety_context")
     old_requirement = fixture.env.get("LEGACY_REQUIREMENT")
     fixture.env["LEGACY_REQUIREMENT"] = ">= 1.0"
     try:
@@ -184,8 +210,8 @@ print(SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined())
             fixture.env["LEGACY_REQUIREMENT"] = old_requirement
     fixture.verified.extend(
         [
-            "legacy_absolute_project_checksum_upgrades_and_relocates_without_lock_changes",
-            "legacy_checksum_alias_rejects_changed_dynamic_dependency_requirements",
+            prefix + "legacy_absolute_project_checksum_upgrades_and_relocates_without_lock_changes",
+            prefix + "legacy_checksum_alias_rejects_changed_dynamic_dependency_requirements",
         ]
     )
 
@@ -414,6 +440,7 @@ def sdk_paths(fixture):
 
 def run_regressions(fixture):
     legacy_upgrade(fixture)
+    legacy_upgrade(fixture, previously_migrated=True)
     external_project_copy(fixture)
     project_recovery(fixture)
     generated_projects(fixture)

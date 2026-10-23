@@ -7,6 +7,12 @@ enum NativeConsumerLabels {
         var identities: [String] = []
         for target in targets {
             let name = target["name"] as? String ?? ""
+            let label = target["label"] as? String ?? "Pods-" + name
+            guard NativeTargetNames.isFileComponent(label) else {
+                throw Diagnostic(
+                    "SP-XCODE-TARGET", stage: "analyze", "Consumer target label must be a filename component",
+                    file: name)
+            }
             let location: String
             if let raw = target["project"] as? String ?? manifest["project"] as? String {
                 let supplied = URL(fileURLWithPath: raw, relativeTo: project).standardizedFileURL
@@ -23,7 +29,7 @@ enum NativeConsumerLabels {
                     "SP-XCODE-TARGET", stage: "analyze", "Consumer target is declared more than once", file: name)
             }
             identities.append(key)
-            preferred[key] = target["label"] as? String ?? "Pods-" + name
+            preferred[key] = label
         }
         // A consumer owns both its aggregate and its resource target namespace.
         let labels = NativeTargetNames.assign(

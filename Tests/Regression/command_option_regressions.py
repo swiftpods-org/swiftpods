@@ -170,7 +170,9 @@ def run_regressions(fixture):
             directory = work / value
             target = directory / "pod"
             assert report["status"] == "created" and report["path_modified"] is False
-            assert Path(report["path"]) == target
+            reported = Path(report["path"])
+            assert reported.name == target.name
+            assert reported.parent.resolve() == directory.resolve()
             assert target.is_symlink() and target.resolve() == fixture.binary.resolve()
             assert set(snapshot(work)) == {
                 str(directory.relative_to(work)),

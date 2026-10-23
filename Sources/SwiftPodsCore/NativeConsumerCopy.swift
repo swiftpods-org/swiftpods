@@ -53,6 +53,24 @@ extension NativeXcode {
     func consumerCopyPhase(
         _ copies: [String: [NativeConsumerCopy]], kind: String, label: String, target: String, user: NativePBX
     ) throws {
+        // Generated bundles and loose resources share the final copy namespace.
+        // Validate the complete plan before changing phases or support files.
+        let locale = Locale(identifier: "en_US_POSIX")
+        for configuration in copies.keys.sorted() {
+            var destinations: [String: (source: String, destination: String)] = [:]
+            for transfer in copies[configuration] ?? [] {
+                let key = transfer.destination.folding(options: .caseInsensitive, locale: locale)
+                if let previous = destinations[key],
+                    previous.source != transfer.source.setting || previous.destination != transfer.destination
+                {
+                    throw Diagnostic(
+                        kind == "frameworks" ? "SP-DUPLICATE-SDK" : "SP-XCODE-RESOURCE", stage: "integrate",
+                        "Multiple dependencies copy to the same destination in " + configuration,
+                        file: transfer.destination)
+                }
+                destinations[key] = (transfer.source.setting, transfer.destination)
+            }
+        }
         let key = "swiftpods:" + (kind == "frameworks" ? "embedphase" : "resources") + ":" + target
         let id = NativePBX.identifier(key)
         var phases = user.objects[target]?["buildPhases"] as? [String] ?? []
@@ -109,6 +127,10 @@ extension NativeXcode {
             "name": "[SwiftPods] " + (kind == "frameworks" ? "Embed Frameworks" : "Copy Resources"),
             "buildActionMask": "2147483647", "runOnlyForDeploymentPostprocessing": "0", "files": [],
             "shellPath": "/bin/sh", "shellScript": "/bin/sh " + consumerPath(script).shell + "\n",
+            // Directory timestamps do not track changes to nested binaries or
+            // resources. Check each snapshot while retaining lists for ordering
+            // and sandbox access; rsync only transfers changed content.
+            "alwaysOutOfDate": "1",
         ]
         if fileLists {
             let prefix = consumerPath(support).setting + "/" + label + "-" + kind + "-$(CONFIGURATION)-"
@@ -118,7 +140,6 @@ extension NativeXcode {
             // Newlines cannot be represented in a line-oriented file list.
             phase["inputPaths"] = allInputs.sorted()
             phase["outputPaths"] = allOutputs.sorted()
-            phase["alwaysOutOfDate"] = "1"
         }
         let added = user.add(key, phase)
         insertConsumerCopyPhase(added, into: &phases, user: user)
@@ -134,7 +155,7 @@ extension NativeXcode {
           mkdir -p "$(dirname "${destination}")"
           if [ -d "${source}" ]; then
             mkdir -p "${destination}"
-            /usr/bin/rsync -a --delete "${source}/" "${destination}/"
+            /usr/bin/rsync -a --checksum --delete "${source}/" "${destination}/"
           else
             /bin/cp -p "${source}" "${destination}"
           fi
@@ -145,7 +166,7 @@ extension NativeXcode {
           mkdir -p "$(dirname "${destination}")"
           if [ -d "${source}" ]; then
             mkdir -p "${destination}"
-            /usr/bin/rsync -a --delete --exclude Headers --exclude PrivateHeaders --exclude Modules "${source}/" "${destination}/"
+            /usr/bin/rsync -a --checksum --delete --exclude Headers --exclude PrivateHeaders --exclude Modules "${source}/" "${destination}/"
             binary="${destination}/$(basename "$2" .framework)"
           else
             /bin/cp -p "${source}" "${destination}"

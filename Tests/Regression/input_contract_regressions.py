@@ -369,7 +369,7 @@ def lint_interfaces(fixture):
     (library / "Kit.swift").write_text("public func value() -> Int { 7 }\n")
     update_spec(work, source_files="*.swift", swift_versions=["5.0"])
     for flags in [[], ["--use-libraries"]]:
-        fixture.cli(
+        report = fixture.cli(
             work,
             "lib",
             "lint",
@@ -377,9 +377,21 @@ def lint_interfaces(fixture):
             "--platforms=osx",
             *flags,
         )
+        validation = next(event["data"] for event in report["events"] if event["kind"] == "validation")
+        assert all(not spec["warnings"] for spec in validation["specifications"])
+    (library / "Kit.swift").write_text(
+        '#warning("Actual Swift warning")\npublic func value() -> Int { 7 }\n'
+    )
+    for flags in [[], ["--use-libraries"]]:
+        rejected = fixture.cli(
+            work, "lib", "lint", str(library / "Kit.podspec.json"),
+            "--platforms=osx", *flags, succeeds=False,
+        )
+        assert "Actual Swift warning" in json.dumps(rejected)
     fixture.verified += [
         "lint_rejects_broken_public_header_in_framework_and_library",
         "lint_compiles_valid_objc_and_swift_consumers_in_both_modes",
+        "lint_keeps_swift_compiler_warnings_fatal_in_both_modes",
     ]
 
 

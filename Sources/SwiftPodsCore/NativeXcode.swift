@@ -138,15 +138,21 @@ final class NativeXcode {
         for user in userProjects.values {
             for object in user.objects.values where object["isa"] as? String == "XCBuildConfiguration" {
                 if let name = object["name"] as? String {
+                    guard NativeTargetNames.isFileComponent(name) else {
+                        throw Diagnostic(
+                            "SP-XCODE-CONFIG", stage: "integrate", "Configuration name must be a filename component",
+                            file: name)
+                    }
                     configurationTypes[name] = name.lowercased().contains("debug") ? "debug" : "release"
                 }
             }
         }
         for target in [manifest] + (manifest["targets"] as? [[String: Any]] ?? []) {
             for (name, kind) in target["configurations"] as? [String: String] ?? [:] {
-                guard !name.isEmpty, ["debug", "release"].contains(kind) else {
+                guard NativeTargetNames.isFileComponent(name), ["debug", "release"].contains(kind) else {
                     throw Diagnostic(
-                        "SP-XCODE-CONFIG", stage: "integrate", "Configuration mapping values must be debug/release",
+                        "SP-XCODE-CONFIG", stage: "integrate",
+                        "Configuration names must be filename components and values must be debug/release",
                         file: name)
                 }
                 configurationTypes[name] = kind

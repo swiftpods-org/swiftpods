@@ -112,13 +112,18 @@ extension NativeCommandSession {
         if options.contains("--deployment"), let previous = lock.manifestChecksum, previous != manifestChecksum {
             let receipt = project.appendingPathComponent("Pods/Target Support Files/SwiftPods-Integration.json")
             let ownership = FileManager.default.fileExists(atPath: receipt.path) ? try readObject(receipt) : [:]
-            let recorded = (ownership["_manifest_checksum_aliases"] as? [String: String])?[previous] == manifestChecksum
-            guard
-                try recorded
+            let matches: Bool
+            if let recorded = (ownership["_manifest_checksum_aliases"] as? [String: String])?[previous] {
+                matches = try recorded == manifestChecksum
                     || NativeManifest.legacyProjectChecksums(
                         contractManifest, project: project, ownership: ownership
-                    ).contains(previous)
-            else {
+                    ).contains(recorded)
+            } else {
+                matches = try NativeManifest.legacyProjectChecksums(
+                    contractManifest, project: project, ownership: ownership
+                ).contains(previous)
+            }
+            guard matches else {
                 throw Diagnostic(
                     "SP-DEPLOYMENT-LOCK", stage: "resolve",
                     "Evaluated Podfile declarations differ from Podfile.lock")

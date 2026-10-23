@@ -245,6 +245,39 @@ final class NativeProjectPathBoundaryTests: XCTestCase {
         XCTAssertFalse(text.contains("absolute:"))
     }
 
+    func testLegacyChecksumsIncludeTheFormatBeforeExtensionSafetyWasInferred() throws {
+        let root = URL(fileURLWithPath: "/new/work", isDirectory: true)
+        for flag in [false, true] {
+            for name in ["Ordinary.xcodeproj", "\u{301}App.xcodeproj"] {
+                var target: [String: Any] = [
+                    "name": "Demo", "project": name, "application_extension_api_only": flag,
+                    "dependencies": [["name": "Kit", "requirements": ["1.0"]]],
+                ]
+                let contract: [String: Any] = ["targets": [target]]
+                target.removeValue(forKey: "application_extension_api_only")
+                if name.hasPrefix("\u{301}") { target["project"] = "/old/work/" + name }
+                let checksum = digest(try jsonData(["targets": [target]]))
+                let ownership: [String: Any] = ["_project_root": "/old/work"]
+                XCTAssertTrue(
+                    try NativeManifest.legacyProjectChecksums(contract, project: root, ownership: ownership)
+                        .contains(checksum), name)
+                var changed = contract
+                var targets = try XCTUnwrap(changed["targets"] as? [[String: Any]])
+                targets[0]["dependencies"] = [["name": "Kit", "requirements": ["2.0"]]]
+                changed["targets"] = targets
+                XCTAssertFalse(
+                    try NativeManifest.legacyProjectChecksums(changed, project: root, ownership: ownership)
+                        .contains(checksum), name)
+                var opposite = try XCTUnwrap(contract["targets"] as? [[String: Any]])
+                opposite[0]["application_extension_api_only"] = !flag
+                XCTAssertFalse(
+                    try NativeManifest.legacyProjectChecksums(
+                        ["targets": opposite], project: root, ownership: ownership
+                    ).contains(digest(try jsonData(contract))), name)
+            }
+        }
+    }
+
     func testLegacyChecksumsKeepDeploymentCompatibleWithoutUnlockingDynamicInputs() throws {
         let root = URL(fileURLWithPath: "/new/work", isDirectory: true)
         let old = "/old/work"

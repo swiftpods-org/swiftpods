@@ -58,6 +58,7 @@ struct NativeValidation {
                 let spec = try NativeSpec(data: data)
                 try spec.validateProfile()
                 var warnings = try Self.metadata(spec, privateSpec: flags.contains("--private"))
+                var notes: [String] = []
                 try Self.validateWarnings(warnings, allow: flags.contains("--allow-warnings"), file: path)
                 var built: [String] = []
                 var interfaces: [String] = []
@@ -162,7 +163,9 @@ struct NativeValidation {
                                         + (flags.contains("--allow-warnings") ? "NO" : "YES"),
                                     "SYMROOT=" + workspace.appendingPathComponent("products").path,
                                 ], directory: workspace, environment: environment)
-                            let buildWarnings = Self.warnings(in: build)
+                            let buildDiagnostics = Self.diagnostics(in: build)
+                            let buildWarnings = buildDiagnostics.warnings
+                            notes += buildDiagnostics.notes
                             warnings += buildWarnings
                             let log = workspace.appendingPathComponent("build.log")
                             try (build.output + build.error).write(to: log)
@@ -191,7 +194,9 @@ struct NativeValidation {
                                 ], directory: workspace, environment: environment)
                             try (consumer.output + consumer.error).write(
                                 to: workspace.appendingPathComponent("consumer.log"))
-                            let consumerWarnings = Self.warnings(in: consumer)
+                            let consumerDiagnostics = Self.diagnostics(in: consumer)
+                            let consumerWarnings = consumerDiagnostics.warnings
+                            notes += consumerDiagnostics.notes
                             warnings += consumerWarnings
                             guard consumer.status == 0 else {
                                 throw Diagnostic(
@@ -226,7 +231,9 @@ struct NativeValidation {
                                         "/usr/bin/xcrun", arguments, directory: workspace, environment: environment)
                                     try (run.output + run.error).write(
                                         to: workspace.appendingPathComponent(scheme + ".test.log"))
-                                    let testWarnings = Self.warnings(in: run)
+                                    let testDiagnostics = Self.diagnostics(in: run)
+                                    let testWarnings = testDiagnostics.warnings
+                                    notes += testDiagnostics.notes
                                     warnings += testWarnings
                                     guard run.status == 0 else {
                                         throw Diagnostic(
@@ -253,13 +260,15 @@ struct NativeValidation {
                         }
                     }
                 }
-                reports.append([
+                var report: [String: Any] = [
                     "name": spec.name, "version": spec.version.description, "path": path.path, "warnings": warnings,
                     "built_platforms": built, "tested_schemes": tested, "artifacts": artifacts,
                     "built_interfaces": interfaces,
                     "status": errors.count == errorCount ? "passed" : "failed",
                     "validation": flags.contains("--quick") ? "metadata" : "metadata-build-and-tests",
-                ])
+                ]
+                if !notes.isEmpty { report["notes"] = notes }
+                reports.append(report)
             } catch {
                 let diagnostic =
                     error as? Diagnostic
@@ -271,9 +280,26 @@ struct NativeValidation {
         }
         return ["status": errors.isEmpty ? "passed" : "failed", "specifications": reports, "errors": errors]
     }
-    private static func warnings(in result: ToolOutput) -> [String] {
-        String(decoding: result.output + result.error, as: UTF8.self).components(separatedBy: .newlines)
-            .filter { $0.contains("warning:") }
+    private static func diagnostics(in result: ToolOutput) -> (warnings: [String], notes: [String]) {
+        diagnostics(in: String(decoding: result.output + result.error, as: UTF8.self))
+    }
+
+    static func diagnostics(in text: String) -> (warnings: [String], notes: [String]) {
+        var warnings: [String] = []
+        var notes: [String] = []
+        let skippedExtraction =
+            #"\A(?:[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:.]+ )?appintentsmetadataprocessor\[[0-9]+:[0-9]+\] warning: Metadata extraction skipped[,\.] [Nn]o AppIntents\.framework dependency found\.?\z"#
+        for line in text.components(separatedBy: .newlines) where line.contains("warning:") {
+            // The optional metadata tool reports this no-op even for valid
+            // Swift libraries. Keep it visible without classifying it as a
+            // source warning or skipping extraction for actual AppIntents SDKs.
+            if line.range(of: skippedExtraction, options: .regularExpression) != nil {
+                notes.append(line)
+            } else {
+                warnings.append(line)
+            }
+        }
+        return (warnings, notes)
     }
 
     private static func validateWarnings(_ warnings: [String], allow: Bool, file: URL) throws {

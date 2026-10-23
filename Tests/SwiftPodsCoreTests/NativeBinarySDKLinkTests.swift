@@ -80,6 +80,20 @@ final class NativeBinarySDKLinkTests: XCTestCase {
                 let settings = try linkerSettings(engine, variant: variant)
                 let flags = nativeStrings(settings["OTHER_LDFLAGS"]).joined(separator: " ")
                 XCTAssertTrue(flags.contains("-force_load " + NativeBuildSetting.quoted(path)), format)
+                let target = try XCTUnwrap(engine.libraryTargets[variant.key])
+                let phases = engine.graph.objects[target]?["buildPhases"] as? [String] ?? []
+                let links = phases.filter { engine.graph.objects[$0]?["isa"] as? String == "PBXFrameworksBuildPhase" }
+                    .flatMap { engine.graph.objects[$0]?["files"] as? [String] ?? [] }
+                    .compactMap { engine.graph.objects[$0]?["fileRef"] as? String }
+                    .compactMap { engine.graph.objects[$0]?["path"] as? String }
+                XCTAssertEqual(links.contains(sdk.url.path), sdk.isXCFramework, format)
+                if sdk.isXCFramework {
+                    let configuration = try XCTUnwrap(engine.configurations[variant.label]?["Debug"])
+                    let scope = try NativeBuildSettings.resolvedScopes(
+                        engine.graph.objects[configuration] ?? [:], graph: engine.graph, targetName: variant.label
+                    ).targetScope
+                    XCTAssertTrue(try scope.expandedValue("EXCLUDED_SOURCE_FILE_NAMES")?.contains(sdk.url.path) == true)
+                }
                 XCTAssertTrue(try engine.consumerVendorSDKs(["Wrapper", "Binary"], platform: "osx").isEmpty)
             }
         }

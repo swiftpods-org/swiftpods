@@ -246,7 +246,8 @@ final class NativeVendorTests: XCTestCase {
                         return engine.graph.objects[reference]?["path"] as? String
                     })
                 if mode == "dynamic" && name == "Wrapper" {
-                    XCTAssertTrue(paths.contains(raw.path))
+                    // Static SDKs are force-loaded, without a second ordinary link.
+                    XCTAssertFalse(paths.contains(raw.path))
                     XCTAssertTrue(paths.contains { $0.hasSuffix("/libBinaryKit.a") })
                     continue
                 }

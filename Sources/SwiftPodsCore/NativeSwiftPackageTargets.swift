@@ -51,7 +51,13 @@ enum NativeSwiftPackageTargets {
                 }
                 module = next
             }
-            result.append(Entry(package: package, target: target, moduleName: module))
+            let effective = try graph.moduleName(name, package: package)
+            if !allowAliases && effective != NativeSwiftPackageC99.moduleName(name) {
+                throw Diagnostic(
+                    "SP-SPM-ALIASES", stage: "integrate",
+                    "Module aliases cannot be exported as Objective-C compiler interfaces", file: name)
+            }
+            result.append(Entry(package: package, target: target, moduleName: allowAliases ? effective : module))
             for dependency in target["dependencies"] as? [[String: Any]] ?? [] {
                 guard let values = (dependency["target"] ?? dependency["byName"] ?? dependency["product"]) as? [Any],
                     let dependencyName = values.first as? String
@@ -65,9 +71,15 @@ enum NativeSwiftPackageTargets {
                 {
                     continue
                 }
+                if let condition = values.last as? [String: Any] {
+                    if let traits = condition["traits"], !(traits is NSNull), !(traits is [String]) {
+                        throw Diagnostic("SP-SPM-CONDITION", stage: "integrate", "Invalid package trait condition", file: name)
+                    }
+                    if allowAliases, try !graph.traitConditionEnabled(condition, package: package) { continue }
+                }
                 if let condition = values.last as? [String: Any],
                     condition.contains(where: {
-                        $0.key != "platformNames" && !($0.value is NSNull)
+                        $0.key != "platformNames" && !(allowAliases && $0.key == "traits") && !($0.value is NSNull)
                             && ($0.value as? [Any])?.isEmpty != true && ($0.value as? [String: Any])?.isEmpty != true
                     })
                 {

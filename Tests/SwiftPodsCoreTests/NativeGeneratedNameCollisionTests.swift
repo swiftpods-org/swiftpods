@@ -135,6 +135,78 @@ final class NativeGeneratedNameCollisionTests: XCTestCase {
         }
     }
 
+    func testConsumerLabelsRejectPathComponentsBeforeGeneration() throws {
+        let root = FileManager.default.temporaryDirectory
+        for name in ["x/../../../../escaped", "/Absolute", "Nested/App", "Bad\0Name"] {
+            XCTAssertThrowsError(
+                try NativeConsumerLabels.normalized(["targets": [["name": name]]], project: root)
+            ) {
+                XCTAssertEqual(($0 as? Diagnostic)?.code, "SP-XCODE-TARGET")
+            }
+        }
+        for label in ["", ".", "..", "Nested/Label", "Bad\0Label"] {
+            XCTAssertThrowsError(
+                try NativeConsumerLabels.normalized(
+                    ["targets": [["name": "App", "label": label]]], project: root)
+            ) {
+                XCTAssertEqual(($0 as? Diagnostic)?.code, "SP-XCODE-TARGET")
+            }
+        }
+    }
+
+    func testUnsafeConsumerCannotWriteAResourcePlistOutsideTheProject() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let project = root.appendingPathComponent("Project")
+        let escaped = root.appendingPathComponent("escaped-Resources/Info.plist")
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: escaped.deletingLastPathComponent(), withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let original = Data("user-owned plist".utf8)
+        try original.write(to: escaped)
+        try Data("resource".utf8).write(to: project.appendingPathComponent("Data.txt"))
+        let spec = try NativeSpec(
+            data: ["name": "Kit", "version": "1.0", "resources": "Data.txt"], directory: project)
+        XCTAssertThrowsError(
+            try {
+                let engine = try NativeXcode(
+                    project: project,
+                    manifest: [
+                        "targets": [[
+                            "name": "x/../../../../escaped",
+                            "platform": ["name": "osx", "deployment_target": "13.0"],
+                            "dependencies": [["name": "Kit"]],
+                        ]]
+                    ],
+                    resolution: NativeResolution(specs: ["Kit": spec], requests: []), integrateUserProjects: false)
+                try engine.generate()
+            }()
+        ) {
+            XCTAssertEqual(($0 as? Diagnostic)?.code, "SP-XCODE-TARGET")
+        }
+        XCTAssertEqual(try Data(contentsOf: escaped), original)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: project.appendingPathComponent("Pods").path))
+    }
+
+    func testConfigurationPathsRejectSeparatorsAndNullsBeforeWriting() throws {
+        let engine = try fixture(name: "Kit")
+        for (label, name) in [("Pods-App", "Nested/Debug"), ("../Label", "Debug"),
+            ("Pods-App", "Bad\0Configuration")]
+        {
+            XCTAssertThrowsError(try engine.supportConfiguration(label: label, name: name, settings: [:])) {
+                XCTAssertEqual(($0 as? Diagnostic)?.code, "SP-XCODE-CONFIG")
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: engine.project.appendingPathComponent("Pods").path))
+        var manifest = engine.manifest
+        manifest["configurations"] = ["Nested/Debug": "debug"]
+        XCTAssertThrowsError(
+            try NativeXcode(
+                project: engine.project, manifest: manifest, resolution: engine.resolution, integrateUserProjects: false)
+        ) {
+            XCTAssertEqual(($0 as? Diagnostic)?.code, "SP-XCODE-CONFIG")
+        }
+    }
+
     func testSupplementaryCaseVariantsKeepDistinctTargetsAndProducts() throws {
         let original = try fixture(name: "Kit")
         let base = try XCTUnwrap(original.resolution.specs["Kit"])

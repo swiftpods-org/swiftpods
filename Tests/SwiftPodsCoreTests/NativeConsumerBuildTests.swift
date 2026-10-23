@@ -53,6 +53,38 @@ final class NativeConsumerBuildTests: XCTestCase {
         let enumerator = try XCTUnwrap(FileManager.default.enumerator(at: publicRoot, includingPropertiesForKeys: nil))
         XCTAssertFalse(enumerator.allObjects.contains { ($0 as? URL)?.lastPathComponent == "module.modulemap" })
     }
+    func testDisabledFrameworkMapsPreserveOnlySwiftOrAuthorProvidedModules() throws {
+        for kind in ["clang", "swift", "author"] {
+            let root = try directory()
+            try Data().write(to: root.appendingPathComponent("Kit.h"))
+            try Data("public func value() -> Int { 7 }\n".utf8).write(to: root.appendingPathComponent("Kit.swift"))
+            let map = root.appendingPathComponent("Author.modulemap")
+            try Data("framework module Kit { header \"Kit.h\" export * }\n".utf8).write(to: map)
+            var attributes: [String: Any] = [
+                "name": "Kit", "version": "1.0", "module_map": false,
+                "source_files": kind == "swift" ? "*.swift" : "*.h",
+            ]
+            if kind == "author" { attributes["pod_target_xcconfig"] = ["MODULEMAP_FILE": map.path] }
+            let spec = try NativeSpec(data: attributes, directory: root)
+            let engine = try NativeXcode(
+                project: root,
+                manifest: ["targets": [[
+                    "name": "Demo", "frameworks": "dynamic",
+                    "platform": ["name": "osx", "deployment_target": "14.0"],
+                    "dependencies": [["name": "Kit"]],
+                ]]],
+                resolution: NativeResolution(specs: ["Kit": spec], requests: []), integrateUserProjects: false)
+            try engine.generate()
+            let values = try settings(engine, target: "Kit")
+            XCTAssertEqual(values["DEFINES_MODULE"] as? String, kind == "clang" ? "NO" : "YES", kind)
+            if kind == "author" {
+                XCTAssertEqual(values["MODULEMAP_FILE"] as? String, map.path)
+            } else {
+                XCTAssertNil(values["MODULEMAP_FILE"], kind)
+            }
+        }
+    }
+
     private func directory() throws -> URL {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

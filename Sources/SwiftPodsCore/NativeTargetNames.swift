@@ -2,6 +2,10 @@ import Foundation
 
 /// Target labels also name support files and static archives on case-insensitive volumes.
 enum NativeTargetNames {
+    static func isFileComponent(_ name: String) -> Bool {
+        !name.isEmpty && name != "." && name != ".." && !name.utf8.contains(47) && !name.utf8.contains(0)
+    }
+
     static func assign(
         _ preferred: [String: String], reserved: Set<String>,
         suffix: (String) -> String = { String(digest(Data($0.utf8)).prefix(16)) },

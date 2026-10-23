@@ -380,13 +380,34 @@ def main():
         ).strip()
         == "packages=40"
     )
-    module(work, "ExistingPackage")
+    peer = module(work, "ExistingPackage")
+    # Keep the public header names distinct so this isolates module identity.
+    peer.joinpath("Sources/ExistingPackage.h").rename(peer / "Sources/Peer.h")
+    peer.joinpath("Sources/ExistingPackage.c").write_text("int peer_value(void) { return 17; }\n")
     work.joinpath("Podfile").write_text(
         work.joinpath("Podfile")
         .read_text()
         .replace(
             "end\n",
             " pod 'ExistingPackage', :path => './Modules/ExistingPackage'\nend\n",
+        )
+    )
+    # A plain static pod has no compiler module to collide with the package.
+    cli(work, "install")
+    build_pods(work, "nonmodular-package-peer")
+    run(
+        ["xcodebuild", "-project", "Demo.xcodeproj", "-scheme", "Demo",
+         "-configuration", "Debug", "-sdk", "macosx", "build",
+         "CODE_SIGNING_ALLOWED=NO", "SYMROOT=" + str(work / "products")],
+        work, parent / "nonmodular-package-peer-build.log",
+    )
+    assert subprocess.check_output(
+        [str(work / "products/Debug/Demo.app/Contents/MacOS/Demo")], text=True
+    ).strip() == "packages=40"
+    work.joinpath("Podfile").write_text(
+        work.joinpath("Podfile").read_text().replace(
+            "pod 'ExistingPackage', :path => './Modules/ExistingPackage'",
+            "pod 'ExistingPackage', :path => './Modules/ExistingPackage', :modular_headers => true",
         )
     )
     failed = cli(work, "install", success=False)

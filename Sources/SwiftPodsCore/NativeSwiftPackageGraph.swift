@@ -10,6 +10,11 @@ final class NativeSwiftPackageGraph {
         var mutable = false
     }
 
+    struct Root {
+        let location: String
+        var traits: Set<String> = ["default"]
+    }
+
     let directory: URL
     let environment: [String: String]
     let packages: [Package]
@@ -18,14 +23,18 @@ final class NativeSwiftPackageGraph {
     private var manifests: [String: [String: Any]] = [:]
     private var binaries: [URL: NativeVendorSDK] = [:]
     private var pkgConfigs: [String: [String]] = [:]
+    private let rootReferences: [Root]?
+    private var aliasPlan: NativeSwiftPackageAliases.Plan?
     private let loadManifest: ((Package) throws -> [String: Any])?
 
     init(directory: URL, environment: [String: String], moduleMaps: NativeSwiftPackageModuleMaps,
+        roots: [Root]? = nil,
         loadManifest: ((Package) throws -> [String: Any])? = nil) throws {
         self.directory = directory
         self.environment = environment
         self.loadManifest = loadManifest
         self.moduleMaps = moduleMaps
+        rootReferences = roots
         let state = try readObject(directory.appendingPathComponent("workspace-state.json"))
         guard let object = state["object"] as? [String: Any],
             let entries = object["dependencies"] as? [[String: Any]]
@@ -122,6 +131,24 @@ final class NativeSwiftPackageGraph {
         let flags = try NativeSwiftPackagePkgConfig.read(name, directory: package.directory, environment: environment)
         pkgConfigs[key] = flags
         return flags
+    }
+
+    private func modulePlan() throws -> NativeSwiftPackageAliases.Plan {
+        if let aliasPlan { return aliasPlan }
+        let plan = try NativeSwiftPackageAliases.resolve(self, roots: rootReferences)
+        aliasPlan = plan
+        return plan
+    }
+
+    func moduleName(_ name: String, package: Package) throws -> String {
+        try modulePlan().names[NativeSwiftPackageAliases.identity(name, package: package)]
+            ?? NativeSwiftPackageC99.moduleName(name)
+    }
+
+    func traitConditionEnabled(_ condition: [String: Any], package: Package) throws -> Bool {
+        guard let names = condition["traits"] as? [String], !names.isEmpty else { return true }
+        let key = package.directory.standardizedFileURL.resolvingSymlinksInPath().path
+        return try !(modulePlan().traits[key] ?? []).isDisjoint(with: names)
     }
 
     func dependencies(_ package: Package) throws -> [(name: String?, package: Package)] {
@@ -258,6 +285,24 @@ extension NativeXcode {
                 "developer": packageEnvironment["DEVELOPER_DIR"] ?? "", "toolchain": digest(toolchain.output)]))
         }
         let receipt = root.appendingPathComponent("active.json")
+        let references = try userProjects.values.flatMap { user in
+            try (user.objects[user.root["rootObject"] as? String ?? ""]?["packageReferences"] as? [String] ?? []).compactMap {
+                reference -> NativeSwiftPackageGraph.Root? in
+                guard let object = user.objects[reference] else { return nil }
+                let location: String
+                if let remote = object["repositoryURL"] as? String {
+                    location = remote
+                } else if let local = object["relativePath"] as? String {
+                    location = URL(fileURLWithPath: NativeBuildSetting.decodedLiteral(local), relativeTo: user.sourceRoot)
+                        .standardizedFileURL.path
+                } else { return nil }
+                if let traits = object["traits"], !(traits is [String]) {
+                    throw Diagnostic("SP-SPM-CONDITION", stage: "integrate", "Invalid project package traits", file: location)
+                }
+                return NativeSwiftPackageGraph.Root(location: location, traits: Set(object["traits"] as? [String] ?? ["default"]))
+            }
+        }
+        let roots = references.isEmpty ? nil : references
         let currentSignature = try signature()
         if !updateSwiftPackages && !cleanSwiftPackages, let previous = try? readObject(receipt),
             previous["signature"] as? String == currentSignature, let relative = previous["directory"] as? String,
@@ -265,7 +310,7 @@ extension NativeXcode {
             FileManager.default.fileExists(atPath: root.appendingPathComponent(relative + "/workspace-state.json").path)
         {
             let graph = try NativeSwiftPackageGraph(directory: root.appendingPathComponent(relative), environment: packageEnvironment,
-                moduleMaps: packageModuleMaps)
+                moduleMaps: packageModuleMaps, roots: roots)
             if try graph.mutableManifestInputs() == (previous["mutable_manifests"] as? [String: String] ?? [:]) { return graph }
         }
         guard packageEnvironment["SWIFTPODS_OFFLINE"] != "1" else {
@@ -297,10 +342,10 @@ extension NativeXcode {
                 "Xcode could not resolve Swift package compiler interfaces:\n"
                     + String(decoding: result.output + result.error, as: UTF8.self), file: workspace.path)
         }
-        let graph = try NativeSwiftPackageGraph(directory: cache, environment: packageEnvironment, moduleMaps: packageModuleMaps)
+        let graph = try NativeSwiftPackageGraph(directory: cache, environment: packageEnvironment, moduleMaps: packageModuleMaps, roots: roots)
         if !cleanSwiftPackages, let previous = try? readObject(receipt), let relative = previous["directory"] as? String,
             relative.range(of: #"\Acheckout-[A-Fa-f0-9-]+\z"#, options: .regularExpression) != nil,
-            let old = try? NativeSwiftPackageGraph(directory: root.appendingPathComponent(relative), environment: packageEnvironment, moduleMaps: packageModuleMaps),
+            let old = try? NativeSwiftPackageGraph(directory: root.appendingPathComponent(relative), environment: packageEnvironment, moduleMaps: packageModuleMaps, roots: roots),
             try old.resolutionFingerprint() == graph.resolutionFingerprint()
         {
             // Product selection can change without changing any resolved revision.

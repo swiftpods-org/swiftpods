@@ -131,6 +131,11 @@ extension NativeXcode {
         return direct
     }
     func supportConfiguration(label: String, name: String, settings: [String: Any]) throws -> URL {
+        guard NativeTargetNames.isFileComponent(label), NativeTargetNames.isFileComponent(name) else {
+            throw Diagnostic(
+                "SP-XCODE-CONFIG", stage: "integrate", "Support configuration names must be filename components",
+                file: name)
+        }
         let path = project.appendingPathComponent(
             "Pods/Target Support Files/" + label + "/" + label + "." + name.lowercased() + ".xcconfig")
         try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)

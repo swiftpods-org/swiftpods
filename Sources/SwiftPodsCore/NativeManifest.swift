@@ -2,8 +2,8 @@ import Foundation
 
 /// Analyze consumer projects before resolving platform-constrained dependencies.
 enum NativeManifest {
-    /// Accept only the historical path spelling; every other evaluated declaration
-    /// still participates in the digest, including dynamic dependency requirements.
+    /// Older analyzers omitted the inferred extension hint and used a different
+    /// project spelling. Preserve every declaration, including dynamic requirements.
     static func legacyProjectChecksums(
         _ contract: [String: Any], project: URL, ownership: [String: Any]
     ) throws -> Set<String> {
@@ -11,25 +11,42 @@ enum NativeManifest {
         if let previous = NativeIntegrationLocation.previousRoot(ownership) { origins.append(previous) }
         let owned = NativeIntegrationSettings.projectPaths(ownership).sorted()
         var checksums = Set<String>()
-        for origin in origins {
-            var legacy = contract
-            var changed = false
-            legacy["targets"] = (contract["targets"] as? [[String: Any]] ?? []).map { original -> [String: Any] in
-                var target = original
-                guard let relative = original["project"] as? String, relative.utf8.first != 47 else { return target }
-                let path = URL(fileURLWithPath: relative, relativeTo: origin).standardizedFileURL
-                // Reproduce the old grapheme-based decision only for lock migration.
-                guard !path.path.hasPrefix(origin.path + "/") else {
+        var contracts = [contract]
+        var historical = contract
+        var omittedHint = false
+        historical["targets"] = (contract["targets"] as? [[String: Any]] ?? []).map { original -> [String: Any] in
+            var target = original
+            if target["application_extension_api_only"] is Bool {
+                target.removeValue(forKey: "application_extension_api_only")
+                omittedHint = true
+            }
+            return target
+        }
+        if omittedHint {
+            contracts.append(historical)
+            checksums.insert(digest(try jsonData(historical)))
+        }
+        for base in contracts {
+            for origin in origins {
+                var legacy = base
+                var changed = false
+                legacy["targets"] = (base["targets"] as? [[String: Any]] ?? []).map { original -> [String: Any] in
+                    var target = original
+                    guard let relative = original["project"] as? String, relative.utf8.first != 47 else { return target }
+                    let path = URL(fileURLWithPath: relative, relativeTo: origin).standardizedFileURL
+                    // Reproduce the old grapheme-based decision only for lock migration.
+                    guard !path.path.hasPrefix(origin.path + "/") else {
+                        return target
+                    }
+                    let previous = owned.first {
+                        URL(fileURLWithPath: $0).deletingLastPathComponent().path == path.path
+                    }.map { URL(fileURLWithPath: $0).deletingLastPathComponent().path }
+                    target["project"] = previous ?? path.resolvingSymlinksInPath().path
+                    changed = true
                     return target
                 }
-                let previous = owned.first {
-                    URL(fileURLWithPath: $0).deletingLastPathComponent().path == path.path
-                }.map { URL(fileURLWithPath: $0).deletingLastPathComponent().path }
-                target["project"] = previous ?? path.resolvingSymlinksInPath().path
-                changed = true
-                return target
+                if changed { checksums.insert(digest(try jsonData(legacy))) }
             }
-            if changed { checksums.insert(digest(try jsonData(legacy))) }
         }
         return checksums
     }

@@ -55,6 +55,19 @@ enum NativeIntegrationLocation {
         return result
     }
 
+    private static func configurationPath(_ path: String, object: [String: Any], graph: NativePBX) -> URL? {
+        let file: URL
+        if path.utf8.first == 47 {
+            file = URL(fileURLWithPath: path)
+        } else {
+            guard ["SOURCE_ROOT", "PROJECT_DIR"].contains(object["sourceTree"] as? String ?? "") else { return nil }
+            file = graph.sourceRoot.appendingPathComponent(path)
+        }
+        // Resolve the same ancestors for present and missing files. In
+        // particular, /var and /private/var must describe one namespace.
+        return file.standardizedFileURL.resolvingSymlinksInPath()
+    }
+
     /// The generated project's file IDs encode physical paths, even when a PBX
     /// path expression contains escaped dollars. This preserves the old format's
     /// identity without guessing from whichever neighboring file still exists.
@@ -65,12 +78,15 @@ enum NativeIntegrationLocation {
         else { return [:] }
         var result: [String: Set<String>] = [:]
         for (id, object) in graph.objects {
-            guard object["isa"] as? String == "PBXFileReference", let path = object["path"] as? String else { continue }
+            guard object["isa"] as? String == "PBXFileReference", let path = object["path"] as? String,
+                let expression = configurationPath(path, object: object, graph: graph)?.path
+            else { continue }
             for physical in Set([path, NativeBuildSetting.decodedLiteral(path)]) {
                 guard id == NativePBX.identifier("file:" + physical),
-                    NativePath.relativeComponents(of: URL(fileURLWithPath: physical), to: generated)?.isEmpty == false
+                    let file = configurationPath(physical, object: object, graph: graph),
+                    NativePath.relativeComponents(of: file, to: generated)?.isEmpty == false
                 else { continue }
-                result[path, default: []].insert(physical)
+                result[expression, default: []].insert(file.path)
             }
         }
         // Random UUID installations retain the target's physical label and
@@ -83,20 +99,22 @@ enum NativeIntegrationLocation {
             for id in graph.objects[list]?["buildConfigurations"] as? [String] ?? [] {
                 guard let config = graph.objects[id], let name = config["name"] as? String,
                     let ref = config["baseConfigurationReference"] as? String,
-                    let path = graph.objects[ref]?["path"] as? String
+                    let object = graph.objects[ref], let path = object["path"] as? String,
+                    let expression = configurationPath(path, object: object, graph: graph)?.path
                 else { continue }
                 let physical = generated.appendingPathComponent(
                     label + "/" + label + "." + name.lowercased() + ".xcconfig"
-                ).path
-                guard [path, NativeBuildSetting.decodedLiteral(path)].contains(physical) else { continue }
-                result[path, default: []].insert(physical)
+                ).resolvingSymlinksInPath().path
+                let decoded = configurationPath(NativeBuildSetting.decodedLiteral(path), object: object, graph: graph)?.path
+                guard [expression, decoded].contains(physical) else { continue }
+                result[expression, default: []].insert(physical)
             }
         }
         return result
     }
 
     static func relocateGeneratedConfigurations(_ graph: NativePBX, from old: URL, to root: URL) throws {
-        let generated = old.appendingPathComponent("Pods/Target Support Files")
+        let generated = old.appendingPathComponent("Pods/Target Support Files").resolvingSymlinksInPath()
         let receipt = try? readObject(
             root.appendingPathComponent("Pods/Target Support Files/SwiftPods-Integration.json"))
         let encoded: Bool
@@ -114,15 +132,16 @@ enum NativeIntegrationLocation {
         let identities = encoded ? [:] : generatedConfigurationIdentities(root, generated: generated)
         for (id, object) in graph.objects {
             guard let path = object["path"] as? String, graph.isGeneratedConfigurationReference(id) else { continue }
-            let decoded = NativeBuildSetting.decodedLiteral(path)
-            var candidates = Set([decoded, path]).sorted().filter {
+            let expressionPath = configurationPath(path, object: object, graph: graph)?.path
+            let decoded = configurationPath(NativeBuildSetting.decodedLiteral(path), object: object, graph: graph)?.path
+            var candidates = Set([decoded, expressionPath].compactMap { $0 }).sorted().filter {
                 NativePath.relativeComponents(of: URL(fileURLWithPath: $0), to: generated)?.isEmpty == false
             }
             guard !candidates.isEmpty else { continue }
             let configs = graph.objects.values.filter { $0["baseConfigurationReference"] as? String == id }
             if encoded {
                 candidates = candidates.filter { $0 == decoded }
-            } else if let known = identities[path], known.count == 1 {
+            } else if let expressionPath, let known = identities[expressionPath], known.count == 1 {
                 candidates = candidates.filter { known.contains($0) }
             } else if candidates.count > 1 {
                 let named = candidates.filter { candidate in
