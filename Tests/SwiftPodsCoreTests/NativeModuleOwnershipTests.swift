@@ -12,20 +12,24 @@ final class NativeModuleOwnershipTests: XCTestCase {
     }
 
     private func generate(
-        _ specs: [NativeSpec], root: URL, separateConsumers: Bool = false, separateConfigurations: Bool = false
+        _ specs: [NativeSpec], root: URL, separateConsumers: Bool = false, separateConfigurations: Bool = false,
+        frameworks: Bool = false, direct: [String]? = nil
     ) throws {
         let groups = separateConsumers ? specs.map { [$0] } : [specs]
         let targets: [[String: Any]] = groups.enumerated().map { index, group in
-            [
+            var target: [String: Any] = [
                 "name": "App" + String(index), "platform": ["name": "osx", "deployment_target": "13.0"],
                 "modular_headers": true,
-                "dependencies": group.enumerated().map { offset, spec -> [String: Any] in
+                "dependencies": group.filter { direct?.contains($0.name) ?? true }.enumerated().map {
+                    offset, spec -> [String: Any] in
                     let options: [String: Any] =
                         separateConfigurations
                         ? ["configurations": [offset == 0 ? "Debug" : "Release"]] : [:]
                     return ["name": spec.name, "options": options]
                 },
             ]
+            if frameworks { target["frameworks"] = "static" }
+            return target
         }
         let engine = try NativeXcode(
             project: root, manifest: ["targets": targets],
@@ -37,7 +41,8 @@ final class NativeModuleOwnershipTests: XCTestCase {
 
     private func customMaps(
         _ contents: [String], aliases: [String] = ["FirstAlias", "SecondAlias"],
-        separateConsumers: Bool = false, separateConfigurations: Bool = false
+        separateConsumers: Bool = false, separateConfigurations: Bool = false,
+        swift: Bool = false, frameworks: Bool = false
     ) throws {
         let root = try directory()
         let specs = try zip(["First", "Second"], zip(aliases, contents)).map { name, values -> NativeSpec in
@@ -47,14 +52,19 @@ final class NativeModuleOwnershipTests: XCTestCase {
             try Data(("int " + name.lowercased() + "(void) { return 7; }\n").utf8).write(
                 to: source.appendingPathComponent(name + ".c"))
             try Data(values.1.utf8).write(to: source.appendingPathComponent("Author.modulemap"))
+            if swift {
+                try Data("public func value() -> Int { 7 }\n".utf8).write(
+                    to: source.appendingPathComponent(name + ".swift"))
+            }
             return try NativeSpec(
                 data: [
                     "name": name, "version": "1.0", "module_name": values.0,
-                    "source_files": "*.{c,h}", "module_map": "Author.modulemap",
+                    "source_files": swift ? "*.{c,h,swift}" : "*.{c,h}", "module_map": "Author.modulemap",
                 ], directory: source)
         }
         try generate(
-            specs, root: root, separateConsumers: separateConsumers, separateConfigurations: separateConfigurations)
+            specs, root: root, separateConsumers: separateConsumers, separateConfigurations: separateConfigurations,
+            frameworks: frameworks)
     }
 
     func testCustomMapsRejectDuplicateModulesEvenWhenPodAliasesDiffer() throws {
@@ -87,6 +97,19 @@ final class NativeModuleOwnershipTests: XCTestCase {
                 ]))
     }
 
+    func testCustomClangMapsDoNotHideSwiftModulesOrFrameworkProducts() throws {
+        let maps = [
+            "module FirstAPI { header \"First.h\" export * }\n", "module SecondAPI { header \"Second.h\" export * }\n",
+        ]
+        for framework in [false, true] {
+            XCTAssertThrowsError(
+                try customMaps(maps, aliases: ["Shared", "Shared"], swift: !framework, frameworks: framework)
+            ) {
+                XCTAssertEqual(($0 as? Diagnostic)?.code, "SP-XCODE-MODULE-CONFLICT")
+            }
+        }
+    }
+
     func testCommentsAndNestedModuleNamesDoNotReserveTopLevelModules() throws {
         XCTAssertNoThrow(
             try customMaps([
@@ -104,7 +127,9 @@ final class NativeModuleOwnershipTests: XCTestCase {
     }
 
     private func sourceAndVendor(
-        module: String = "SDK", separateConsumers: Bool = false, separateConfigurations: Bool = false
+        module: String = "SDK", separateConsumers: Bool = false, separateConfigurations: Bool = false,
+        binaryAlias: String = "Binary", transitive: Bool = false, frameworks: Bool = false, customMap: Bool = false,
+        versionedModules: Bool = false
     ) throws {
         let root = try directory()
         let binary = root.appendingPathComponent("Binary")
@@ -124,19 +149,42 @@ final class NativeModuleOwnershipTests: XCTestCase {
         try Data("int sdk_value(void);\n".utf8).write(to: framework.appendingPathComponent("Headers/SDK.h"))
         try Data("framework module SDK { umbrella header \"SDK.h\" export * }\n".utf8).write(
             to: framework.appendingPathComponent("Modules/module.modulemap"))
+        if versionedModules {
+            let version = framework.appendingPathComponent("Versions/A")
+            try FileManager.default.createDirectory(at: version, withIntermediateDirectories: true)
+            try FileManager.default.moveItem(
+                at: framework.appendingPathComponent("Modules"), to: version.appendingPathComponent("Modules"))
+            try FileManager.default.createSymbolicLink(
+                atPath: framework.appendingPathComponent("Versions/Current").path, withDestinationPath: "A")
+            try FileManager.default.createSymbolicLink(
+                atPath: framework.appendingPathComponent("Modules").path,
+                withDestinationPath: "Versions/Current/Modules")
+        }
         let source = root.appendingPathComponent("Source")
         try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
         try Data("int source_value(void);\n".utf8).write(to: source.appendingPathComponent("Source.h"))
         try Data("int source_value(void) { return 7; }\n".utf8).write(to: source.appendingPathComponent("Source.c"))
+        var attributes: [String: Any] = [
+            "name": "Source", "version": "1.0", "module_name": module, "source_files": "*.{c,h}",
+        ]
+        if transitive { attributes["dependencies"] = ["Binary": [] as [String]] }
+        if customMap {
+            attributes["module_map"] = "Author.modulemap"
+            try Data("module SourceAPI { header \"Source.h\" export * }\n".utf8).write(
+                to: source.appendingPathComponent("Author.modulemap"))
+        }
         let specs = try [
             NativeSpec(
-                data: ["name": "Binary", "version": "1.0", "vendored_frameworks": "SDK.framework"], directory: binary),
-            NativeSpec(
-                data: ["name": "Source", "version": "1.0", "module_name": module, "source_files": "*.{c,h}"],
-                directory: source),
+                data: [
+                    "name": "Binary", "version": "1.0", "module_name": binaryAlias,
+                    "vendored_frameworks": "SDK.framework",
+                ],
+                directory: binary),
+            NativeSpec(data: attributes, directory: source),
         ]
         try generate(
-            specs, root: root, separateConsumers: separateConsumers, separateConfigurations: separateConfigurations)
+            specs, root: root, separateConsumers: separateConsumers, separateConfigurations: separateConfigurations,
+            frameworks: frameworks, direct: transitive ? ["Source"] : nil)
     }
 
     func testSourceModuleCannotShadowAVendoredModule() throws {
@@ -147,6 +195,23 @@ final class NativeModuleOwnershipTests: XCTestCase {
 
     func testSourceAndVendorWithDifferentModulesRemainSupported() throws {
         XCTAssertNoThrow(try sourceAndVendor(module: "SourceAPI"))
+        XCTAssertNoThrow(try sourceAndVendor(module: "SourceAPI", binaryAlias: "SourceAPI"))
+    }
+
+    func testVersionedFrameworkModuleDirectoriesAreInspected() throws {
+        XCTAssertThrowsError(try sourceAndVendor(versionedModules: true)) {
+            XCTAssertEqual(($0 as? Diagnostic)?.code, "SP-XCODE-MODULE-CONFLICT")
+        }
+        XCTAssertNoThrow(try sourceAndVendor(module: "SourceAPI", versionedModules: true))
+    }
+
+    func testTransitiveSDKModulesAndFrameworkProductCollisionsAreRejected() throws {
+        XCTAssertThrowsError(try sourceAndVendor(transitive: true)) {
+            XCTAssertEqual(($0 as? Diagnostic)?.code, "SP-XCODE-MODULE-CONFLICT")
+        }
+        XCTAssertThrowsError(try sourceAndVendor(frameworks: true, customMap: true)) {
+            XCTAssertEqual(($0 as? Diagnostic)?.code, "SP-XCODE-MODULE-CONFLICT")
+        }
     }
 
     func testSourceAndVendorConflictsRespectConsumerAndConfigurationScopes() throws {

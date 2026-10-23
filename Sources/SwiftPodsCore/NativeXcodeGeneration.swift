@@ -13,6 +13,7 @@ extension NativeXcode {
             let attributes = try NativeVariantPlan.attributes(spec, names: variant.names, platform: variant.platform)
             vendorSDKs[variant.key] = try loadVendoredSDKs(attributes, root: directory, platform: variant.platform)
         }
+        try validateModules()
         for variant in variants {
             try generateLibraryTarget(variant)
         }

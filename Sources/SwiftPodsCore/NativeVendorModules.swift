@@ -5,7 +5,8 @@ import Foundation
 enum NativeVendorModules {
     static func names(_ slice: NativeVendorSlice) throws -> Set<String> {
         let framework = slice.library.pathExtension == "framework"
-        let modules = framework ? slice.library.appendingPathComponent("Modules") : nil
+        // Versioned macOS frameworks expose this directory through Versions/Current.
+        let modules = framework ? slice.library.appendingPathComponent("Modules").resolvingSymlinksInPath() : nil
         let map = modules?.appendingPathComponent("module.modulemap")
             ?? slice.headers?.appendingPathComponent("module.modulemap")
         var names = Set<String>()
