@@ -15,6 +15,21 @@ extension NativeXcode {
         case privateHeaders = "Private"
     }
 
+    func generatedUmbrellaName(_ module: String, occupied: [String]) -> String {
+        let locale = Locale(identifier: "en_US_POSIX")
+        let reserved = Set(
+            occupied.map {
+                (($0 as NSString).pathComponents.first ?? "").folding(options: .caseInsensitive, locale: locale)
+            })
+        var name = module + "-umbrella.h"
+        var suffix = 0
+        while reserved.contains(name.folding(options: .caseInsensitive, locale: locale)) {
+            suffix += 1
+            name = module + "-swiftpods-umbrella-" + String(suffix) + ".h"
+        }
+        return name
+    }
+
     func mapFrameworkHeaders(
         _ headers: Set<URL>, paths: [URL: String], target: String, label: String,
         visibility: HeaderVisibility
@@ -26,7 +41,8 @@ extension NativeXcode {
         var destinations = Set<String>()
         for header in headers.sorted(by: { $0.path < $1.path }) {
             let path = paths[header] ?? header.lastPathComponent
-            guard destinations.insert(path).inserted else {
+            let identity = path.folding(options: .caseInsensitive, locale: Locale(identifier: "en_US_POSIX"))
+            guard destinations.insert(identity).inserted else {
                 throw Diagnostic(
                     "SP-SPEC-HEADER-COLLISION", stage: "integrate", "Multiple framework headers map to " + path,
                     file: label)

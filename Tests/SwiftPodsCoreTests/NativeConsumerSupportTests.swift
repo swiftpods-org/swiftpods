@@ -45,6 +45,67 @@ final class NativeConsumerSupportTests: XCTestCase {
         XCTAssertNotEqual(try ToolProcess.run("/bin/sh", [script.path], environment: environment).status, 0)
     }
 
+    func testFrameworkCopyKeepsLinksInsideTheAppAndPreservesSourceFiles() throws {
+        for mode in ["relative", "absolute-binary", "absolute-directory", "parent-relative", "escaping"] {
+            let engine = try engine()
+            let user = try NativePBX(engine.project.appendingPathComponent("Demo.xcodeproj/project.pbxproj"))
+            let target = user.add("target", ["isa": "PBXNativeTarget", "buildPhases": []])
+            let source = engine.project.appendingPathComponent("SDK Input $ ' 🧩\n/SDK.framework")
+            let version = source.appendingPathComponent("Versions/A")
+            try FileManager.default.createDirectory(at: version, withIntermediateDirectories: true)
+            let original = Data("SDK original bytes\n".utf8)
+            try original.write(to: version.appendingPathComponent("SDK"))
+            try FileManager.default.createSymbolicLink(
+                atPath: source.appendingPathComponent("Versions/Current").path,
+                withDestinationPath: mode == "absolute-directory" ? version.path : "A")
+            let link =
+                mode == "absolute-binary"
+                ? version.appendingPathComponent("SDK").path
+                : mode == "parent-relative" ? "Versions/A/../A/SDK" : "Versions/Current/SDK"
+            try FileManager.default.createSymbolicLink(
+                atPath: source.appendingPathComponent("SDK").path, withDestinationPath: link)
+            if mode == "escaping" {
+                let external = engine.project.appendingPathComponent("outside.txt")
+                try original.write(to: external)
+                try FileManager.default.createSymbolicLink(
+                    at: version.appendingPathComponent("external"), withDestinationURL: external)
+            }
+            try engine.consumerCopyPhase(
+                ["Debug": [NativeConsumerCopy(source: engine.consumerPath(source), destination: "SDK.framework")]],
+                kind: "frameworks", label: "Pods-Demo", target: target, user: user)
+            let script = engine.project.appendingPathComponent(
+                "Pods/Target Support Files/Pods-Demo/Pods-Demo-frameworks.sh")
+            var environment = ProcessInfo.processInfo.environment
+            environment.merge([
+                "PODS_ROOT": engine.project.appendingPathComponent("Pods").path,
+                "TARGET_BUILD_DIR": engine.project.appendingPathComponent("Build").path,
+                "FRAMEWORKS_FOLDER_PATH": "Frameworks", "CONFIGURATION": "Debug", "ARCHS": "",
+                "CODE_SIGNING_ALLOWED": "NO", "DERIVED_FILE_DIR": engine.project.appendingPathComponent("Derived").path,
+            ]) { _, new in new }
+            let copied = try ToolProcess.run("/bin/sh", [script.path], environment: environment)
+            XCTAssertEqual(try Data(contentsOf: version.appendingPathComponent("SDK")), original)
+            if mode == "escaping" {
+                XCTAssertNotEqual(copied.status, 0)
+                continue
+            }
+            XCTAssertEqual(copied.status, 0, String(decoding: copied.error, as: UTF8.self))
+            let installed = engine.project.appendingPathComponent("Build/Frameworks/SDK.framework")
+            let binary = installed.appendingPathComponent("SDK")
+            XCTAssertTrue(NativePath.isDescendant(binary.resolvingSymlinksInPath(), of: installed))
+            if mode == "relative" {
+                XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: binary.path), link)
+            }
+            if mode == "absolute-directory" {
+                XCTAssertEqual(
+                    try FileManager.default.destinationOfSymbolicLink(
+                        atPath: installed.appendingPathComponent("Versions/Current").path),
+                    "A")
+            }
+            try FileManager.default.moveItem(at: source, to: source.appendingPathExtension("hidden"))
+            XCTAssertEqual(try Data(contentsOf: binary), original)
+        }
+    }
+
     func testFileListsUseTheSelectedConfigurationAndKeepProjectsSmall() throws {
         let engine = try engine()
         let user = try NativePBX(engine.project.appendingPathComponent("Demo.xcodeproj/project.pbxproj"))

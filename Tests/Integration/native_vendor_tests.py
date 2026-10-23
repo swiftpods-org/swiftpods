@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Build/run real vendored SDK consumers through the independent Swift engine."""
 
+import hashlib
 import json
 import platform as host_platform
 import plistlib
@@ -424,6 +425,60 @@ def objc_archive_regression(base, env):
     return scenarios
 
 
+def framework_links(base, products, env, destination):
+    for mode in ["binary", "directory"]:
+        group = base / ("absolute-framework-" + mode)
+        group.mkdir()
+        work = fixture(group, products, "osx", raw=True)
+        framework = work / "Modules/VendorAdapter/VendorDynamic.framework"
+        version = framework / "Versions/A"
+        binary = version / "VendorDynamic"
+        link = framework / ("VendorDynamic" if mode == "binary" else "Versions/Current")
+        link.unlink()
+        link.symlink_to(binary.resolve() if mode == "binary" else version.resolve())
+        before = hashlib.sha256(binary.read_bytes()).hexdigest()
+        architectures = subprocess.check_output(
+            ["xcrun", "lipo", "-archs", str(binary)], text=True
+        ).split()
+        install(work, env, group / "install.log")
+        derived = build(work, group, destination, "build")
+        assert hashlib.sha256(binary.read_bytes()).hexdigest() == before
+        assert subprocess.check_output(
+            ["xcrun", "lipo", "-archs", str(binary)], text=True
+        ).split() == architectures
+        app = derived / "Build/Products/Debug/Demo.app"
+        embedded_framework = app / "Contents/Frameworks/VendorDynamic.framework"
+        embedded_binary = embedded_framework / "VendorDynamic"
+        assert embedded_binary.resolve().is_relative_to(embedded_framework.resolve())
+        assert subprocess.check_output(
+            ["xcrun", "lipo", "-archs", str(embedded_binary)], text=True
+        ).split() == [host_platform.machine()]
+        portable = group / "Portable.app"
+        shutil.copytree(app, portable, symlinks=True)
+        run(
+            ["codesign", "--force", "--sign", "-", portable / "Contents/Frameworks/VendorDynamic.framework"],
+            group, group / "adhoc-sign.log",
+        )
+        run(
+            ["codesign", "--verify", "--strict", portable / "Contents/Frameworks/VendorDynamic.framework"],
+            group, group / "verify-signature.log",
+        )
+        hidden = framework.with_suffix(".framework.hidden")
+        framework.rename(hidden)
+        try:
+            output = subprocess.check_output([str(portable / "Contents/MacOS/Demo")], text=True)
+            assert output.strip() == "vendor=126", output
+        finally:
+            hidden.rename(framework)
+        (group / "validation.json").write_text(
+            json.dumps({
+                "mode": mode, "source_unchanged": True, "architectures": architectures,
+                "embedded_architectures": [host_platform.machine()], "portable_app": "passed",
+                "adhoc_signature": "verified",
+            }, indent=2) + "\n"
+        )
+
+
 def main():
     base = fixture_directory("native-vendor-")
     print("Vendor fixtures:", base, flush=True)
@@ -438,6 +493,7 @@ def main():
     env["SWIFTPODS_CACHE_ROOT"] = str(base / "cache")
     scenarios = objc_archive_regression(base, env)
     mac_destination = "platform=macOS,arch=" + host_platform.machine()
+    framework_links(base, products, env, mac_destination)
     for raw in (False, True):
         group = base / ("raw" if raw else "xcframework")
         group.mkdir()
@@ -609,6 +665,7 @@ def main():
             "missing declared SDK rejected",
             "pod xcconfig search paths preserved",
             "offline deployment reinstall",
+            "absolute framework links stay inside the app without modifying source SDKs",
         ],
         "unverified": [
             "physical devices",

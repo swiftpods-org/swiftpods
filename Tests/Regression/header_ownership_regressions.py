@@ -5,6 +5,7 @@ import json
 import platform
 import plistlib
 import re
+import subprocess
 
 from scripts.support.processes import run_logged
 from Tests.Fixtures.vendor_fixture import fixture_build_arguments
@@ -415,3 +416,121 @@ def run(fixture):
     consumer_resource_bundle_identity(fixture)
     hook_lookups(fixture)
     bundle_identifier(fixture)
+    authored_umbrellas(fixture)
+    header_collisions(fixture)
+    quoted_header_namespace(fixture)
+
+
+def authored_umbrellas(fixture):
+    for mode in ["library", "modular-library", "static", "dynamic"]:
+        label = "authored-umbrella-" + mode
+        work, selected = create(fixture.root / label)
+        library = work / "Kit"
+        authored = library / "Kit-umbrella.h"
+        original = b"#pragma once\n#define KIT_PUBLIC_VALUE 7\n"
+        authored.write_bytes(original)
+        # The generated fallback name can itself be an authored API.
+        (library / "Kit-swiftpods-umbrella-1.h").write_text("#pragma once\n")
+        podfile = work / "Podfile"
+        text = podfile.read_text()
+        if mode in ["static", "dynamic"]:
+            text = "use_frameworks! :linkage => :" + mode + "\n" + text
+        elif mode == "modular-library":
+            text = "use_modular_headers!\n" + text
+        podfile.write_text(text)
+        graph = read_project(selected)
+        for obj in graph["objects"].values():
+            if obj.get("isa") == "XCBuildConfiguration":
+                obj["buildSettings"]["CLANG_ENABLE_MODULES"] = "YES"
+            if obj.get("isa") == "PBXFileReference" and obj.get("path") == "Sources/main.mm":
+                obj["path"] = "Sources/main.m"
+                obj["lastKnownFileType"] = "sourcecode.c.objc"
+        write_project(selected, graph)
+        old_main = selected.parent / "Sources/main.mm"
+        main = old_main.with_suffix(".m")
+        old_main.rename(main)
+        main.write_text(
+            ("@import Kit;\n" if mode != "library" else "")
+            + "#include <Kit/Kit-umbrella.h>\n"
+            + "#if KIT_PUBLIC_VALUE != 7\n#error Authored public umbrella was replaced\n#endif\n"
+            + main.read_text()
+        )
+        fixture.cli(work, "install")
+        project_before = (selected / "project.pbxproj").read_bytes()
+        lock_before = (work / "Podfile.lock").read_bytes()
+        fixture.cli(work, "install", "--offline", "--deployment")
+        assert (selected / "project.pbxproj").read_bytes() == project_before
+        assert (work / "Podfile.lock").read_bytes() == lock_before
+        assert authored.read_bytes() == original
+        fixture.build(work, "Demo", label + "-build")
+        app = resources_in_app(fixture, label + "-build")
+        assert "value=7" in subprocess.check_output(
+            [str(app / "Contents/MacOS/Demo")], text=True
+        )
+        assert authored.read_bytes() == original
+        fixture.verified.append("authored_public_umbrella_preserved_" + mode)
+
+
+def header_collisions(fixture):
+    for mode in ["library", "static", "dynamic"]:
+        label = "header-case-collision-" + mode
+        work, selected = create(fixture.root / label)
+        library = work / "Kit"
+        for folder, name, macro in [
+            ("First", "Foo.h", "FIRST_HEADER"),
+            ("Second", "foo.h", "SECOND_HEADER"),
+        ]:
+            directory = library / folder
+            directory.mkdir()
+            (directory / name).write_text("#pragma once\n#define " + macro + " 1\n")
+        spec = library / "Kit.podspec.json"
+        data = json.loads(spec.read_text())
+        data["source_files"] = "**/*.{c,h}"
+        spec.write_text(json.dumps(data))
+        if mode != "library":
+            podfile = work / "Podfile"
+            podfile.write_text("use_frameworks! :linkage => :" + mode + "\n" + podfile.read_text())
+        project_before = (selected / "project.pbxproj").read_bytes()
+        rejected = fixture.cli(work, "install", succeeds=False)
+        assert any(event.get("code") == "SP-SPEC-HEADER-COLLISION" for event in rejected["events"])
+        assert (selected / "project.pbxproj").read_bytes() == project_before
+        assert not (work / "Podfile.lock").exists()
+        if rejected.get("project_state") == "recovery_required":
+            fixture.cli(work, "recover")
+        (library / "Second/foo.h").rename(library / "Second/Bar.h")
+        main = selected.parent / "Sources/main.mm"
+        main.write_text(
+            "#include <Kit/Foo.h>\n#include <Kit/Bar.h>\n"
+            "#if FIRST_HEADER != 1 || SECOND_HEADER != 1\n#error Header lost\n#endif\n"
+            + main.read_text()
+        )
+        fixture.cli(work, "install")
+        fixture.build(work, "Demo", label + "-control-build")
+        fixture.verified.append("header_collision_rejected_and_distinct_headers_build_" + mode)
+
+
+def quoted_header_namespace(fixture):
+    work, _ = create(fixture.root / "quoted-header-namespace")
+    spec = work / "Kit/Kit.podspec.json"
+    data = json.loads(spec.read_text())
+    data["header_dir"] = 'Quoted">Headers'
+    spec.write_text(json.dumps(data))
+    podfile = work / "Podfile"
+    podfile.write_text("use_modular_headers!\n" + podfile.read_text())
+    fixture.cli(work, "install")
+    modulemap = next((work / "Pods/Headers/Public").rglob("module.modulemap"))
+    module = re.search(r"module\s+(\w+)", modulemap.read_text()).group(1)
+    source = work / "use.m"
+    source.write_text("@import " + module + ";\nint use(void) { return kit_value(); }\n")
+    sdk = subprocess.check_output(["xcrun", "--sdk", "macosx", "--show-sdk-path"], text=True).strip()
+    log = fixture.root / "quoted-header-namespace.log"
+    status = run_logged(
+        [
+            "xcrun", "clang", "-fsyntax-only", "-fmodules", "-Werror", "-isysroot", sdk,
+            "-fmodule-map-file=" + str(modulemap),
+            "-fmodules-cache-path=" + str(work / "module-cache"), source,
+        ],
+        work, log,
+    )
+    assert status == 0, log
+    fixture.verified.append("quoted_header_namespace_keeps_valid_relative_includes")

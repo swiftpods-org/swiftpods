@@ -223,6 +223,12 @@ names, independently of the binary product's filename.
 Dynamic pod wrappers force-load static SDKs once while retaining XCFramework
 slice preparation. Consumer copy phases inspect nested framework and resource
 contents on each build, using checksums to refresh files with unchanged timestamps.
+Embedded frameworks retain relative internal links; absolute internal links are
+rewritten to the embedded copy before thinning or signing. Links outside the
+source framework fail the build instead of exposing or changing external files.
+Header destination collisions are checked without case distinctions before
+installing links. Generated umbrella headers receive names that do not overlap
+authored public headers, including a library's own `NAME-umbrella.h`.
 
 Xcconfig assignments use `=`. Xcode rejects `+=` and `?=` during a build,
 even when `-showBuildSettings` succeeds. SwiftPods rejects them before hooks

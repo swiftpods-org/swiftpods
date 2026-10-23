@@ -175,7 +175,9 @@ extension NativeXcode {
         if useFramework && attributes["module_map"] == nil {
             let support = project.appendingPathComponent("Pods/Target Support Files/" + targetName)
             try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
-            let umbrella = support.appendingPathComponent(module + "-umbrella.h")
+            let umbrellaName = try generatedUmbrellaName(
+                module, occupied: selection.publicHeaders.map { try selection.headerPath($0) })
+            let umbrella = support.appendingPathComponent(umbrellaName)
             let publicHeaders = selection.publicHeaders.sorted { $0.path < $1.path }
             let includes: [String] = try publicHeaders.map { header in
                 let path = try selection.headerPath(header)

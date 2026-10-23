@@ -18,6 +18,7 @@ extension NativeXcode {
         let publicRoot = publicBase.appendingPathComponent(headerName).standardizedFileURL
         let privateBase = project.appendingPathComponent(
             headerDirectory(variant.root, platform: variant.platform, visibility: .privateHeaders))
+        var copies: [(source: URL, destination: URL)] = []
         for (base, headers) in [
             (publicBase, selection.publicHeaders),
             (privateBase, selection.headers),
@@ -27,20 +28,26 @@ extension NativeXcode {
                 let relative =
                     try selection.headerDirectory(header, module: module) + "/" + selection.headerPath(header)
                 let destination = base.appendingPathComponent(relative).standardizedFileURL
-                guard destinations.insert(destination.path).inserted else {
+                let identity = destination.path.folding(
+                    options: .caseInsensitive, locale: Locale(identifier: "en_US_POSIX"))
+                guard destinations.insert(identity).inserted else {
                     throw Diagnostic(
                         "SP-SPEC-HEADER-COLLISION", stage: "integrate", "Multiple headers map to " + relative,
                         file: variant.label)
                 }
-                try FileManager.default.createDirectory(
-                    at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-                if FileManager.default.fileExists(atPath: destination.path)
-                    || (try? FileManager.default.destinationOfSymbolicLink(atPath: destination.path)) != nil
-                {
-                    try FileManager.default.removeItem(at: destination)
-                }
-                try FileManager.default.createSymbolicLink(at: destination, withDestinationURL: header)
+                copies.append((header, destination))
             }
+        }
+        // Both visibility trees must be valid before replacing the first link.
+        for (source, destination) in copies {
+            try FileManager.default.createDirectory(
+                at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if FileManager.default.fileExists(atPath: destination.path)
+                || (try? FileManager.default.destinationOfSymbolicLink(atPath: destination.path)) != nil
+            {
+                try FileManager.default.removeItem(at: destination)
+            }
+            try FileManager.default.createSymbolicLink(at: destination, withDestinationURL: source)
         }
         var paths = nativeStrings(settings["HEADER_SEARCH_PATHS"])
         paths.append(NativeBuildSetting.literalPath(privateBase.path))
@@ -77,25 +84,55 @@ extension NativeXcode {
             }
             return
         }
-        let umbrella = publicRoot.appendingPathComponent(module + "-umbrella.h")
+        // Keep include paths relative to the public namespace, while reserving
+        // every authored header name before choosing the generated umbrella.
+        let publicCopies = copies.filter { NativePath.isDescendant($0.destination, of: publicBase) }
+        let umbrellaName = generatedUmbrellaName(
+            module, occupied: publicCopies.map { NativePath.relativePath(of: $0.destination, to: publicRoot) })
+        let umbrella = publicRoot.appendingPathComponent(umbrellaName)
+        let support = project.appendingPathComponent("Pods/Target Support Files/" + variant.label)
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        let receipt = support.appendingPathComponent(module + "-library-umbrella.json")
+        let previousName = (try? readObject(receipt))?["filename"] as? String ?? module + "-umbrella.h"
+        guard NativeTargetNames.isFileComponent(previousName),
+            previousName == module + "-umbrella.h"
+                || (previousName.hasPrefix(module + "-swiftpods-umbrella-") && previousName.hasSuffix(".h"))
+        else {
+            throw Diagnostic(
+                "SP-STATE-INVALID", stage: "integrate", "Invalid generated umbrella receipt", file: receipt.path)
+        }
+        for name in Set([previousName, module + "-umbrella.h"]) where name != umbrellaName {
+            let previous = publicRoot.appendingPathComponent(name)
+            let identity = previous.path.folding(options: .caseInsensitive, locale: Locale(identifier: "en_US_POSIX"))
+            let authored = publicCopies.contains {
+                $0.destination.path.folding(options: .caseInsensitive, locale: Locale(identifier: "en_US_POSIX"))
+                    == identity
+                    && $0.destination.resolvingSymlinksInPath() == previous.resolvingSymlinksInPath()
+            }
+            let directory = (try? previous.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+            if !authored, !directory,
+                FileManager.default.fileExists(atPath: previous.path)
+                    || (try? FileManager.default.destinationOfSymbolicLink(atPath: previous.path)) != nil
+            {
+                try FileManager.default.removeItem(at: previous)
+            }
+        }
         let content =
             "#ifdef __OBJC__\n#import <Foundation/Foundation.h>\n#endif\n"
             + (try selection.publicHeaders.sorted(by: { $0.path < $1.path }).map { header in
                 let destination = try publicBase.appendingPathComponent(
                     selection.headerDirectory(header, module: module) + "/" + selection.headerPath(header)
                 ).standardizedFileURL
-                let origin = publicRoot.pathComponents
-                let target = destination.pathComponents
-                let shared = zip(origin, target).prefix { $0 == $1 }.count
-                let relative = (Array(repeating: "..", count: origin.count - shared) + target.dropFirst(shared)).joined(
-                    separator: "/")
+                let relative = NativePath.relativePath(of: destination, to: publicRoot)
                 return "#include \"" + relative + "\""
             }).joined(separator: "\n") + "\n"
         try Data(umbrellaHeader(content, variant: variant).utf8).writeIfChanged(to: umbrella)
+        try jsonData(["filename": umbrellaName]).writeIfChanged(to: receipt)
         if modular {
             try Data(
-                ("module " + module + " { umbrella header \"" + umbrella.lastPathComponent
-                    + "\" export * module * { export * } }\n").utf8
+                ("module " + module + " { umbrella header "
+                    + NativeBuildSetting.quoted(umbrella.lastPathComponent)
+                    + " export * module * { export * } }\n").utf8
             ).writeIfChanged(to: modulemap)
             settings["MODULEMAP_FILE"] = NativeBuildSetting.literal(modulemap.path)
             // Clang cannot discover an aliased directory by the module name.

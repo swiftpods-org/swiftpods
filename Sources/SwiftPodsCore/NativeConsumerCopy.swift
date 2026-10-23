@@ -149,6 +149,74 @@ extension NativeXcode {
     private static let consumerCopyScript = #"""
         #!/bin/sh
         set -eu
+        framework_path() (
+          path=$1
+          hops=0
+          while :; do
+            case "${path}" in
+              */*) parent=${path%/*}; name=${path##*/}; parent=${parent:-/} ;;
+              *) parent=.; name=$path ;;
+            esac
+            parent=$(CDPATH= cd -P "${parent}" && printf '%s/.' "${PWD}") || exit 1
+            parent=${parent%/.}
+            path="${parent%/}/${name}"
+            case "${name}" in
+              ''|.|..) path=$(CDPATH= cd -P "${path}" && printf '%s/.' "${PWD}"); path=${path%/.} ;;
+            esac
+            if [ ! -L "${path}" ]; then
+              # The suffix preserves trailing newlines in command substitutions.
+              printf '%s/.' "${path}"
+              exit 0
+            fi
+            hops=$((hops + 1))
+            [ "${hops}" -le 64 ] || exit 1
+            link=$(/usr/bin/readlink "${path}" && printf '.') || exit 1
+            link=${link%.}; link=${link%?}
+            case "${link}" in
+              /*) path=$link ;;
+              *) path="${parent%/}/${link}" ;;
+            esac
+          done
+        )
+        if [ "${1:-}" = --normalize-framework-links ]; then
+          source_root=$2
+          destination_root=$3
+          shift 3
+          for copied_link in "$@"; do
+            relative=${copied_link#"${destination_root}/"}
+            resolved=$(framework_path "${source_root}/${relative}")
+            resolved=${resolved%/.}
+            case "${resolved}" in
+              "${source_root}/"*) ;;
+              *) echo "SwiftPods framework link escapes its source: ${relative}" >&2; exit 1 ;;
+            esac
+            link=$(/usr/bin/readlink "${copied_link}" && printf '.')
+            link=${link%.}; link=${link%?}
+            case "${link}" in
+              /*|..|../*|*/..|*/../*)
+                target=${resolved#"${source_root}/"}
+                case "${relative}" in
+                  */*) parent=${relative%/*} ;;
+                  *) parent= ;;
+                esac
+                while [ -n "${parent}" ] && [ -n "${target}" ] && [ "${parent%%/*}" = "${target%%/*}" ]; do
+                  case "${parent}" in */*) parent=${parent#*/} ;; *) parent= ;; esac
+                  case "${target}" in */*) target=${target#*/} ;; *) target= ;; esac
+                done
+                prefix=
+                while [ -n "${parent}" ]; do
+                  prefix="../${prefix}"
+                  case "${parent}" in */*) parent=${parent#*/} ;; *) parent= ;; esac
+                done
+                link="${prefix}${target}"
+                link=${link:-.}
+                /bin/rm -f "${copied_link}"
+                /bin/ln -s "${link}" "${copied_link}"
+                ;;
+            esac
+          done
+          exit 0
+        fi
         install_resources() {
           source=$1
           destination="${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/$2"
@@ -164,23 +232,28 @@ extension NativeXcode {
           source=$1
           destination="${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}/$2"
           mkdir -p "$(dirname "${destination}")"
+          if [ -L "${destination}" ]; then /bin/rm -f "${destination}"; fi
           if [ -d "${source}" ]; then
             mkdir -p "${destination}"
+            source_root=$(framework_path "${source}"); source_root=${source_root%/.}
+            destination_root=$(framework_path "${destination}"); destination_root=${destination_root%/.}
+            case "${destination_root}/" in
+              "${source_root}/"*) echo "SwiftPods framework destination overlaps its source" >&2; exit 1 ;;
+            esac
             /usr/bin/rsync -a --checksum --delete --exclude Headers --exclude PrivateHeaders --exclude Modules "${source}/" "${destination}/"
+            /usr/bin/find "${destination_root}" -type l -exec /bin/sh "$0" --normalize-framework-links "${source_root}" "${destination_root}" {} +
             binary="${destination}/$(basename "$2" .framework)"
           else
             /bin/cp -p "${source}" "${destination}"
             binary="${destination}"
+            destination_root=$(framework_path "${destination}"); destination_root=${destination_root%/.}
           fi
           if [ -n "${ARCHS:-}" ] && [ -f "${binary}" ]; then
-            # lipo replaces its output; follow binary links to retain versioned framework layouts.
-            while [ -L "${binary}" ]; do
-              link=$(/usr/bin/readlink "${binary}")
-              case "${link}" in
-                /*) binary="${link}" ;;
-                *) binary="$(dirname "${binary}")/${link}" ;;
-              esac
-            done
+            resolved=$(framework_path "${binary}"); binary=${resolved%/.}
+            case "${binary}" in
+              "${destination_root}"|"${destination_root}/"*) ;;
+              *) echo "SwiftPods framework binary escapes its destination" >&2; exit 1 ;;
+            esac
             /bin/chmod u+w "${binary}"
             architectures=$(/usr/bin/lipo -archs "${binary}")
             for architecture in ${architectures}; do

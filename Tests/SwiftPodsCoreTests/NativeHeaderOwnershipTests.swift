@@ -117,6 +117,175 @@ final class NativeHeaderOwnershipTests: XCTestCase {
         XCTAssertEqual(graph.objects[target]?["buildPhases"] as? [String], first)
     }
 
+    func testCaseFoldedHeaderCollisionsFailBeforeInstallingAnyLinks() throws {
+        for (first, second) in [("Foo.h", "foo.h"), ("Straße.h", "STRASSE.h")] {
+            for privateSecond in [false, true] {
+                let root = try directory()
+                for (folder, name) in [("First", first), ("Second", second)] {
+                    let file = root.appendingPathComponent(folder + "/" + name)
+                    try FileManager.default.createDirectory(
+                        at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    try Data("// original\n".utf8).write(to: file)
+                }
+                var data: [String: Any] = ["name": "Kit", "version": "1.0", "source_files": "**/*.h"]
+                if privateSecond { data["private_header_files"] = "Second/*.h" }
+                let spec = try NativeSpec(data: data, directory: root)
+                XCTAssertThrowsError(try generated(root: root, spec: spec)) {
+                    XCTAssertEqual(($0 as? Diagnostic)?.code, "SP-SPEC-HEADER-COLLISION")
+                }
+                let headers = root.appendingPathComponent("Pods/Headers")
+                let files =
+                    FileManager.default.enumerator(at: headers, includingPropertiesForKeys: nil)?.allObjects
+                    as? [URL] ?? []
+                XCTAssertFalse(
+                    files.contains { (try? FileManager.default.destinationOfSymbolicLink(atPath: $0.path)) != nil })
+            }
+        }
+    }
+
+    func testFrameworkHeaderMappingsRejectCaseFoldedDestinations() throws {
+        let root = try directory()
+        let engine = try NativeXcode(
+            project: root, manifest: [:], resolution: NativeResolution(specs: [:], requests: []),
+            integrateUserProjects: false)
+        let first = root.appendingPathComponent("First.h")
+        let second = root.appendingPathComponent("Second.h")
+        let before = try jsonData(engine.graph.objects)
+        XCTAssertThrowsError(
+            try engine.mapFrameworkHeaders(
+                [first, second], paths: [first: "Sub/Foo.h", second: "sub/foo.h"],
+                target: "target", label: "Kit", visibility: .publicHeaders)
+        ) {
+            XCTAssertEqual(($0 as? Diagnostic)?.code, "SP-SPEC-HEADER-COLLISION")
+        }
+        XCTAssertEqual(try jsonData(engine.graph.objects), before)
+    }
+
+    func testAuthoredUmbrellaRemainsPublicForOrdinaryAndModularLibraries() throws {
+        for modular in [false, true] {
+            let root = try directory()
+            let header = root.appendingPathComponent("Kit-umbrella.h")
+            let original = Data("#pragma once\n#define KIT_PUBLIC_VALUE 7\n".utf8)
+            try original.write(to: header)
+            let spec = try NativeSpec(
+                data: ["name": "Kit", "version": "1.0", "source_files": "*.h"], directory: root)
+            let dependency: [String: Any] = ["name": "Kit", "options": ["modular_headers": modular]]
+            let engine = try NativeXcode(
+                project: root,
+                manifest: ["targets": [["name": "Demo", "platform": ["name": "osx"], "dependencies": [dependency]]]],
+                resolution: NativeResolution(
+                    specs: ["Kit": spec],
+                    requests: [try NativeDependency(dependency, platform: "osx", deployment: "13.0")]),
+                integrateUserProjects: false)
+            try engine.generate()
+            let installed = root.appendingPathComponent(
+                engine.headerDirectory("Kit", platform: "osx") + "/Kit/Kit-umbrella.h")
+            XCTAssertEqual(try Data(contentsOf: installed), original)
+            XCTAssertEqual(try Data(contentsOf: header), original)
+            XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: installed.path), header.path)
+        }
+    }
+
+    func testFrameworkUmbrellasAvoidAuthoredHeaderNames() throws {
+        for mode in ["static", "dynamic"] {
+            let root = try directory()
+            let names = ["Kit-umbrella.h", "Kit-swiftpods-umbrella-1.h"]
+            for name in names { try Data("// authored\n".utf8).write(to: root.appendingPathComponent(name)) }
+            let spec = try NativeSpec(data: ["name": "Kit", "version": "1.0", "source_files": "*.h"], directory: root)
+            let engine = try NativeXcode(
+                project: root,
+                manifest: [
+                    "targets": [
+                        [
+                            "name": "Demo", "platform": ["name": "osx"], "frameworks": mode,
+                            "dependencies": [["name": "Kit"]],
+                        ]
+                    ]
+                ],
+                resolution: NativeResolution(
+                    specs: ["Kit": spec], requests: [try NativeDependency(["name": "Kit"], platform: "osx")]),
+                integrateUserProjects: false)
+            try engine.generate()
+            let support = root.appendingPathComponent("Pods/Target Support Files/Kit")
+            let map = try String(contentsOf: support.appendingPathComponent("Kit.modulemap"), encoding: .utf8)
+            XCTAssertTrue(map.contains("Kit-swiftpods-umbrella-2.h"))
+            for name in names {
+                XCTAssertEqual(
+                    try String(contentsOf: root.appendingPathComponent(name), encoding: .utf8), "// authored\n")
+            }
+        }
+    }
+
+    func testReinstallReplacesGeneratedUmbrellasAndRestoresCaseVariantAuthoredHeaders() throws {
+        for authored in [false, true] {
+            let root = try directory()
+            let name = authored ? "kit-umbrella.h" : "Kit.h"
+            let original = Data("#pragma once\n#define KIT_PUBLIC_VALUE 7\n".utf8)
+            try original.write(to: root.appendingPathComponent(name))
+            let spec = try NativeSpec(data: ["name": "Kit", "version": "1.0", "source_files": "*.h"], directory: root)
+            let first = try generated(root: root, spec: spec)
+            let publicRoot = root.appendingPathComponent(first.headerDirectory("Kit", platform: "osx") + "/Kit")
+            let legacy = publicRoot.appendingPathComponent("Kit-umbrella.h")
+            try Data("// former generated header\n".utf8).write(to: legacy, options: .atomic)
+            _ = try generated(root: root, spec: spec)
+            if authored {
+                XCTAssertEqual(try Data(contentsOf: publicRoot.appendingPathComponent(name)), original)
+                XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent(name)), original)
+            } else {
+                XCTAssertFalse(try String(contentsOf: legacy, encoding: .utf8).contains("former generated"))
+            }
+        }
+    }
+
+    func testReinstallRemovesObsoleteGeneratedUmbrellaNames() throws {
+        let root = try directory()
+        let source = root.appendingPathComponent("Library")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        let header = source.appendingPathComponent("Kit-umbrella.h")
+        try Data("#pragma once\n".utf8).write(to: header)
+        let spec = try NativeSpec(data: ["name": "Kit", "version": "1.0", "source_files": "*.h"], directory: source)
+        let engine = try generated(root: root, spec: spec)
+        let publicRoot = root.appendingPathComponent(engine.headerDirectory("Kit", platform: "osx") + "/Kit")
+        let extra = source.appendingPathComponent("Kit-swiftpods-umbrella-1.h")
+        try Data("#pragma once\n".utf8).write(to: extra)
+        _ = try generated(root: root, spec: spec)
+        XCTAssertEqual(
+            try FileManager.default.destinationOfSymbolicLink(
+                atPath: publicRoot.appendingPathComponent(extra.lastPathComponent).path),
+            extra.path)
+        try FileManager.default.removeItem(at: extra)
+        _ = try generated(root: root, spec: spec)
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: publicRoot.appendingPathComponent("Kit-swiftpods-umbrella-2.h").path)
+        )
+        XCTAssertEqual(try Data(contentsOf: header), Data("#pragma once\n".utf8))
+    }
+
+    func testGeneratedUmbrellaPreservesMappedHeaderDirectories() throws {
+        let root = try directory()
+        let source = root.appendingPathComponent("Library")
+        let nested = source.appendingPathComponent("Headers/Kit-swiftpods-umbrella-1.h/Nested.h")
+        try FileManager.default.createDirectory(
+            at: nested.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let original = Data("#pragma once\n#define NESTED_API 7\n".utf8)
+        try original.write(to: nested)
+        try Data("#pragma once\n".utf8).write(to: source.appendingPathComponent("Headers/Kit-umbrella.h"))
+        let spec = try NativeSpec(
+            data: [
+                "name": "Kit", "version": "1.0", "header_mappings_dir": "Headers",
+                "source_files": ["Headers/Kit-umbrella.h", "Headers/*/*.h"],
+            ], directory: source)
+        let support = root.appendingPathComponent("Pods/Target Support Files/Kit")
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        try jsonData(["filename": "Kit-swiftpods-umbrella-1.h"]).write(
+            to: support.appendingPathComponent("Kit-library-umbrella.json"))
+        let engine = try generated(root: root, spec: spec)
+        let installed = root.appendingPathComponent(
+            engine.headerDirectory("Kit", platform: "osx") + "/Kit/Kit-swiftpods-umbrella-1.h/Nested.h")
+        XCTAssertEqual(try Data(contentsOf: installed), original)
+        XCTAssertEqual(try Data(contentsOf: nested), original)
+    }
+
     private func generated(root: URL, spec: NativeSpec) throws -> NativeXcode {
         let request = try NativeDependency(["name": "Kit"], platform: "osx", deployment: "13.0")
         let engine = try NativeXcode(
