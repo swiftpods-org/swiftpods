@@ -57,6 +57,9 @@ from Tests.Regression.glob_character_class_regressions import character_class_bu
 from Tests.Regression.glob_scalar_regressions import (
     run_regressions as scalar_glob_builds,
 )
+from Tests.Regression.header_namespace_regressions import (
+    run_regressions as header_namespace_regressions,
+)
 from Tests.Regression.header_ownership_regressions import (
     run as header_ownership_regressions,
 )
@@ -594,6 +597,7 @@ def main():
     header_path_regressions(fixture)
     integrity_doctor_paths(fixture)
     header_ownership_regressions(fixture)
+    header_namespace_regressions(fixture)
     consumer_build_regressions(fixture)
     input_contract_regressions(fixture)
     source_input_regressions(fixture)

@@ -29,6 +29,10 @@ jobs:
         with:
           python-version: '3.13.16'
       - uses: ./.github/actions/setup-runtime
+      - name: Run Swift unit tests
+        run: python3 -m Tests.swift_tests
+      - name: Check header namespaces and reinstall visibility
+        run: python3 -m Tests.Regression.header_namespace_regressions
       - name: Build and package SwiftPods
         run: python3 -m scripts.package --destination "$SWIFTPODS_BUILD_ROOT/SwiftPods"
       - name: Archive the distribution
