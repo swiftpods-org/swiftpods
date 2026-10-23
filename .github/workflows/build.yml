@@ -33,6 +33,8 @@ jobs:
         run: python3 -m Tests.swift_tests
       - name: Check header namespaces and reinstall visibility
         run: python3 -m Tests.Regression.header_namespace_regressions
+      - name: Check source and binary module ownership
+        run: python3 -m Tests.Regression.module_ownership_regressions
       - name: Build and package SwiftPods
         run: python3 -m scripts.package --destination "$SWIFTPODS_BUILD_ROOT/SwiftPods"
       - name: Archive the distribution

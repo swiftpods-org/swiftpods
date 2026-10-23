@@ -32,14 +32,15 @@ See [Getting started](../README.md#getting-started) for a Podfile example, or
 
 ## Regression checks
 
-Run the Swift corpus and the focused header integration matrix from the repository root:
+Run the Swift corpus and the focused header and module integration matrices from the repository root:
 
 ~~~sh
 python3 -m Tests.swift_tests
 python3 -m Tests.Regression.header_namespace_regressions
+python3 -m Tests.Regression.module_ownership_regressions
 ~~~
 
-Both checks run before packaging in the Build SwiftPods workflow. The header
+All three checks run before packaging in the Build SwiftPods workflow. The header
 matrix also belongs to the full lifecycle suite. It checks conflicting modules,
 distinct-module Debug/Release builds and execution, and public-header visibility
 after a fresh install or an offline deployment reinstall. Reinstall tests change
@@ -52,6 +53,12 @@ links from each variant's public and private trees, including dangling links fro
 older installs. Regular files, links to other source trees and linked directories
 are preserved.
 
-The matrix runs all cases before reporting its failures. Assertions remain
+The module ownership matrix checks declarations in custom Clang maps and modules
+from binary SDKs alongside source pods. It includes real Debug/Release builds,
+offline deployment, unused pod module aliases, and nested module controls. These
+checks also run in the full lifecycle suite. Unit tests cover modules isolated by
+consumer or configuration so rejecting conflicts does not reject valid graphs.
+
+Each matrix runs all cases before reporting its failures. Assertions remain
 active for known defects; a nonzero result blocks the build until the
 implementation meets the expected behavior. Compiler warnings fail the checks.

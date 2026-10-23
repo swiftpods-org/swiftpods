@@ -75,6 +75,9 @@ from Tests.Regression.integrity_doctor_path_regressions import (
 from Tests.Regression.lifecycle_audit_regressions import run as audit_regressions
 from Tests.Regression.lint_input_regressions import run as lint_input_regressions
 from Tests.Regression.metadata_repository_regressions import run as metadata_regressions
+from Tests.Regression.module_ownership_regressions import (
+    run_regressions as module_ownership_regressions,
+)
 from Tests.Regression.name_boundary_regressions import (
     run_regressions as name_boundary_regressions,
 )
@@ -598,6 +601,7 @@ def main():
     integrity_doctor_paths(fixture)
     header_ownership_regressions(fixture)
     header_namespace_regressions(fixture)
+    module_ownership_regressions(fixture)
     consumer_build_regressions(fixture)
     input_contract_regressions(fixture)
     source_input_regressions(fixture)
