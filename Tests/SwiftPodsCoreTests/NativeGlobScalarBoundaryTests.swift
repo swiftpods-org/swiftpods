@@ -66,4 +66,34 @@ final class NativeGlobScalarBoundaryTests: XCTestCase {
             }
         }
     }
+
+    func testDanglingLinksKeepLexicalPathsAcrossFilesystemAliases() throws {
+        let root = try root(["Keep.h"])
+        let link = root.appendingPathComponent(".swiftpods/backup/Gone.h")
+        try FileManager.default.createDirectory(
+            at: link.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: "../../missing.h")
+        let alias = root.appendingPathExtension("alias")
+        try FileManager.default.createSymbolicLink(atPath: alias.path, withDestinationPath: root.path)
+        addTeardownBlock { try? FileManager.default.removeItem(at: alias) }
+        var aliases = Set([root.path, alias.path])
+        if root.path.hasPrefix("/var/") { aliases.insert("/private" + root.path) }
+        if root.path.hasPrefix("/private/var/") { aliases.insert(String(root.path.dropFirst("/private".count))) }
+        for spelling in aliases {
+            let boundary = URL(fileURLWithPath: spelling)
+            XCTAssertEqual(try nativeGlob("*.h", root: boundary).map(\.lastPathComponent), ["Keep.h"])
+            let matches = try nativeGlob(".swiftpods/backup/*.h", root: boundary)
+            XCTAssertEqual(matches.map(\.lastPathComponent), ["Gone.h"])
+            XCTAssertEqual(
+                try FileManager.default.destinationOfSymbolicLink(atPath: matches[0].path), "../../missing.h")
+        }
+    }
+
+    func testDirectoryLinksRemainEntriesWithoutTraversingTheirTargets() throws {
+        let root = try root(["Payload/Keep.h"])
+        let alias = root.appendingPathComponent("Alias")
+        try FileManager.default.createSymbolicLink(atPath: alias.path, withDestinationPath: "Payload")
+        XCTAssertEqual(try nativeGlob("**/*.h", root: root).map(\.lastPathComponent), ["Keep.h"])
+        XCTAssertEqual(try nativeGlob("Alias", root: root), [alias])
+    }
 }

@@ -249,6 +249,10 @@ resource copying and downloaded-source cleanup use path components. A component
 starting with a Unicode combining mark retains its complete filename and its
 directory boundary. Symlink integrity walks filesystem components before `..`
 and checks physical containment, including dangling targets inside the pod.
+File matching preserves lexical paths across filesystem aliases, including
+dangling generated links during development-pod reinstalls. Downloaded-source
+cleanup retains the internal targets and intermediate links needed by selected
+files and directories before removing unused payloads.
 Regression fixtures compare public file selection with CocoaPods and build and
 execute Debug/Release consumers with offline deployment reinstall checks.
 

@@ -6,7 +6,6 @@ func nativeGlob(_ patterns: Any?, root: URL) throws -> [URL] {
     let supplied = nativeStrings(patterns)
     if supplied.isEmpty { return [] }
     let boundary = root.standardizedFileURL
-    let rootComponents = boundary.pathComponents
     func expression(_ pattern: String) throws -> NSRegularExpression {
         try NativeSpecPaths.validatePath(pattern, stage: "integrate", file: pattern)
         let traversal =
@@ -136,26 +135,21 @@ func nativeGlob(_ patterns: Any?, root: URL) throws -> [URL] {
     let matchers = try supplied.map { try expression($0.hasSuffix("/") ? String($0.dropLast()) : $0) }
     var result = Set<URL>()
     if supplied.contains(".") { result.insert(boundary) }
-    if let entries = FileManager.default.enumerator(
-        at: boundary, includingPropertiesForKeys: [.isSymbolicLinkKey], options: [])
-    {
-        while let file = entries.nextObject() as? URL {
+    // Relative enumeration preserves the same root spelling for existing and
+    // dangling links; URL standardization can switch /var to /private/var.
+    if let entries = FileManager.default.enumerator(atPath: boundary.path) {
+        while let relative = entries.nextObject() as? String {
             try NativeCancellation.check()
-            let path = file.standardizedFileURL
-            if (try? path.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) == true {
+            let path = boundary.appendingPathComponent(relative)
+            if (try? FileManager.default.attributesOfItem(atPath: path.path)[.type]) as? FileAttributeType
+                == .typeSymbolicLink
+            {
                 entries.skipDescendants()
-            }
-            let components = path.pathComponents
-            guard components.count > rootComponents.count,
-                Array(components.prefix(rootComponents.count)) == rootComponents
-            else {
-                throw Diagnostic("SP-SPEC-PATH", stage: "integrate", "Expanded file escapes the pod", file: file.path)
             }
             // Filesystem components can begin with combining marks; grapheme offsets
             // would remove them together with the preceding separator. Normalize only
-            // the matching view, retaining the actual URL returned by Foundation.
-            let relative = components.dropFirst(rootComponents.count).joined(separator: "/")
-                .precomposedStringWithCanonicalMapping
+            // the matching view, retaining the original filesystem spelling.
+            let relative = relative.precomposedStringWithCanonicalMapping
             if matchers.contains(where: {
                 $0.firstMatch(in: relative, range: NSRange(relative.startIndex..., in: relative)) != nil
             }) {

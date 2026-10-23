@@ -3,14 +3,22 @@ import Darwin
 import Foundation
 
 enum FileFingerprint {
+    static func physicalPath(_ path: String) -> String? {
+        guard let value = realpath(path, nil) else { return nil }
+        defer { free(value) }
+        return String(cString: value)
+    }
+
     static func linkIsContained(_ link: URL, in root: URL) throws -> Bool {
-        func canonical(_ path: String) -> String? {
-            guard let value = realpath(path, nil) else { return nil }
-            defer { free(value) }
-            return String(cString: value)
-        }
-        guard let boundary = canonical(root.path), let parent = canonical(link.deletingLastPathComponent().path) else {
-            return false
+        try linkDestinations(link, in: root) != nil
+    }
+
+    /// Include intermediate links and directories traversed before "..", since
+    /// retaining only the final payload would leave an otherwise valid link broken.
+    static func linkDestinations(_ link: URL, in root: URL) throws -> [URL]? {
+        guard let boundary = physicalPath(root.path), let parent = physicalPath(link.deletingLastPathComponent().path)
+        else {
+            return nil
         }
         let manager = FileManager.default
         let target = try manager.destinationOfSymbolicLink(atPath: link.path)
@@ -19,11 +27,13 @@ enum FileFingerprint {
         }
         var pending = components(target.utf8.first == 47 ? target : parent + "/" + target)
         var resolved: [String] = []
+        var dependencies: [[String]] = []
         var hops = 0
         while !pending.isEmpty {
             let component = pending.removeFirst()
             if component == "." { continue }
             if component == ".." {
+                dependencies.append(resolved)
                 if !resolved.isEmpty { resolved.removeLast() }
                 continue
             }
@@ -31,7 +41,8 @@ enum FileFingerprint {
             let path = "/" + resolved.joined(separator: "/")
             if (try? manager.attributesOfItem(atPath: path)[.type]) as? FileAttributeType == .typeSymbolicLink {
                 hops += 1
-                guard hops <= 64 else { return false }
+                guard hops <= 64 else { return nil }
+                dependencies.append(resolved)
                 let next = try manager.destinationOfSymbolicLink(atPath: path)
                 resolved.removeLast()
                 if next.utf8.first == 47 { resolved.removeAll() }
@@ -40,7 +51,11 @@ enum FileFingerprint {
         }
         // Both sides already use physical paths. Foundation URL standardization
         // treats /private/var aliases differently for existing and dangling paths.
-        return resolved.starts(with: components(boundary))
+        let base = components(boundary)
+        guard resolved.starts(with: base) else { return nil }
+        dependencies = dependencies.filter { $0.count > base.count && $0.starts(with: base) }
+        dependencies.append(resolved)
+        return Set(dependencies).map { URL(fileURLWithPath: "/" + $0.joined(separator: "/")) }
     }
 
     static func file(_ url: URL) throws -> String {

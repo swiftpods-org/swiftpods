@@ -109,6 +109,9 @@ from Tests.Regression.source_delimiter_regressions import (
     run_regressions as source_delimiter_regressions,
 )
 from Tests.Regression.source_input_regressions import run as source_input_regressions
+from Tests.Regression.source_link_regressions import (
+    run_regressions as source_link_regressions,
+)
 from Tests.Regression.source_string_regressions import (
     run_regressions as source_string_regressions,
 )
@@ -557,6 +560,7 @@ def main():
     fixture.deleted_subspec()
     fixture.shared_pins_and_git_provenance()
     fixture.exact_cache_cleanup()
+    source_link_regressions(fixture)
     audit_regressions(fixture)
     metadata_regressions(fixture)
     source_api_regressions(fixture)

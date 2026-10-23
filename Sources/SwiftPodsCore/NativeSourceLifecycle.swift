@@ -122,19 +122,8 @@ extension NativeSources {
             if let license = spec.data["license"] as? [String: String], let file = license["file"] {
                 used.insert(root.appendingPathComponent(file))
             }
-            if installationOptions["clean"] as? Bool != false,
-                let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil)
-            {
-                let retained = used.map { $0.standardizedFileURL.pathComponents.map { $0.lowercased() } }
-                while let path = enumerator.nextObject() as? URL {
-                    let value = path.standardizedFileURL.pathComponents.map { $0.lowercased() }
-                    if !retained.contains(where: {
-                        $0.starts(with: value) || value.starts(with: $0)
-                    }) {
-                        enumerator.skipDescendants()
-                        try FileManager.default.removeItem(at: path)
-                    }
-                }
+            if installationOptions["clean"] as? Bool != false {
+                try NativeSourceCleanup.run(root: root, used: used)
             }
             if installationOptions["lock_pod_sources"] as? Bool != false {
                 for file in sources where FileManager.default.fileExists(atPath: file.path) {
