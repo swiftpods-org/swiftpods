@@ -148,6 +148,20 @@ def case_sensitive_modules(fixture):
     fixture.cli(work, "install")
     fixture.cli(work, "install", "--offline", "--deployment")
     builds(fixture, work, "case-sensitive-modules")
+    # Clang maps have distinct physical files, whereas static Swift modules
+    # also publish a .swiftmodule directory in their configuration build folder.
+    before = (selected / "project.pbxproj").read_bytes()
+    for pod, module in [("Kit", "Feature"), ("Other", "feature")]:
+        update_spec(work, pod, module_name=module, source_files="*.{c,h,swift}")
+        (work / pod / (pod + ".swift")).write_text(
+            "public func " + pod.lower() + "_swift() -> Int { 7 }\n"
+        )
+    rejected = fixture.cli(work, "install", succeeds=False)
+    assert any(
+        e.get("code") == "SP-XCODE-MODULE-CONFLICT" for e in rejected["events"]
+    ), rejected
+    assert (selected / "project.pbxproj").read_bytes() == before
+    fixture.verified.append("case-distinct-swift-output-files-rejected")
 
 
 def vendor_pair_fixture(parent, *, collision=False):

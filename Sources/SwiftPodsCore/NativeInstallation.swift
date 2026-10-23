@@ -275,6 +275,7 @@ extension NativeCommandSession {
         for request in resolved.requests {
             if let spec = resolved.specs[request.root] { _ = try spec.scriptPhases(for: request) }
         }
+        try NativePodProjectNames.validate(manifest: manifest, roots: Set(resolved.specs.keys))
         try FileManager.default.createDirectory(
             at: project.appendingPathComponent("Pods"), withIntermediateDirectories: true)
         var installed: [String: NativeSpec] = [:]

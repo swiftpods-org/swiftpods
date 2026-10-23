@@ -70,22 +70,26 @@ extension NativeXcode {
     func validateModules(inspectInterfaces: Bool = true) throws {
         let previous = activeVariants
         defer { activeVariants = previous }
-        var interfaces: [String: (names: Set<String>, framework: String?)] = [:]
+        var interfaces: [String: (names: Set<String>, framework: String?, swiftModule: String?)] = [:]
         var vendorModules: [URL: [String: Set<String>]] = [:]
         var destinations: [String: [NativeSwiftPackageCompileSettings.Destination]] = [:]
         for target in manifest["targets"] as? [[String: Any]] ?? [] {
             selectConsumer(target)
             let platform = target["platform"] as? [String: String] ?? [:]
             let platformName = platform["name"] ?? "ios"
-            let requests = try nativeDependencies(target).flatMap {
+            let searchRequests = try nativeDependencies(target, search: true).flatMap {
                 try NativeDependency(
                     $0, platform: platformName, deployment: platform["deployment_target"] ?? "0"
                 ).expandedSelections()
             }
+            let configured = try configuredDependencyRoots(target)
+            let eligible = configured.values.reduce(into: Set<String>()) { $0.formUnion($1) }
+            let inherited = try dependencyRoots(searchRequests).subtracting(eligible)
             for configuration in configurationNames {
-                let roots = try dependencyRoots(requests.filter { dependencyEnabled($0, configuration: configuration) })
+                let roots = (configured[configuration] ?? []).union(inherited)
                 var frameworks: [String: String] = [:]
                 var modules: [String: String] = [:]
+                var swiftFiles: [String: String] = [:]
                 for root in roots.sorted() {
                     guard let spec = resolution.specs[root],
                         let variant = variantPlan?.variants[variantKey(root, platformName)]
@@ -105,23 +109,36 @@ extension NativeXcode {
                         }
                         frameworks[product.lowercased()] = root
                     }
+                    if let file = interface.swiftModule {
+                        if let other = swiftFiles[file.lowercased()], other != root {
+                            throw Diagnostic(
+                                "SP-XCODE-MODULE-CONFLICT", stage: "integrate",
+                                "Pods \(other) and \(root) produce the same Swift module file \(file) in \(configuration)",
+                                file: target["name"] as? String)
+                        }
+                        swiftFiles[file.lowercased()] = root
+                    }
                     for module in interface.names.sorted() {
-                        if let other = modules[module.lowercased()], other != root {
+                        if let other = modules[module], other != root {
                             throw Diagnostic(
                                 "SP-XCODE-MODULE-CONFLICT", stage: "integrate",
                                 "Pods \(other) and \(root) provide the same module \(module) in \(configuration)",
                                 file: target["name"] as? String)
                         }
-                        modules[module.lowercased()] = root
+                        modules[module] = root
                     }
                 }
-                guard inspectInterfaces, !modules.isEmpty || !frameworks.isEmpty else { continue }
+                guard inspectInterfaces else { continue }
+                var seenSDKs = Set<URL>()
                 let sdks = roots.sorted().flatMap { vendorSDKs[variantKey($0, platformName)] ?? [] }
+                    .filter { seenSDKs.insert($0.url).inserted }
                 guard !sdks.isEmpty else { continue }
                 if destinations[platformName] == nil {
                     destinations[platformName] = NativeSwiftPackageCompileSettings.destinations(
                         platformName, sdkContext: linkerSDKContext)
                 }
+                let selectedDestinations = destinations[platformName] ?? []
+                var binaryModules = selectedDestinations.map { _ in [String: URL]() }
                 for sdk in sdks {
                     if sdk.isFramework,
                         let root = frameworks[(sdk.productName as NSString).deletingPathExtension.lowercased()]
@@ -131,22 +148,31 @@ extension NativeXcode {
                             "Pod \(root) and vendored SDK provide the same framework product \(sdk.productName) in \(configuration)",
                             file: target["name"] as? String, dependencyChain: [root, sdk.url.path])
                     }
-                    for slice in sdk.slices
-                    where (destinations[platformName] ?? []).contains(where: {
-                        (slice.platform == $0.platform || slice.platform == "unknown")
-                            && (slice.variant == $0.variant || slice.variant == "unknown")
-                            && slice.architectures.contains($0.architecture)
-                    }) {
-                        if vendorModules[sdk.url]?[slice.identifier] == nil {
-                            vendorModules[sdk.url, default: [:]][slice.identifier] = try NativeVendorModules.names(
-                                slice)
-                        }
-                        for module in (vendorModules[sdk.url]?[slice.identifier] ?? []).sorted() {
-                            guard let root = modules[module.lowercased()] else { continue }
-                            throw Diagnostic(
-                                "SP-XCODE-MODULE-CONFLICT", stage: "integrate",
-                                "Pod \(root) and vendored SDK \(sdk.productName) provide the same module \(module) in \(configuration)",
-                                file: target["name"] as? String, dependencyChain: [root, sdk.url.path])
+                    for (index, destination) in selectedDestinations.enumerated() {
+                        for slice in sdk.slices
+                        where (slice.platform == destination.platform || slice.platform == "unknown")
+                            && (slice.variant == destination.variant || slice.variant == "unknown")
+                            && slice.architectures.contains(destination.architecture)
+                        {
+                            if vendorModules[sdk.url]?[slice.identifier] == nil {
+                                vendorModules[sdk.url, default: [:]][slice.identifier] = try NativeVendorModules.names(
+                                    slice)
+                            }
+                            for module in (vendorModules[sdk.url]?[slice.identifier] ?? []).sorted() {
+                                if let root = modules[module] {
+                                    throw Diagnostic(
+                                        "SP-XCODE-MODULE-CONFLICT", stage: "integrate",
+                                        "Pod \(root) and vendored SDK \(sdk.productName) provide the same module \(module) in \(configuration)",
+                                        file: target["name"] as? String, dependencyChain: [root, sdk.url.path])
+                                }
+                                if let owner = binaryModules[index][module], owner != sdk.url {
+                                    throw Diagnostic(
+                                        "SP-XCODE-MODULE-CONFLICT", stage: "integrate",
+                                        "Vendored SDKs provide the same module \(module) in \(configuration) for \(destination.sdk)/\(destination.architecture)",
+                                        file: target["name"] as? String, dependencyChain: [owner.path, sdk.url.path])
+                                }
+                                binaryModules[index][module] = sdk.url
+                            }
                         }
                     }
                 }
@@ -156,25 +182,25 @@ extension NativeXcode {
 
     private func podModuleInterface(
         _ variant: NativePodVariant, spec: NativeSpec, inspectModules: Bool
-    ) throws -> (names: Set<String>, framework: String?) {
-        guard let directory = spec.directory else { return ([], nil) }
+    ) throws -> (names: Set<String>, framework: String?, swiftModule: String?) {
+        guard let directory = spec.directory else { return ([], nil, nil) }
         let attributes = try NativeVariantPlan.attributes(spec, names: variant.names, platform: variant.platform)
         let selection = try NativeLibraryFiles(
             spec: spec, names: variant.names, platform: variant.platform, root: directory)
-        if selection.files.isEmpty {
-            let vendors = try selection.paths("vendored_frameworks") + selection.paths("vendored_libraries")
-            // Binary-only pods do not generate a source module or a framework wrapper.
-            if !vendors.isEmpty { return ([], nil) }
-        }
-        let framework = variant.mode == "library" ? nil : spec.moduleName
-        guard inspectModules else { return ([], framework) }
+        let vendors = try selection.paths("vendored_frameworks") + selection.paths("vendored_libraries")
+        let binaryOnly = selection.files.isEmpty && !vendors.isEmpty
+        let framework = variant.mode == "library" || binaryOnly ? nil : spec.moduleName
+        guard inspectModules else { return ([], framework, nil) }
         let supplementary = try variant.supplementary.flatMap { request in
             try NativeFileSelection.sourceFiles(
                 spec.supplementaryAttributes(request.name, platform: variant.platform), root: directory)
         }
         let sources = selection.files + supplementary
-        var names: Set<String> =
-            selection.files.contains(where: { $0.pathExtension == "swift" }) ? [spec.moduleName] : []
+        let swift = selection.files.contains(where: { $0.pathExtension == "swift" })
+        let swiftModule =
+            swift && variant.mode == "library"
+            ? (variant.scoped ? variant.label + "/" : "") + spec.moduleName + ".swiftmodule" : nil
+        var names: Set<String> = swift ? [spec.moduleName] : []
         if let path = attributes["module_map"] as? String {
             try NativeSpecPaths.validatePath(path, stage: "integrate")
             let map = directory.appendingPathComponent(path).standardizedFileURL
@@ -183,12 +209,12 @@ extension NativeXcode {
             }
             let contents = try String(contentsOf: map, encoding: .utf8)
             names.formUnion(try NativeClangModuleMap(contents).modules.map { $0.name.components(separatedBy: ".")[0] })
-        } else if requiresModule(variant, attributes: attributes, sources: sources) {
+        } else if !binaryOnly && requiresModule(variant, attributes: attributes, sources: sources) {
             let config = NativeSpec.xcconfig(attributes, key: "pod_target_xcconfig")
             if attributes["module_map"] as? Bool != false || config["MODULEMAP_FILE"] != nil {
                 names.insert(spec.moduleName)
             }
         }
-        return (names, framework)
+        return (names, framework, swiftModule)
     }
 }

@@ -61,6 +61,28 @@ final class NativeScriptPhaseTests: XCTestCase {
         XCTAssertEqual(graph.objects[target]?["buildPhases"] as? [String], [headers, sources, custom])
         XCTAssertNotNil(graph.objects[custom])
     }
+    func testReorderingPreservesForeignSlotsAndPositionChangesKeepDeclarationOrder() throws {
+        let graph = try NativePBX(FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString))
+        let sources = graph.add("sources", ["isa": "PBXSourcesBuildPhase"])
+        let foreign = graph.add("foreign", ["isa": "PBXShellScriptBuildPhase", "name": "User check"])
+        let target = graph.add("target", ["isa": "PBXNativeTarget", "buildPhases": [sources, foreign]])
+        func phases(_ names: [String], position: String) throws -> [NativeScriptPhase] {
+            try names.map { try NativeScriptPhase(["name": $0, "script": "true", "execution_position": position]) }
+        }
+        NativeScriptPhase.apply(try phases(["A", "B"], position: "after_compile"), target: target, graph: graph)
+        NativeScriptPhase.apply(try phases(["B", "A"], position: "after_compile"), target: target, graph: graph)
+        let order = try XCTUnwrap(graph.objects[target]?["buildPhases"] as? [String])
+        XCTAssertEqual(Array(order.prefix(2)), [sources, foreign])
+        XCTAssertEqual(
+            order.dropFirst(2).compactMap { graph.objects[$0]?["name"] as? String }, ["[CP-User] B", "[CP-User] A"])
+        let moved = try phases(["B", "A"], position: "before_compile")
+        NativeScriptPhase.apply(moved, target: target, graph: graph)
+        let expected = Array(order.dropFirst(2)) + [sources, foreign]
+        XCTAssertEqual(graph.objects[target]?["buildPhases"] as? [String], expected)
+        NativeScriptPhase.apply(moved, target: target, graph: graph)
+        XCTAssertEqual(graph.objects[target]?["buildPhases"] as? [String], expected)
+    }
+
     func testSubspecPhasesAreNotInheritedAndPlatformPhasesAreAdditive() throws {
         let spec = try NativeSpec(data: [
             "name": "Kit", "version": "1.0", "script_phase": ["name": "Root", "script": "exit 0"],

@@ -88,28 +88,34 @@ struct NativeScriptPhase {
             graph.objects.removeValue(forKey: id)
             return true
         }
-        for phase in phases {
-            let id = graph.add(key(phase.name), phase.object)
-            if !order.contains(id) { order.append(id) }
-            guard phase.position != "any" else { continue }
-            let headers = phase.position.hasSuffix("headers")
+        var seen = Set<String>()
+        let selected = Array(phases.reversed().filter { seen.insert($0.name).inserted }.reversed())
+        let ids = selected.map { graph.add(key($0.name), $0.object) }
+        order += ids.filter { !order.contains($0) }
+        for position in ["any", "before_headers", "after_headers", "before_compile", "after_compile"] {
+            let group = zip(selected, ids).filter { $0.0.position == position }.map { $0.1 }
+            guard !group.isEmpty else { continue }
+            // Change only this position's managed slots, keeping foreign phases in place.
+            let slots = order.indices.filter { group.contains(order[$0]) }
+            for (slot, id) in zip(slots, group) { order[slot] = id }
+            guard position != "any" else { continue }
+            let headers = position.hasSuffix("headers")
             func isAnchor(_ id: String) -> Bool {
                 let object = graph.objects[id] ?? [:]
                 if !headers { return object["isa"] as? String == "PBXSourcesBuildPhase" }
+                let path = object["dstPath"] as? String ?? ""
                 return object["isa"] as? String == "PBXHeadersBuildPhase"
                     || (object["isa"] as? String == "PBXCopyFilesBuildPhase"
-                        && ((object["dstPath"] as? String)?.contains("_HEADERS_FOLDER_PATH)") == true))
+                        && (path.contains("_HEADERS_FOLDER_PATH)") || path.contains("_HEADERS_FOLDER_PATH}")))
             }
-            let before = phase.position.hasPrefix("before_")
             let anchors = order.indices.filter { isAnchor(order[$0]) }
+            let before = position.hasPrefix("before_")
             guard let anchor = before ? anchors.first : anchors.last,
-                let index = order.firstIndex(of: id)
+                slots.contains(where: { before ? $0 > anchor : $0 < anchor })
             else { continue }
-            if (before && index > anchor) || (!before && index < anchor) {
-                order.remove(at: index)
-                let anchors = order.indices.filter { isAnchor(order[$0]) }
-                order.insert(id, at: before ? anchors.first! : anchors.last! + 1)
-            }
+            order.removeAll { group.contains($0) }
+            let remaining = order.indices.filter { isAnchor(order[$0]) }
+            order.insert(contentsOf: group, at: before ? remaining.first! : remaining.last! + 1)
         }
         graph.objects[target]?["buildPhases"] = order
     }

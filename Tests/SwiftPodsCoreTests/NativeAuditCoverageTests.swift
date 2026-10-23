@@ -203,4 +203,55 @@ final class NativeAuditCoverageTests: XCTestCase {
             XCTAssertEqual(($0 as? Diagnostic)?.code, "SP-XCODE-MODULE-CONFLICT")
         }
     }
+    func testConfigurationAliasesReserveLiteralFilenamesAndRemainStable() throws {
+        let root = try directory()
+        let generated = try engine([], at: root)
+        let literal = "debug-" + String(digest(Data("DEBUG".utf8)).prefix(16))
+        generated.configurationTypes.merge(["DEBUG": "release", literal: "debug", "Stage": "debug", "stage": "release"])
+        { _, value in value }
+        var files: [String: URL] = [:]
+        for name in generated.configurationNames {
+            files[name] = try generated.supportConfiguration(
+                label: "Pods-App", name: name, settings: ["CASE_VALUE": name])
+        }
+        XCTAssertEqual(Set(files.values.map { $0.path.lowercased() }).count, files.count)
+        for name in generated.configurationNames.reversed() {
+            let file = try generated.supportConfiguration(label: "Pods-App", name: name, settings: ["CASE_VALUE": name])
+            XCTAssertEqual(file, files[name])
+            XCTAssertTrue(try String(contentsOf: file, encoding: .utf8).contains("CASE_VALUE = " + name + "\n"))
+        }
+        XCTAssertEqual(files["Debug"]?.lastPathComponent, "Pods-App.debug.xcconfig")
+    }
+
+    func testBinaryModuleConflictsRespectConfigurationsAndConsumers() throws {
+        let root = try directory()
+        let first = try binary("First", module: "Shared", at: root)
+        let second = try binary("Second", module: "Shared", at: root)
+        let dependencies: [[String: Any]] = [
+            ["name": "First", "options": ["configurations": ["Debug"]]],
+            ["name": "Second", "options": ["configurations": ["Release"]]],
+        ]
+        XCTAssertNoThrow(try engine([first, second], at: root, dependencies: dependencies).generate())
+        let targets: [[String: Any]] = [first, second].map {
+            [
+                "name": $0.name + "App", "platform": ["name": "osx", "deployment_target": "13.0"],
+                "dependencies": [["name": $0.name]],
+            ]
+        }
+        let split = try NativeXcode(
+            project: root, manifest: ["targets": targets],
+            resolution: NativeResolution(specs: ["First": first, "Second": second], requests: []),
+            integrateUserProjects: false)
+        XCTAssertNoThrow(try split.generate())
+    }
+
+    func testMultiplePodsMayExposeTheSameBinaryInterface() throws {
+        let root = try directory()
+        let first = try binary("First", module: "Shared", at: root)
+        var data = first.data
+        data["name"] = "Second"
+        let second = try NativeSpec(data: data, directory: first.directory)
+        XCTAssertNoThrow(try engine([first, second], at: root).generate())
+    }
+
 }

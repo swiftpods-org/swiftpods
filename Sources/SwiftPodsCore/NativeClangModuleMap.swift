@@ -35,9 +35,33 @@ struct NativeClangModuleMap {
 
     let modules: [Module]
 
+    private static let tokenPattern = #"/\*[\s\S]*?\*/|//[^\r\n]*|"(?:\\.|[^"\\])*"|[A-Za-z_][A-Za-z0-9_]*|[^\s]"#
+
+    /// Only declaration tokens change; comments, strings and the authored file remain intact.
+    static func libraryContents(_ contents: String) throws -> String {
+        let expression = try NSRegularExpression(pattern: tokenPattern)
+        let source = contents as NSString
+        let tokens = expression.matches(in: contents, range: NSRange(location: 0, length: source.length)).filter {
+            let token = source.substring(with: $0.range)
+            return !token.hasPrefix("//") && !token.hasPrefix("/*")
+        }
+        let result = NSMutableString(string: contents)
+        for index in tokens.indices.reversed() where index + 1 < tokens.count {
+            if source.substring(with: tokens[index].range) == "framework",
+                source.substring(with: tokens[index + 1].range) == "module"
+            {
+                var range = tokens[index].range
+                let following = source.substring(from: NSMaxRange(range)).unicodeScalars
+                    .prefix { CharacterSet.whitespacesAndNewlines.contains($0) }
+                range.length += String(String.UnicodeScalarView(following)).utf16.count
+                result.deleteCharacters(in: range)
+            }
+        }
+        return result as String
+    }
+
     init(_ contents: String) throws {
-        let expression = try NSRegularExpression(
-            pattern: #"/\*[\s\S]*?\*/|//[^\r\n]*|"(?:\\.|[^"\\])*"|[A-Za-z_][A-Za-z0-9_]*|[^\s]"#)
+        let expression = try NSRegularExpression(pattern: Self.tokenPattern)
         let tokens = expression.matches(in: contents, range: NSRange(contents.startIndex..., in: contents))
             .compactMap { Range($0.range, in: contents).map { String(contents[$0]) } }
             .filter { !$0.hasPrefix("//") && !$0.hasPrefix("/*") }

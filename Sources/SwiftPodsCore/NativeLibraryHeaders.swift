@@ -68,8 +68,7 @@ extension NativeXcode {
             // rather than replacing its modules with an umbrella definition.
             let map = directory.appendingPathComponent(path).standardizedFileURL
             let contents = try String(contentsOf: map, encoding: .utf8)
-            let normalized = contents.replacingOccurrences(
-                of: #"(?m)^(\s*)framework\s+(module[^{}]+)\{"#, with: "$1$2{", options: .regularExpression)
+            let normalized = try NativeClangModuleMap.libraryContents(contents)
             let effective: URL
             if normalized != contents {
                 // Framework-style maps also describe static libraries. Their

@@ -110,6 +110,18 @@ final class NativeModuleOwnershipTests: XCTestCase {
         }
     }
 
+    func testCaseDistinctSwiftModulesReserveTheirSharedOutputFilenames() throws {
+        let maps = [
+            "module Feature { header \"First.h\" export * }\n",
+            "module feature { header \"Second.h\" export * }\n",
+        ]
+        XCTAssertNoThrow(try customMaps(maps, aliases: ["Feature", "feature"]))
+        XCTAssertThrowsError(try customMaps(maps, aliases: ["Feature", "feature"], swift: true)) {
+            XCTAssertEqual(($0 as? Diagnostic)?.code, "SP-XCODE-MODULE-CONFLICT")
+        }
+        XCTAssertNoThrow(try customMaps(maps, aliases: ["Feature", "feature"], separateConfigurations: true, swift: true))
+    }
+
     func testCommentsAndNestedModuleNamesDoNotReserveTopLevelModules() throws {
         XCTAssertNoThrow(
             try customMaps([

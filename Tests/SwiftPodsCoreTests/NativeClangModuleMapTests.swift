@@ -57,6 +57,23 @@ final class NativeClangModuleMapTests: XCTestCase {
         ])
     }
 
+    func testLibraryNormalizationPreservesCommentsStringsAndLinkFrameworkDirectives() throws {
+        let contents = """
+            /* framework module Decoy {} */
+            framework /* qualifier */ module First { header "framework module.h" link framework "Foundation" }
+            framework module Second { header "Second.h" } // framework module Decoy {}
+            """
+        let expected = """
+            /* framework module Decoy {} */
+            /* qualifier */ module First { header "framework module.h" link framework "Foundation" }
+            module Second { header "Second.h" } // framework module Decoy {}
+            """
+        let normalized = try NativeClangModuleMap.libraryContents(contents)
+        XCTAssertEqual(normalized, expected)
+        XCTAssertEqual(try NativeClangModuleMap(normalized).modules.map(\.name), ["First", "Second"])
+        XCTAssertEqual(try NativeClangModuleMap.libraryContents(normalized), normalized)
+    }
+
     func testModuleLanguagesRespectObjectiveCAndCPlusPlusRequirements() throws {
         let map = try NativeClangModuleMap("""
             module C { requires !objc, !cplusplus }

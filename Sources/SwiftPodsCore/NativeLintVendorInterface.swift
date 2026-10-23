@@ -17,7 +17,7 @@ struct NativeLintVendorInterface {
             where (slice.platform == platform || slice.platform == "unknown")
                 && (slice.variant == variant || slice.variant == "unknown")
             {
-                let modules = slice.library.appendingPathComponent("Modules")
+                let modules = slice.library.appendingPathComponent("Modules").resolvingSymlinksInPath()
                 if sdk.isFramework {
                     for module in (try? FileManager.default.contentsOfDirectory(
                         at: modules, includingPropertiesForKeys: nil)) ?? []

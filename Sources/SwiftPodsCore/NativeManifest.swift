@@ -62,6 +62,7 @@ enum NativeManifest {
         if let sources = manifest["sources"], !(sources is [String]) {
             throw Diagnostic("SP-DSL-SOURCE", stage: "analyze", "Sources must be URL strings")
         }
+        try NativePodProjectNames.validate(manifest: manifest)
         var result = manifest
         var projects: [String: NativePBX] = [:]
         let receipt = project.appendingPathComponent("Pods/Target Support Files/SwiftPods-Integration.json")

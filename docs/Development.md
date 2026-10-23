@@ -72,4 +72,4 @@ controls, Debug/Release application builds and execution, and a Swift compiler
 comparison for a deliberately corrupted binary module. The matrix also runs after
 failed unit tests in CI so its individual failures remain visible. It belongs to
 the full lifecycle suite. See [the audit findings](Audit-2026-10-23.md) for the ten
-contracts and current failures.
+contracts and repair validation.
