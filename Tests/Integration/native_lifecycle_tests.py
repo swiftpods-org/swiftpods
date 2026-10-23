@@ -22,6 +22,9 @@ from Tests.Fixtures.swift_package_fixture import create as create_package
 from Tests.Fixtures.vendor_fixture import fixture_build_arguments, run
 from Tests.Integration.native_integration import project, serialize
 from Tests.Integration.native_xcconfig_tests import create
+from Tests.Regression.audit_coverage_regressions import (
+    run_regressions as audit_coverage_regressions,
+)
 from Tests.Regression.build_setting_definition_regressions import (
     run_regressions as build_setting_definition_regressions,
 )
@@ -602,6 +605,7 @@ def main():
     header_ownership_regressions(fixture)
     header_namespace_regressions(fixture)
     module_ownership_regressions(fixture)
+    audit_coverage_regressions(fixture)
     consumer_build_regressions(fixture)
     input_contract_regressions(fixture)
     source_input_regressions(fixture)

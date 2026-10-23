@@ -38,9 +38,10 @@ Run the Swift corpus and the focused header and module integration matrices from
 python3 -m Tests.swift_tests
 python3 -m Tests.Regression.header_namespace_regressions
 python3 -m Tests.Regression.module_ownership_regressions
+python3 -m Tests.Regression.audit_coverage_regressions
 ~~~
 
-All three checks run before packaging in the Build SwiftPods workflow. The header
+All four checks run before packaging in the Build SwiftPods workflow. The header
 matrix also belongs to the full lifecycle suite. It checks conflicting modules,
 distinct-module Debug/Release builds and execution, and public-header visibility
 after a fresh install or an offline deployment reinstall. Reinstall tests change
@@ -62,3 +63,13 @@ consumer or configuration so rejecting conflicts does not reject valid graphs.
 Each matrix runs all cases before reporting its failures. Assertions remain
 active for known defects; a nonzero result blocks the build until the
 implementation meets the expected behavior. Compiler warnings fail the checks.
+
+The ten-case audit matrix adds configuration/project path collisions, case-sensitive
+Clang module names, binary-to-binary and binary-facade module conflicts, inherited
+search-only interfaces, versioned Swift framework linting, commented framework maps,
+and script ordering across installation and reinstallation. It includes compiler
+controls, Debug/Release application builds and execution, and a Swift compiler
+comparison for a deliberately corrupted binary module. The matrix also runs after
+failed unit tests in CI so its individual failures remain visible. It belongs to
+the full lifecycle suite. See [the audit findings](Audit-2026-10-23.md) for the ten
+contracts and current failures.

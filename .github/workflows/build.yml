@@ -31,6 +31,9 @@ jobs:
       - uses: ./.github/actions/setup-runtime
       - name: Run Swift unit tests
         run: python3 -m Tests.swift_tests
+      - name: Check ten audit regression contracts
+        if: ${{ !cancelled() }}
+        run: python3 -m Tests.Regression.audit_coverage_regressions
       - name: Check header namespaces and reinstall visibility
         run: python3 -m Tests.Regression.header_namespace_regressions
       - name: Check source and binary module ownership
