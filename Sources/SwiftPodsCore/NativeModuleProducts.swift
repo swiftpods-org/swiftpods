@@ -73,6 +73,7 @@ extension NativeXcode {
         var interfaces: [String: (names: Set<String>, framework: String?, swiftModule: String?)] = [:]
         var vendorModules: [URL: [String: Set<String>]] = [:]
         var destinations: [String: [NativeSwiftPackageCompileSettings.Destination]] = [:]
+        var swiftOwners: [String: String] = [:]
         for target in manifest["targets"] as? [[String: Any]] ?? [] {
             selectConsumer(target)
             let platform = target["platform"] as? [String: String] ?? [:]
@@ -110,10 +111,20 @@ extension NativeXcode {
                         frameworks[product.lowercased()] = root
                     }
                     if let file = interface.swiftModule {
+                        // Xcode's Swift dependency scanner resolves producer targets
+                        // across the workspace, even for independent consumers.
+                        let key = [platformName, configuration, file].joined(separator: "\0")
+                        if let other = swiftOwners[key], other != root {
+                            throw Diagnostic(
+                                "SP-XCODE-MODULE-CONFLICT", stage: "integrate",
+                                "Pods \(other) and \(root) provide the same Swift module \(file) in \(configuration) across the workspace",
+                                file: target["name"] as? String)
+                        }
+                        swiftOwners[key] = root
                         if let other = swiftFiles[file.lowercased()], other != root {
                             throw Diagnostic(
                                 "SP-XCODE-MODULE-CONFLICT", stage: "integrate",
-                                "Pods \(other) and \(root) produce the same Swift module file \(file) in \(configuration)",
+                                "Pods \(other) and \(root) expose case-conflicting Swift module files \(file) in \(configuration)",
                                 file: target["name"] as? String)
                         }
                         swiftFiles[file.lowercased()] = root
@@ -197,9 +208,9 @@ extension NativeXcode {
         }
         let sources = selection.files + supplementary
         let swift = selection.files.contains(where: { $0.pathExtension == "swift" })
-        let swiftModule =
-            swift && variant.mode == "library"
-            ? (variant.scoped ? variant.label + "/" : "") + spec.moduleName + ".swiftmodule" : nil
+        // Separate output directories protect independent consumers, but do not
+        // disambiguate case-equivalent filenames visible to one Swift importer.
+        let swiftModule = swift ? spec.moduleName + ".swiftmodule" : nil
         var names: Set<String> = swift ? [spec.moduleName] : []
         if let path = attributes["module_map"] as? String {
             try NativeSpecPaths.validatePath(path, stage: "integrate")

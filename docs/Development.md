@@ -1,5 +1,8 @@
 # Build from source
 
+See [Verification and readiness](Readiness.md) for the complete test structure,
+the full packaged command, acceptance levels and criteria for a technical preview.
+
 You can build SwiftPods locally from its public source repository. You need
 macOS, Xcode with its command-line tools selected, Python 3 and Ruby 2.6 or newer.
 

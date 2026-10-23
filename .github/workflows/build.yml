@@ -31,6 +31,8 @@ jobs:
       - uses: ./.github/actions/setup-runtime
       - name: Run Swift unit tests
         run: python3 -m Tests.swift_tests
+      - name: Check acceptance evidence rules
+        run: python3 -m Tests.Tooling.acceptance_tests
       - name: Check ten audit regression contracts
         if: ${{ !cancelled() }}
         run: python3 -m Tests.Regression.audit_coverage_regressions
@@ -38,6 +40,8 @@ jobs:
         run: python3 -m Tests.Regression.header_namespace_regressions
       - name: Check source and binary module ownership
         run: python3 -m Tests.Regression.module_ownership_regressions
+      - name: Build independent Swift consumers together
+        run: python3 -m Tests.Integration.native_module_scope_tests
       - name: Build and package SwiftPods
         run: python3 -m scripts.package --destination "$SWIFTPODS_BUILD_ROOT/SwiftPods"
       - name: Archive the distribution

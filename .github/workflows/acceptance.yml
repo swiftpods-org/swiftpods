@@ -1,0 +1,45 @@
+name: Full local acceptance
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: acceptance-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  acceptance:
+    runs-on: macos-15
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13.16'
+      - uses: ./.github/actions/setup-runtime
+      - name: Create verification workspace
+        run: |
+          check_root="$(mktemp -d "$RUNNER_TEMP/swiftpods-acceptance.XXXXXX")"
+          mkdir "$check_root/temporary"
+          echo "SWIFTPODS_CHECK_ROOT=$check_root" >> "$GITHUB_ENV"
+          echo "TMPDIR=$check_root/temporary" >> "$GITHUB_ENV"
+          echo "PYTHONDONTWRITEBYTECODE=1" >> "$GITHUB_ENV"
+      - name: Run the full source, reference and packaged corpus
+        run: python3 -u -m Tests.check --full --package --jobs 2 --evidence-destination "$SWIFTPODS_CHECK_ROOT/evidence.zip"
+      - name: Preserve acceptance and failure diagnostics
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: full-acceptance
+          path: |
+            ${{ env.SWIFTPODS_CHECK_ROOT }}/evidence.zip
+            ${{ env.SWIFTPODS_CHECK_ROOT }}/reports
+            ${{ env.SWIFTPODS_CHECK_ROOT }}/fixtures/**/*.log
+          if-no-files-found: error
+      - name: Remove verification workspace
+        if: always()
+        run: |
+          if [[ -n "${SWIFTPODS_CHECK_ROOT:-}" ]]; then
+            rm -rf -- "$SWIFTPODS_CHECK_ROOT"
+          fi

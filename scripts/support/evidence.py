@@ -56,17 +56,10 @@ def verify_payload(bundle, metadata):
 
 
 def required_reports():
+    from scripts.support.acceptance import required_reports as local_reports
+
     registry = json.loads((ROOT / "Profiles/contract.json").read_text())
-    return {
-        "native-units.json",
-        "ruby-compatibility.json",
-        "native-distribution.json",
-        *[suite["report"] for suite in registry["suites"]],
-        *[
-            "native-packaged-" + name + ".json"
-            for name in ["variants", "configuration", "layout", "ui"]
-        ],
-    }
+    return local_reports(registry)
 
 
 def collect_external_artifacts(report, files, archived_artifacts=()):
@@ -174,6 +167,8 @@ def export(destination):
             "Full packaged acceptance reports are incomplete or duplicated"
         )
     validated = collect(names)
+    if validated["local_acceptance"] != "established":
+        raise RuntimeError("Local acceptance is incomplete: " + json.dumps(validated["local_blockers"]))
     if validated["reports"] != report["reports"]:
         raise RuntimeError("Acceptance report files changed before evidence export")
     files = {"acceptance.json": report_path.read_bytes()}

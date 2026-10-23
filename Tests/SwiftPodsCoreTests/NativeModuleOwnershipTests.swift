@@ -13,9 +13,9 @@ final class NativeModuleOwnershipTests: XCTestCase {
 
     private func generate(
         _ specs: [NativeSpec], root: URL, separateConsumers: Bool = false, separateConfigurations: Bool = false,
-        frameworks: Bool = false, direct: [String]? = nil
+        frameworks: Bool = false, direct: [String]? = nil, scopedVariants: Bool = false
     ) throws {
-        let groups = separateConsumers ? specs.map { [$0] } : [specs]
+        let groups = scopedVariants ? [specs, specs] : separateConsumers ? specs.map { [$0] } : [specs]
         let targets: [[String: Any]] = groups.enumerated().map { index, group in
             var target: [String: Any] = [
                 "name": "App" + String(index), "platform": ["name": "osx", "deployment_target": "13.0"],
@@ -32,7 +32,7 @@ final class NativeModuleOwnershipTests: XCTestCase {
             return target
         }
         let engine = try NativeXcode(
-            project: root, manifest: ["targets": targets],
+            project: root, manifest: ["targets": targets, "options": ["deduplicate_targets": !scopedVariants]],
             resolution: NativeResolution(
                 specs: Dictionary(uniqueKeysWithValues: specs.map { ($0.name, $0) }), requests: []),
             integrateUserProjects: false)
@@ -42,7 +42,7 @@ final class NativeModuleOwnershipTests: XCTestCase {
     private func customMaps(
         _ contents: [String], aliases: [String] = ["FirstAlias", "SecondAlias"],
         separateConsumers: Bool = false, separateConfigurations: Bool = false,
-        swift: Bool = false, frameworks: Bool = false
+        swift: Bool = false, frameworks: Bool = false, scopedVariants: Bool = false
     ) throws {
         let root = try directory()
         let specs = try zip(["First", "Second"], zip(aliases, contents)).map { name, values -> NativeSpec in
@@ -64,7 +64,7 @@ final class NativeModuleOwnershipTests: XCTestCase {
         }
         try generate(
             specs, root: root, separateConsumers: separateConsumers, separateConfigurations: separateConfigurations,
-            frameworks: frameworks)
+            frameworks: frameworks, scopedVariants: scopedVariants)
     }
 
     func testCustomMapsRejectDuplicateModulesEvenWhenPodAliasesDiffer() throws {
@@ -119,6 +119,10 @@ final class NativeModuleOwnershipTests: XCTestCase {
         XCTAssertThrowsError(try customMaps(maps, aliases: ["Feature", "feature"], swift: true)) {
             XCTAssertEqual(($0 as? Diagnostic)?.code, "SP-XCODE-MODULE-CONFLICT")
         }
+        XCTAssertThrowsError(try customMaps(maps, aliases: ["Feature", "feature"], swift: true, scopedVariants: true)) {
+            XCTAssertEqual(($0 as? Diagnostic)?.code, "SP-XCODE-MODULE-CONFLICT")
+        }
+        XCTAssertNoThrow(try customMaps(maps, aliases: ["Feature", "feature"], separateConsumers: true, swift: true))
         XCTAssertNoThrow(try customMaps(maps, aliases: ["Feature", "feature"], separateConfigurations: true, swift: true))
     }
 
@@ -136,6 +140,22 @@ final class NativeModuleOwnershipTests: XCTestCase {
         ]
         XCTAssertNoThrow(try customMaps(maps, separateConsumers: true))
         XCTAssertNoThrow(try customMaps(maps, separateConfigurations: true))
+    }
+
+    func testSwiftProducerNamesMustBeUnambiguousAcrossIndependentConsumers() throws {
+        let maps = [
+            "module FirstAPI { header \"First.h\" export * }\n",
+            "module SecondAPI { header \"Second.h\" export * }\n",
+        ]
+        for frameworks in [false, true] {
+            XCTAssertThrowsError(try customMaps(
+                maps, aliases: ["Shared", "Shared"], separateConsumers: true, swift: true, frameworks: frameworks)
+            ) {
+                XCTAssertEqual(($0 as? Diagnostic)?.code, "SP-XCODE-MODULE-CONFLICT")
+            }
+            XCTAssertNoThrow(try customMaps(
+                maps, aliases: ["Shared", "Shared"], separateConfigurations: true, swift: true, frameworks: frameworks))
+        }
     }
 
     private func sourceAndVendor(

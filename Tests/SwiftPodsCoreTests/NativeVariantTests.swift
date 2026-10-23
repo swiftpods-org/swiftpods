@@ -3,6 +3,24 @@ import XCTest
 @testable import SwiftPodsCore
 
 final class NativeVariantTests: XCTestCase {
+    func testIndependentConsumersIsolateCaseEquivalentModuleProducts() throws {
+        for alias in ["Shared", "shared"] {
+            let first = try NativeSpec(data: ["name": "First", "version": "1.0", "module_name": "Shared"])
+            let second = try NativeSpec(data: ["name": "Second", "version": "1.0", "module_name": alias])
+            for mode: String? in [nil, "static", "dynamic"] {
+                let targets = [target("A", selection: "First"), target("B", mode: mode, selection: "Second")]
+                for consumers in [targets, Array(targets.reversed())] {
+                    let plan = try NativeVariantPlan(
+                        manifest: ["targets": consumers],
+                        resolution: NativeResolution(specs: ["First": first, "Second": second], requests: []))
+                    XCTAssertEqual(plan.variants.count, 2)
+                    XCTAssertTrue(plan.variants.values.allSatisfy(\.scoped), "\(alias), \(mode ?? "library")")
+                    XCTAssertEqual(Set(plan.variants.values.map(\.label)).count, 2)
+                }
+            }
+        }
+    }
+
     private func spec(staticFramework: Bool = false) throws -> NativeSpec {
         try NativeSpec(data: [
             "name": "Kit", "version": "1.0", "default_subspecs": ["A"], "static_framework": staticFramework,

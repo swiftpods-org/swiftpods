@@ -174,9 +174,11 @@ struct NativeVariantPlan {
         let reserved = Set(["Pods"] + consumerLabels + consumerLabels.map { $0 + "-Resources" })
         let labels = NativeTargetNames.assign(variants.mapValues(\.label), reserved: reserved)
         for (key, label) in labels { variants[key]?.label = label }
-        let frameworks = variants.values.filter { $0.mode != "library" }
+        // Independent consumers can build together. Static libraries also copy
+        // Swift modules into their build directory, using the module name rather
+        // than the archive name. Reserve that physical namespace across all pods.
         for group in Dictionary(
-            grouping: frameworks,
+            grouping: variants.values,
             by: {
                 $0.platform + ":" + resolution.specs[$0.root]!.moduleName.lowercased()
             }

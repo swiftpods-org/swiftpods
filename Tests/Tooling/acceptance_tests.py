@@ -79,11 +79,14 @@ class EvidenceTests(unittest.TestCase):
             "verified_cases": ["method"],
             "bundle_digest": "bundle",
         }
-        self.names = ["native-units.json", "fixture.json", "native-distribution.json"]
+        self.names = ["native-units.json", "fixture.json", "native-distribution.json", "ruby-compatibility.json"] + [
+            "native-packaged-" + name + ".json" for name in ["variants", "configuration", "layout", "ui"]
+        ]
         self.revision = self.report["source_revision"]
         for name in self.names:
             self.write(name, self.report)
         registry = {
+            "suites": [{"report": "fixture.json"}],
             "requirements": [{"id": "T-001", "reports": self.names}],
             "external_gates": ["physical_devices"],
             "api": {"methods": {"method": {"report": "fixture.json"}}},
@@ -165,10 +168,45 @@ class EvidenceTests(unittest.TestCase):
     def testPassingLocalReportsLeaveExternalGateUnverified(self):
         result = acceptance.collect(self.names)
         self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["local_acceptance"], "established")
         self.assertEqual(result["stable_acceptance"], "not_established")
         self.assertEqual(
             result["external_gates"]["physical_devices"]["status"], "unverified"
         )
+
+    def testRegisteredSuiteCannotBeOmittedFromStableAcceptance(self):
+        self.registry["suites"] = [{"report": "new-critical-suite.json"}]
+        (self.root / "Profiles/contract.json").write_text(json.dumps(self.registry))
+        result = acceptance.collect(self.names, self.external_gate())
+        self.assertEqual(result["stable_acceptance"], "not_established")
+        self.assertEqual(result["local_acceptance"], "not_established")
+        self.assertIn("new-critical-suite.json", result["local_blockers"]["missing_reports"])
+
+    def testPartialCorpusCannotEstablishLocalAcceptance(self):
+        result = acceptance.collect(["native-units.json"])
+        self.assertEqual(result["local_acceptance"], "not_established")
+        self.assertIn("fixture.json", result["local_blockers"]["missing_reports"])
+        self.assertIn("native-packaged-ui.json", result["local_blockers"]["missing_reports"])
+
+    def testMissingApiCaseAndUnapprovedDifferenceBlockLocalAcceptance(self):
+        report, rule = self.improvement()
+        report["verified_cases"].remove("method")
+        self.write("fixture.json", report)
+        result = acceptance.collect(self.names)
+        self.assertEqual(result["local_blockers"]["missing_api_cases"], ["methods.method"])
+        self.assertEqual(result["local_acceptance"], "not_established")
+        rule["preserves_input_contract"] = False
+        (self.root / "Profiles/contract.json").write_text(json.dumps(self.registry))
+        result = acceptance.collect(self.names)
+        self.assertEqual(result["local_blockers"]["compatibility_differences"], ["fixture.correct_output"])
+
+    def testLocalAcceptanceCanBeEstablishedForDirtySourcesWithoutStableAcceptance(self):
+        self.revision = {"commit": "fixed", "dirty": True}
+        for name in self.names:
+            self.write(name, dict(self.report, source_revision=self.revision))
+        result = acceptance.collect(self.names, self.external_gate())
+        self.assertEqual(result["local_acceptance"], "established")
+        self.assertEqual(result["stable_acceptance"], "not_established")
 
     def testLicenseChangesInvalidateSourceEvidence(self):
         license_file = self.root / "LICENSE"
@@ -716,7 +754,7 @@ class EvidenceTests(unittest.TestCase):
 
         def collect(names, external=None):
             collected.extend(names)
-            return {"status": "passed", "stable_acceptance": "not_established"}
+            return {"status": "passed", "local_acceptance": "established", "stable_acceptance": "not_established"}
 
         with (
             patch.object(check_tools, "ROOT", self.root),

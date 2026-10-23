@@ -310,6 +310,13 @@
       "report": "native-platform-inference.json",
       "apple": true,
       "reference": false
+    },
+    {
+      "id": "native:module-scopes",
+      "script": "Tests/Integration/native_module_scope_tests.py",
+      "report": "native-module-scopes.json",
+      "apple": true,
+      "reference": false
     }
   ],
   "requirements": [

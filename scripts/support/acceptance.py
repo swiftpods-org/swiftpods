@@ -13,6 +13,20 @@ from scripts.support.reporting import (
 )
 
 
+def required_reports(registry):
+    """The complete local gate includes every registered suite and the release binary."""
+    return {
+        "native-units.json",
+        "ruby-compatibility.json",
+        "native-distribution.json",
+        *[suite["report"] for suite in registry.get("suites", [])],
+        *[
+            "native-packaged-" + name + ".json"
+            for name in ["variants", "configuration", "layout", "ui"]
+        ],
+    }
+
+
 def classify_differences(registry, content):
     policy = registry.get("compatibility_policy", {})
     improvements = policy.get("improvements", {})
@@ -188,10 +202,26 @@ def summarize(reports, content, revision, external):
         for value in differences
         if value["classification"] != "accepted_improvement"
     ]
-    stable = (
+    local_blockers = {
+        "missing_reports": sorted(required_reports(registry).difference(available)),
+        "missing_requirements": [
+            entry["id"] for entry in requirements
+            if entry["status"] != "covered_by_current_reports"
+        ],
+        "missing_api_cases": [
+            entry["category"] + "." + entry["name"] for entry in api
+            if entry["status"] != "covered_by_current_case"
+        ],
+        "compatibility_differences": [entry.get("id", entry["report"]) for entry in blocking_differences],
+    }
+    local = (
         complete
         and not blocking_differences
         and all(entry["status"] == "covered_by_current_case" for entry in api)
+        and not local_blockers["missing_reports"]
+    )
+    stable = (
+        local
         and not revision["dirty"]
         and all(gate["status"] == "passed" for gate in gates.values())
     )
@@ -202,6 +232,8 @@ def summarize(reports, content, revision, external):
         "requirements": requirements,
         "api_coverage": api,
         "external_gates": gates,
+        "local_acceptance": "established" if local else "not_established",
+        "local_blockers": local_blockers,
         "stable_acceptance": "established" if stable else "not_established",
         "source_revision": revision,
         "compatibility_differences": differences,

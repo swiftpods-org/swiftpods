@@ -3,6 +3,10 @@
 SwiftPods brings pods and Swift Package Manager dependencies into one Podfile.
 Declare both for your Apple project, install dependencies, and build with Xcode.
 
+SwiftPods is experimental. See [verification and readiness](docs/Readiness.md)
+for the supported test profile and the distinction between technical preview
+acceptance and stable release acceptance.
+
 [Website](https://swiftpods.org) ·
 [Installation and CI](docs/Release.md) ·
 [GitHub](https://github.com/swiftpods-org/swiftpods) ·

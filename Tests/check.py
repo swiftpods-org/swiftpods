@@ -191,6 +191,7 @@ def main(workspace):
 
     run(python_command("Tests/Tooling/package_tests.py"))
     run(python_command("Tests/Tooling/local_build_tests.py"))
+    run(python_command("Tests/Tooling/integration_distribution_tests.py"))
     run(python_command("scripts/support/bootstrap.py"))
     run(python_command("Tests/swift_tests.py"), "native-units.json")
     run(python_command("Tests/Tooling/ruby_runtime_tests.py"))
@@ -249,11 +250,18 @@ def main(workspace):
     (results_directory() / "check.json").write_text(
         json.dumps(aggregate, indent=2) + "\n"
     )
+    if args.full and args.package and aggregate["local_acceptance"] != "established":
+        raise RuntimeError(
+            "Local acceptance is incomplete: " + json.dumps(aggregate["local_blockers"])
+        )
     if args.require_stable and aggregate["stable_acceptance"] != "established":
         raise RuntimeError(
             "Stable acceptance is incomplete: inspect external gates and source revision in check.json"
         )
-    print("Verification passed; stable acceptance:", aggregate["stable_acceptance"])
+    print(
+        "Verification passed; local acceptance:", aggregate.get("local_acceptance", "not_established"),
+        "; stable acceptance:", aggregate["stable_acceptance"],
+    )
 
 
 @termination_signals()

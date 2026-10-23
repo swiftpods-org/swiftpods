@@ -4,6 +4,8 @@ on:
     branches: ['**']
     paths:
       - 'lib/**'
+      - 'Tests/FastlanePlugin/**'
+      - 'Tests/Tooling/integration_distribution_tests.py'
       - 'scripts/install.py'
       - 'scripts/prepare_integrations.py'
       - 'fastlane-plugin-swiftpods.gemspec'
@@ -14,6 +16,8 @@ on:
   pull_request:
     paths:
       - 'lib/**'
+      - 'Tests/FastlanePlugin/**'
+      - 'Tests/Tooling/integration_distribution_tests.py'
       - 'scripts/install.py'
       - 'scripts/prepare_integrations.py'
       - 'fastlane-plugin-swiftpods.gemspec'
@@ -57,6 +61,22 @@ jobs:
       - name: Build the plugin package
         run: |
           gem build fastlane-plugin-swiftpods.gemspec --strict --output "$SWIFTPODS_BUILD_ROOT/fastlane-plugin-swiftpods.gem"
+      - name: Prepare isolated plugin test dependencies
+        run: |
+          export GEM_HOME="$SWIFTPODS_BUILD_ROOT/test-gems"
+          export GEM_PATH="$GEM_HOME"
+          gem install bundler --version 2.6.9 --no-document
+          gem install minitest --version 5.27.0 --no-document
+          gem install fastlane --version 2.241.1 --no-document
+      - name: Run the packaged plugin tests
+        env:
+          SWIFTPODS_TEST_FASTLANE_VERSION: '2.241.1'
+          BUNDLER_VERSION: '2.6.9'
+        run: |
+          export GEM_HOME="$SWIFTPODS_BUILD_ROOT/test-gems"
+          export GEM_PATH="$GEM_HOME"
+          export SWIFTPODS_PLUGIN_GEM="$SWIFTPODS_BUILD_ROOT/fastlane-plugin-swiftpods.gem"
+          ruby Tests/FastlanePlugin/run.rb
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: fastlane-plugin-swiftpods
