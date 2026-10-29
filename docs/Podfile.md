@@ -49,7 +49,7 @@ Variables, `def`, `if`, `require` and string interpolation are rejected. Use
 | `project 'Path.xcodeproj'` | Default project. Without it, the only `.xcodeproj` next to the Podfile. |
 | `source 'https://…/catalog.git'` | A catalog that resolves package names (see below). Without any, the public catalog. |
 | `include 'path.podfile'` | Reads `platform`, `group` and `include` statements from another file, relative to the including file. |
-| `group :name do … end` | Named declarations a target can `use`. |
+| `group :name do … end` | Named declarations a target can `use`; it may take parameters (see below). |
 | `target 'Name' do … end` | An existing Xcode target. |
 | `abstract_target 'Name' do … end` | A scope whose declarations its nested targets inherit; no Xcode target. |
 
@@ -60,6 +60,8 @@ Variables, `def`, `if`, `require` and string interpolation are rejected. Use
 | `spm …` | A Swift package and the products the target links. |
 | `binary …` | A prebuilt SDK linked by the target. |
 | `use :a, :b` | Applies groups. Groups can use other groups. |
+| `use :a, flag: false` | Applies a group with parameter values. |
+| `with :flag do … end` | Groups only. Declarations that apply while the parameter is true. |
 | `settings 'KEY' => 'value'` | Build settings for the target; add `configurations: ['Debug']` to restrict them. |
 | `script_phase name: …, script: …` | A Run Script phase on the target. |
 | `inherit! :complete \| :search_paths \| :none` | Targets only. What a nested target takes from its parent (default `:complete`). |
@@ -68,6 +70,28 @@ Variables, `def`, `if`, `require` and string interpolation are rejected. Use
 A nested target inherits its parent's declarations: with `:complete` it links
 them, with `:none` it ignores them. `:search_paths` (compile against the
 parent's packages without linking them) is reserved and currently rejected.
+
+### Group parameters
+
+A group can declare true/false parameters with defaults; `with` blocks inside
+it apply only while their parameter is true, and `use` can override each value:
+
+```ruby
+group :applovin_max, amazon: true do
+  spm 'AppLovinSDK', '13.6.4'
+  with :amazon do
+    binary 'AppLovinMediationAmazonAdMarketplaceAdapter', '5.6.4.0'
+  end
+end
+
+target 'Game' do
+  use :applovin_max                   # amazon: true
+end
+
+target 'Lite' do
+  use :applovin_max, amazon: false
+end
+```
 
 ### Swift packages
 

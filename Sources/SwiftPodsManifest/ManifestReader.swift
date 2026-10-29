@@ -45,11 +45,24 @@ private struct Declarations {
         let link: Bool
     }
 
+    struct Use {
+        let name: String
+        let arguments: [(name: String, value: Bool, location: SourceLocation)]
+        let location: SourceLocation
+    }
+
+    /// A `with :parameter do … end` block of a group.
+    struct Conditional {
+        let parameter: String
+        let declarations: Declarations
+    }
+
     var packages: [PackageUse] = []
     var binaries: [Binary] = []
-    var uses: [(name: String, location: SourceLocation)] = []
+    var uses: [Use] = []
     var settings: [BuildSetting] = []
     var scripts: [ScriptPhase] = []
+    var conditionals: [Conditional] = []
 }
 
 /// Declarations with groups applied.
@@ -80,6 +93,8 @@ private struct TargetNode {
 
 private struct Group {
     let location: SourceLocation
+    /// Parameters with their defaults, in declaration order.
+    let parameters: [(name: String, value: Bool)]
     let declarations: Declarations
 }
 
@@ -144,7 +159,7 @@ private struct Evaluator {
         }
         let known = [
             "platform", "project", "source", "include", "group", "target", "abstract_target", "spm", "binary", "use",
-            "settings", "script_phase", "inherit!",
+            "settings", "script_phase", "inherit!", "with",
         ]
         if known.contains(statement.name) {
             return ManifestError("`\(statement.name)` cannot be used in \(scope.name)", at: statement.location)
@@ -220,21 +235,43 @@ private struct Evaluator {
     }
 
     private mutating func group(_ statement: Statement) throws(ManifestError) {
-        let arguments = try Arguments(statement)
-        try arguments.finish(allowed: [])
-        try arguments.positionalCount(1...1, usage: "group :name do … end")
+        var arguments = try Arguments(statement)
+        try arguments.positionalCount(1...1, usage: "group :name, parameter: true do … end")
         let name = try Convert.nonEmpty(try Convert.name(arguments.positional[0], "A group name"), "A group name", at: statement.location)
+        let parameters = try arguments.takeAll().map { (option) throws(ManifestError) in
+            (option.key, try Convert.bool(option.node, "The default of `\(option.key)`"))
+        }
         guard let block = statement.block else {
             throw ManifestError("`group` needs a `do … end` block", at: statement.location)
         }
         if let previous = groups[name] {
             throw ManifestError("Group `\(name)` is declared twice", at: statement.location, related: previous.location)
         }
+        let declarations = try groupDeclarations(block, group: name, parameters: parameters.map(\.0))
+        groups[name] = Group(location: statement.location, parameters: parameters, declarations: declarations)
+    }
+
+    private func groupDeclarations(_ block: [Statement], group: String, parameters: [String]) throws(ManifestError) -> Declarations {
         var declarations = Declarations()
         for nested in block {
-            guard try declaration(nested, into: &declarations) else { throw misplaced(nested, .group) }
+            if nested.name == "with" {
+                let arguments = try Arguments(nested)
+                try arguments.finish(allowed: [])
+                try arguments.positionalCount(1...1, usage: "with :parameter do … end")
+                let parameter = try Convert.name(arguments.positional[0], "A parameter name")
+                guard parameters.contains(parameter) else {
+                    throw ManifestError(
+                        "Group `\(group)` has no parameter `\(parameter)`", at: nested.location,
+                        hint: "Declare it with a default: group :\(group), \(parameter): true do … end")
+                }
+                guard let block = nested.block else { throw ManifestError("`with` needs a `do … end` block", at: nested.location) }
+                declarations.conditionals.append(.init(
+                    parameter: parameter, declarations: try groupDeclarations(block, group: group, parameters: parameters)))
+            } else {
+                guard try declaration(nested, into: &declarations) else { throw misplaced(nested, .group) }
+            }
         }
-        groups[name] = Group(location: statement.location, declarations: declarations)
+        return declarations
     }
 
     private mutating func target(_ statement: Statement) throws(ManifestError) -> TargetNode {
@@ -283,14 +320,19 @@ private struct Evaluator {
         case "settings": declarations.settings += try settings(statement)
         case "script_phase": declarations.scripts.append(try script(statement))
         case "use":
-            let arguments = try Arguments(statement)
+            var arguments = try Arguments(statement)
             try arguments.requireNoBlock()
-            try arguments.finish(allowed: [])
             guard !arguments.positional.isEmpty else {
                 throw ManifestError("Usage: use :group, ...", at: statement.location)
             }
+            let values = try arguments.takeAll().map { (option) throws(ManifestError) in
+                (option.key, try Convert.bool(option.node, "`\(option.key)`"), option.keyLocation)
+            }
+            if let first = values.first, arguments.positional.count > 1 {
+                throw ManifestError("Parameters apply to one group", at: first.2, hint: "Write one `use` per group: use :group, \(first.0): …")
+            }
             for node in arguments.positional {
-                declarations.uses.append((try Convert.name(node, "A group name"), node.location))
+                declarations.uses.append(.init(name: try Convert.name(node, "A group name"), arguments: values, location: node.location))
             }
         default: return false
         }
@@ -706,28 +748,44 @@ private struct Evaluator {
 
     // MARK: Evaluation
 
-    private mutating func expand(_ declarations: Declarations, stack: [String] = []) throws(ManifestError) -> Expanded {
+    private mutating func expand(
+        _ declarations: Declarations, values: [String: Bool] = [:], stack: [String] = []
+    ) throws(ManifestError) -> Expanded {
         var result = Expanded()
-        for (name, location) in declarations.uses {
+        for use in declarations.uses {
+            let name = use.name
             if stack.contains(name) {
-                throw ManifestError("Groups use each other in a cycle: " + (stack + [name]).joined(separator: " → "), at: location)
-            }
-            if let cached = expanded[name] {
-                result.append(cached)
-                continue
+                throw ManifestError("Groups use each other in a cycle: " + (stack + [name]).joined(separator: " → "), at: use.location)
             }
             guard let group = groups[name] else {
                 throw ManifestError(
-                    "Unknown group `\(name)`", at: location,
+                    "Unknown group `\(name)`", at: use.location,
                     hint: groups.isEmpty ? "Declare it with `group :\(name) do … end`" : "Groups: " + groups.keys.sorted().joined(separator: ", "))
             }
-            let value = try expand(group.declarations, stack: stack + [name])
-            expanded[name] = value
+            var groupValues = Dictionary(uniqueKeysWithValues: group.parameters)
+            for argument in use.arguments {
+                guard groupValues[argument.name] != nil else {
+                    throw ManifestError(
+                        "Group `\(name)` has no parameter `\(argument.name)`", at: argument.location,
+                        hint: group.parameters.isEmpty ? nil : "Parameters: " + group.parameters.map(\.name).joined(separator: ", "))
+                }
+                groupValues[argument.name] = argument.value
+            }
+            let key = ([name] + group.parameters.map { "\($0.name)=\(groupValues[$0.name]!)" }).joined(separator: " ")
+            if let cached = expanded[key] {
+                result.append(cached)
+                continue
+            }
+            let value = try expand(group.declarations, values: groupValues, stack: stack + [name])
+            expanded[key] = value
             result.append(value)
         }
         result.append(Expanded(
             packages: declarations.packages, binaries: declarations.binaries, settings: declarations.settings,
             scripts: declarations.scripts))
+        for conditional in declarations.conditionals where values[conditional.parameter] == true {
+            result.append(try expand(conditional.declarations, values: values, stack: stack))
+        }
         return result
     }
 

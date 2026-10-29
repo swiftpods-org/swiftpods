@@ -76,6 +76,47 @@ final class ManifestReaderTests: XCTestCase {
         XCTAssertEqual(target.settings.map(\.key), ["IPHONEOS_DEPLOYMENT_TARGET"])
     }
 
+    func testGroupParameters() throws {
+        let manifest = try read(
+            """
+            include '../Shared/ads.podfile'
+
+            target 'Game' do
+              use :ads
+            end
+
+            target 'Lite' do
+              use :ads, amazon: false
+            end
+
+            target 'Full' do
+              use :ads, bigo: true
+            end
+            """,
+            files: [
+                "/Shared/ads.podfile": """
+                group :ads, amazon: true, bigo: false do
+                  spm 'https://github.com/AppLovin/AppLovin-MAX-Swift-Package.git', '13.6.4', products: ['AppLovinSDK']
+                  with :amazon do
+                    spm 'https://github.com/example/amazon.git', '5.6.4', products: ['Amazon']
+                  end
+                  with :bigo do
+                    spm 'https://github.com/example/bigo.git', '5.3.0', products: ['Bigo']
+                  end
+                end
+                """
+            ])
+        XCTAssertEqual(
+            manifest.targets.map { $0.products.map(\.product) },
+            [["AppLovinSDK", "Amazon"], ["AppLovinSDK"], ["AppLovinSDK", "Amazon", "Bigo"]])
+
+        assertError("group :a, amazon: 'yes' do\nend", "must be true or false")
+        assertError("group :a do\n  with :amazon do\n  end\nend", "Group `a` has no parameter `amazon`", line: 2)
+        assertError("group :a, x: true do\nend\ntarget 'App' do\n  use :a, y: false\nend", "Group `a` has no parameter `y`", line: 4)
+        assertError("group :a, x: true do\nend\ngroup :b do\nend\ntarget 'App' do\n  use :a, :b, x: false\nend", "Parameters apply to one group")
+        assertError("target 'App' do\n  with :x do\n  end\nend", "`with` cannot be used in a target")
+    }
+
     func testPlatformFromAnIncludedFile() throws {
         let manifest = try read(
             "include '../Shared/defaults.podfile'\n\ntarget 'App' do\nend",

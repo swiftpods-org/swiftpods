@@ -35,6 +35,12 @@ struct Arguments {
 
     func keyLocation(_ name: String) -> SourceLocation? { options.first { $0.key == name }?.keyLocation }
 
+    /// Takes every option not read yet, in the order written.
+    mutating func takeAll() -> [(key: String, node: Node, keyLocation: SourceLocation)] {
+        defer { options = [] }
+        return options
+    }
+
     func finish(allowed: [String]) throws(ManifestError) {
         if let unknown = options.first {
             throw ManifestError(
