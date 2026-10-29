@@ -28,9 +28,11 @@ jobs:
       - name: Install fastlane
         run: |
           gem_home="$RUNNER_TEMP/gems"
+          # Keep the system gems visible: installation reuses those that satisfy fastlane's dependencies.
+          gem_path="$gem_home:$(ruby -e 'print Gem.default_path.join(":")')"
           echo "GEM_HOME=$gem_home" >> "$GITHUB_ENV"
-          echo "GEM_PATH=$gem_home" >> "$GITHUB_ENV"
-          GEM_HOME="$gem_home" gem install --no-document fastlane minitest
+          echo "GEM_PATH=$gem_path" >> "$GITHUB_ENV"
+          GEM_HOME="$gem_home" GEM_PATH="$gem_path" gem install --no-document fastlane minitest
       - name: Run plugin tests
         run: |
           set -o pipefail
