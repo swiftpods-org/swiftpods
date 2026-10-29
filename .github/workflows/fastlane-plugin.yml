@@ -32,6 +32,15 @@ jobs:
           echo "GEM_PATH=$gem_home" >> "$GITHUB_ENV"
           GEM_HOME="$gem_home" gem install --no-document fastlane minitest
       - name: Run plugin tests
-        run: ruby Tests/FastlanePlugin/run.rb
+        run: |
+          set -o pipefail
+          log="$RUNNER_TEMP/plugin-tests.log"
+          if ! ruby Tests/FastlanePlugin/run.rb 2>&1 | tee "$log"; then
+            # Annotations are public, so a failure is readable without access to the job log.
+            message="$(grep -v '^Ignoring ' "$log" | tail -30)"
+            message="${message//'%'/%25}"
+            printf '::error title=Plugin tests::%s\n' "${message//$'\n'/%0A}"
+            exit 1
+          fi
       - name: Build the gem
         run: gem build fastlane-plugin-swiftpods.gemspec --strict --output "$RUNNER_TEMP/plugin.gem"
