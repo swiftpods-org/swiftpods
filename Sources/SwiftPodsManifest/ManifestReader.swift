@@ -166,10 +166,7 @@ private struct Evaluator {
         if sources.isEmpty { sources = [Source(url: Source.publicCatalog)] }
         for statement in statements where statement.name != "source" {
             switch statement.name {
-            case "platform":
-                let value = try platform(statement)
-                if let previous = platform { throw ManifestError("`platform` is declared twice", at: statement.location, related: previous.1) }
-                platform = (value, statement.location)
+            case "platform": try declarePlatform(statement)
             case "project":
                 let value = try project(statement)
                 if let previous = project { throw ManifestError("`project` is declared twice", at: statement.location, related: previous.1) }
@@ -181,6 +178,12 @@ private struct Evaluator {
                 guard try declaration(statement, into: &root) else { throw misplaced(statement, .root) }
             }
         }
+    }
+
+    private mutating func declarePlatform(_ statement: Statement) throws(ManifestError) {
+        let value = try platform(statement)
+        if let previous = platform { throw ManifestError("`platform` is declared twice", at: statement.location, related: previous.1) }
+        platform = (value, statement.location)
     }
 
     private mutating func include(_ statement: Statement, from including: String) throws(ManifestError) {
@@ -201,13 +204,14 @@ private struct Evaluator {
         }
         for nested in try Parser.statements(text, file: path) {
             switch nested.name {
+            case "platform": try declarePlatform(nested)
             case "include": try include(nested, from: path)
             case "group": try group(nested)
             default:
                 var error = misplaced(nested, .included)
                 if Self.unsupported[nested.name] == nil {
                     error = ManifestError(
-                        "Included files may only contain `group` and `include`", at: nested.location,
+                        "Included files may only contain `platform`, `group` and `include`", at: nested.location,
                         hint: "Put `\(nested.name)` in a group and `use` it from the Podfile")
                 }
                 throw error

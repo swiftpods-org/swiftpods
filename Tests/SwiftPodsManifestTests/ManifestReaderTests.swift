@@ -76,6 +76,13 @@ final class ManifestReaderTests: XCTestCase {
         XCTAssertEqual(target.settings.map(\.key), ["IPHONEOS_DEPLOYMENT_TARGET"])
     }
 
+    func testPlatformFromAnIncludedFile() throws {
+        let manifest = try read(
+            "include '../Shared/defaults.podfile'\n\ntarget 'App' do\nend",
+            files: ["/Shared/defaults.podfile": "platform :ios, '15.4'"])
+        XCTAssertEqual(manifest.targets[0].platform, Platform(name: .ios, deploymentTarget: "15.4"))
+    }
+
     func testGeneratedMenginePodfileWithNestedTargets() throws {
         let manifest = try read(
             """
@@ -248,7 +255,8 @@ final class ManifestReaderTests: XCTestCase {
         assertError("group :a do\n  use :b\nend\ngroup :b do\n  use :a\nend\ntarget 'App' do\n  use :a\nend", "cycle")
         assertError("target 'App' do\n  use :missing\nend", "Unknown group `missing`")
         assertError("include 'a.podfile'", "includes itself", files: ["/project/a.podfile": "include 'a.podfile'"])
-        assertError("include 'a.podfile'", "may only contain `group` and `include`", files: ["/project/a.podfile": "target 'App' do\nend"])
+        assertError("include 'a.podfile'", "may only contain `platform`, `group` and `include`", files: ["/project/a.podfile": "target 'App' do\nend"])
+        assertError("platform :ios, '15.0'\ninclude 'a.podfile'", "`platform` is declared twice", files: ["/project/a.podfile": "platform :ios, '16.0'"])
         assertError("include 'missing.podfile'", "Cannot read included file")
         assertError("group :a do\nend\ngroup :a do\nend", "Group `a` is declared twice", line: 3)
     }

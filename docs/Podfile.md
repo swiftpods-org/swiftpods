@@ -48,7 +48,7 @@ Variables, `def`, `if`, `require` and string interpolation are rejected. Use
 | `platform :ios, '15.0'` | Default platform and deployment target. Platforms: `ios`, `macos` (`osx`), `tvos`, `watchos`, `visionos`. |
 | `project 'Path.xcodeproj'` | Default project. Without it, the only `.xcodeproj` next to the Podfile. |
 | `source 'https://…/catalog.git'` | A catalog that resolves package names (see below). Without any, the public catalog. |
-| `include 'path.podfile'` | Reads `group` and `include` statements from another file, relative to the including file. |
+| `include 'path.podfile'` | Reads `platform`, `group` and `include` statements from another file, relative to the including file. |
 | `group :name do … end` | Named declarations a target can `use`. |
 | `target 'Name' do … end` | An existing Xcode target. |
 | `abstract_target 'Name' do … end` | A scope whose declarations its nested targets inherit; no Xcode target. |
