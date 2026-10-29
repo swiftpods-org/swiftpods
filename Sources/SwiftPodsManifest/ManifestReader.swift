@@ -420,16 +420,39 @@ private struct Evaluator {
         } else if let gitNode {
             url = try Convert.nonEmpty(try Convert.string(gitNode, "`git`"), "`git`", at: gitNode.location)
         }
+        // A name alone comes from the catalog, which also says how the package writes its versions.
+        var catalogEntry: CatalogEntry?
+        if url == nil && pathNode == nil {
+            let entry = try self.catalogEntry(name, at: statement.location)
+            guard let packageURL = entry.url else {
+                throw ManifestError(
+                    "`\(entry.name)` is a binary SDK in the catalog", at: statement.location,
+                    hint: "Use `binary '\(entry.name)', '<version>'`")
+            }
+            catalogEntry = entry
+            url = packageURL
+            name = entry.name
+        }
+        let packed = catalogEntry?.versionFormat == .packed
         var requirements: [Requirement] = []
         let positionalRequirements = Array(arguments.positional.dropFirst())
         if !positionalRequirements.isEmpty {
             var texts: [(String, SourceLocation)] = []
             for node in positionalRequirements { texts.append((try Convert.versionText(node, "A version requirement"), node.location)) }
-            requirements.append(try Requirement.parse(texts))
+            requirements.append(packed ? try Requirement.parsePacked(texts) : try Requirement.parse(texts))
         }
         for key in Self.requirementKeys {
             guard let node = arguments.take(key) else { continue }
-            requirements.append(try Self.requirement(key, node))
+            if packed {
+                guard key == "exact" else {
+                    throw ManifestError(
+                        "`\(key)` is not available for `\(name)`, whose versions are packed", at: node.location,
+                        hint: "Write the version as the vendor does: '13.9.0.0' or '~> 13.9.0.0'")
+                }
+                requirements.append(try Requirement.parsePacked([(try Convert.versionText(node, "`exact`"), node.location)]))
+            } else {
+                requirements.append(try Self.requirement(key, node))
+            }
         }
         let productsNode = arguments.take("products")
         let link = try arguments.take("link").map { (node) throws(ManifestError) in try Convert.bool(node, "`link`") } ?? true
@@ -437,7 +460,6 @@ private struct Evaluator {
 
         let location: Package.Location
         let identity: String
-        var catalogEntry: CatalogEntry?
         if let pathNode {
             if url != nil { throw ManifestError("A package has either a URL or a `path`", at: pathNode.location) }
             if !requirements.isEmpty {
@@ -447,17 +469,6 @@ private struct Evaluator {
             location = .local(path: path)
             identity = PackageLocation.identity(path)
         } else {
-            if url == nil {
-                let entry = try self.catalogEntry(name, at: statement.location)
-                guard let packageURL = entry.url else {
-                    throw ManifestError(
-                        "`\(entry.name)` is a binary SDK in the catalog", at: statement.location,
-                        hint: "Use `binary '\(entry.name)', '<version>'`")
-                }
-                catalogEntry = entry
-                url = packageURL
-                name = entry.name
-            }
             guard let url else { preconditionFailure("set above") }
             guard requirements.count == 1 else {
                 throw ManifestError(

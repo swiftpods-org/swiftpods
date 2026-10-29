@@ -89,6 +89,11 @@ spm 'Datadog', '~> 3.15'                                   # DatadogCore
 spm 'Firebase', '~> 13.0', products: %w[FirebaseCore]      # no default products
 ```
 
+Some catalog packages encode a longer vendor version in their major version,
+as AppLovin MAX adapters do (adapter 13.9.0.0 is package version 13090000.0.0).
+For those, write the vendor's version: `spm 'AppLovinMediationGoogleAdapter', '13.9.0.0'`
+or `'~> 13.9.0.0'`; SwiftPods translates it.
+
 The public catalog is [swiftpods-org/swiftpods-catalog](https://github.com/swiftpods-org/swiftpods-catalog).
 `source` lines replace it with your own catalogs, searched in order; list it too
 to keep using it. Catalogs are cached: `install --update-sources` fetches the

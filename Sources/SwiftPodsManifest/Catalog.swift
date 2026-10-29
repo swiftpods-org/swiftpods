@@ -45,9 +45,18 @@ public struct CatalogEntry: Sendable, Equatable {
         public init(releases: [Release]) { self.releases = releases }
     }
 
+    /// How a package writes its versions when they are not plain semantic versions.
+    public enum VersionFormat: String, Sendable, Equatable {
+        /// Components after the first padded to two digits and joined into the major version, as AppLovin
+        /// publishes MAX adapters: adapter 13.9.0.0 is package version 13090000.0.0.
+        case packed
+    }
+
     public var name: String
     /// The Swift package's repository, when the name is a package.
     public var url: String?
+    /// Nil for semantic versions.
+    public var versionFormat: VersionFormat?
     /// Products a target links when the Podfile names none; empty means the Podfile must choose.
     public var products: [String]
     public var binary: BinarySDK?
@@ -88,7 +97,14 @@ public struct CatalogEntry: Sendable, Equatable {
                 guard PackageLocation.isRemote(url) else { throw ManifestError("`git` must be a repository URL", at: gitNode.location) }
                 entry.url = url
                 entry.products = try arguments.take("products").map { (node) throws(ManifestError) in try Convert.strings(node, "`products`") } ?? []
-                try arguments.finish(allowed: ["git", "products"])
+                if let node = arguments.take("version_format") {
+                    let raw = try Convert.name(node, "`version_format`")
+                    guard let format = VersionFormat(rawValue: raw) else {
+                        throw ManifestError("Unknown version format `\(raw)`", at: node.location, hint: "Formats: packed")
+                    }
+                    entry.versionFormat = format
+                }
+                try arguments.finish(allowed: ["git", "products", "version_format"])
             case "binary":
                 guard entry.binary == nil else { throw ManifestError("`binary` is declared twice", at: statement.location) }
                 entry.binary = try binary(statement, &arguments)

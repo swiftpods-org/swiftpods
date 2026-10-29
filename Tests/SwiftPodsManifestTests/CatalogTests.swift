@@ -12,6 +12,14 @@ private let hyprMX: CatalogEntry.BinarySDK = {
     return sdk
 }()
 
+private let packedAdapter: CatalogEntry = {
+    var entry = CatalogEntry(
+        name: "AppLovinMediationGoogleAdapter", url: "https://github.com/AppLovin/AppLovin-MAX-Swift-Package-Google.git",
+        products: ["AppLovinMediationGoogleAdapter"], source: Source.publicCatalog)
+    entry.versionFormat = .packed
+    return entry
+}()
+
 private struct FakeCatalog: PackageCatalog {
     let entries: [String: [CatalogEntry]]
 
@@ -29,6 +37,7 @@ final class CatalogTests: XCTestCase {
             CatalogEntry(name: "Datadog", url: "https://github.com/DataDog/dd-sdk-ios.git", products: ["DatadogCore"], source: Source.publicCatalog),
             CatalogEntry(name: "Firebase", url: "https://github.com/firebase/firebase-ios-sdk.git", products: [], source: Source.publicCatalog),
             CatalogEntry(name: "HyprMX", url: nil, products: [], binary: hyprMX, source: Source.publicCatalog),
+            packedAdapter,
         ],
         "https://example.com/team/catalog.git": [
             CatalogEntry(name: "Ads", url: "https://example.com/team/ads.git", products: ["Ads"], source: "https://example.com/team/catalog.git"),
@@ -108,6 +117,25 @@ final class CatalogTests: XCTestCase {
         XCTAssertTrue(error("target 'App' do\n  spm 'HyprMX', '6.4.2'\nend\n")?.message.contains("is a binary SDK") == true)
         XCTAssertTrue(error("target 'App' do\n  binary 'Datadog', '3.15.0'\nend\n")?.message.contains("is a Swift package") == true)
         XCTAssertTrue(error("target 'App' do\n  binary 'HyprMX', '6.4.2', libraries: ['z']\nend\n")?.message.contains("comes from the catalog") == true)
+    }
+
+    func testPackedVersionsAreWrittenAsTheVendorDoes() throws {
+        func requirement(_ text: String) throws -> Requirement? {
+            try read("target 'App' do\n  spm 'AppLovinMediationGoogleAdapter', \(text)\nend\n").packages.first?.requirement
+        }
+        XCTAssertEqual(try requirement("'13.9.0.0'"), .exact(Version(13_090_000, 0, 0)))
+        XCTAssertEqual(try requirement("'3.8.0.0.0'"), .exact(Version(308_000_000, 0, 0)))
+        XCTAssertEqual(try requirement("exact: '11.4.1.2'"), .exact(Version(11_040_102, 0, 0)))
+        XCTAssertEqual(try requirement("'~> 13.9.0.0'"), .range(Version(13_090_000, 0, 0), Version(13_090_100, 0, 0)))
+        XCTAssertEqual(try requirement("'~> 13.9'"), .range(Version(1_309, 0, 0), Version(1_400, 0, 0)))
+        XCTAssertEqual(try requirement("'>= 13.9.0.0', '< 14.0.0.0'"), .range(Version(13_090_000, 0, 0), Version(14_000_000, 0, 0)))
+        XCTAssertTrue(error("target 'App' do\n  spm 'AppLovinMediationGoogleAdapter', from: '13.9.0.0'\nend\n")?.message.contains("packed") == true)
+        XCTAssertTrue(error("target 'App' do\n  spm 'AppLovinMediationGoogleAdapter', '13.100.0.0'\nend\n")?.message.contains("is not a version") == true)
+        XCTAssertEqual(
+            try CatalogEntry.parse(
+                "package 'Kit', git: 'https://github.com/a/Kit.git', version_format: :packed\n", file: "Kit.podfile", source: "s"
+            ).versionFormat, .packed)
+        XCTAssertThrowsError(try CatalogEntry.parse("package 'Kit', git: 'https://github.com/a/Kit.git', version_format: :odd\n", file: "Kit.podfile", source: "s"))
     }
 
     func testCatalogFiles() throws {
