@@ -1,0 +1,248 @@
+name: Release SwiftPods
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing tag version without v
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: release
+  cancel-in-progress: false
+jobs:
+  metadata:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: read
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      commit: ${{ steps.resolve.outputs.commit }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - id: resolve
+        name: Resolve and validate the release tag
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          python3 - <<'PY'
+          import os, re, subprocess
+          pushed = os.environ['GITHUB_EVENT_NAME'] == 'push'
+          version = os.environ['GITHUB_REF_NAME'][1:] if pushed else os.environ['REQUESTED_VERSION']
+          if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?', version):
+              raise RuntimeError('Invalid release version')
+          commit = subprocess.check_output(['git', 'rev-parse', '--verify', 'refs/tags/v' + version + '^{commit}'], text=True).strip()
+          # The version line of the command line is the only version source.
+          source = subprocess.check_output(['git', 'show', commit + ':Sources/swiftpods/main.swift'], text=True)
+          if 'let version = "' + version + '"' not in source.splitlines():
+              raise RuntimeError('Tag must match the version line in Sources/swiftpods/main.swift')
+          # Releases come only from reviewed history.
+          if subprocess.run(['git', 'merge-base', '--is-ancestor', commit, 'origin/main']).returncode != 0:
+              raise RuntimeError('Release tags must point to a commit on main')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('version=' + version + '\ncommit=' + commit + '\n')
+          PY
+      - name: Require a successful build of the tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ steps.resolve.outputs.commit }}
+        run: |
+          conclusions=$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_COMMIT/check-runs?per_page=100" \
+            --jq '[.check_runs[] | select(.name | startswith("build")) | .conclusion] | join(" ")')
+          if [[ -z "$conclusions" ]]; then
+            echo "No Build SwiftPods run for $RELEASE_COMMIT" >&2
+            exit 1
+          fi
+          for conclusion in $conclusions; do
+            if [[ "$conclusion" != 'success' ]]; then
+              echo "Build SwiftPods did not pass for $RELEASE_COMMIT: $conclusions" >&2
+              exit 1
+            fi
+          done
+      - name: Refuse to replace a published version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ steps.resolve.outputs.version }}
+        run: |
+          lookup="$RUNNER_TEMP/release-lookup.log"
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/v$RELEASE_VERSION" > /dev/null 2> "$lookup"; then
+            echo "v$RELEASE_VERSION is already published; release a new version" >&2
+            exit 1
+          fi
+          if ! grep -q 'HTTP 404' "$lookup"; then
+            cat "$lookup" >&2
+            exit 1
+          fi
+  build:
+    needs: metadata
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.metadata.outputs.commit }}
+          persist-credentials: false
+      - name: Create temporary build directory
+        run: |
+          build_root="$(mktemp -d "$RUNNER_TEMP/swiftpods-release-build.XXXXXX")"
+          echo "SWIFTPODS_BUILD_ROOT=$build_root" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13.16'
+      - name: Import explicitly configured release credentials
+        env:
+          SWIFTPODS_SIGNING_P12: ${{ secrets.SWIFTPODS_SIGNING_P12 }}
+          SWIFTPODS_SIGNING_PASSWORD: ${{ secrets.SWIFTPODS_SIGNING_PASSWORD }}
+          SWIFTPODS_SIGNING_IDENTITY: ${{ secrets.SWIFTPODS_SIGNING_IDENTITY }}
+          SWIFTPODS_NOTARY_KEY: ${{ secrets.SWIFTPODS_NOTARY_KEY }}
+          SWIFTPODS_NOTARY_KEY_ID: ${{ secrets.SWIFTPODS_NOTARY_KEY_ID }}
+          SWIFTPODS_NOTARY_ISSUER: ${{ secrets.SWIFTPODS_NOTARY_ISSUER }}
+        run: python3 -m scripts.ci_signing setup
+      - name: Build the signed and notarized distribution
+        run: |
+          python3 -m scripts.package --destination "$SWIFTPODS_BUILD_ROOT/SwiftPods"
+          python3 -m scripts.sign_release "$SWIFTPODS_BUILD_ROOT/SwiftPods" \
+            --identity "$SWIFTPODS_SIGNING_IDENTITY" \
+            --notarize --keychain-profile "$SWIFTPODS_NOTARY_PROFILE" \
+            --keychain "$SWIFTPODS_NOTARY_KEYCHAIN"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: release-${{ matrix.runner }}
+          path: |
+            ${{ env.SWIFTPODS_BUILD_ROOT }}/SwiftPods.zip
+            ${{ env.SWIFTPODS_BUILD_ROOT }}/SwiftPods.zip.notary.json
+      - name: Remove temporary signing credentials
+        if: always()
+        run: python3 -m scripts.ci_signing cleanup
+      - name: Remove temporary build files
+        if: always()
+        run: |
+          if [[ -n "${SWIFTPODS_BUILD_ROOT:-}" ]]; then
+            rm -rf -- "$SWIFTPODS_BUILD_ROOT"
+          fi
+  assemble:
+    needs: [metadata, build]
+    runs-on: macos-15
+    outputs:
+      manifest-sha256: ${{ steps.validate.outputs.manifest-sha256 }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.metadata.outputs.commit }}
+          persist-credentials: false
+      - name: Create temporary build directory
+        run: |
+          build_root="$(mktemp -d "$RUNNER_TEMP/swiftpods-release-assets.XXXXXX")"
+          echo "SWIFTPODS_BUILD_ROOT=$build_root" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13.16'
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: release-*
+          path: ${{ env.SWIFTPODS_BUILD_ROOT }}/release-inputs
+      - name: Assemble release archives, checksums and installer
+        env:
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          python3 -m scripts.release --version "$RELEASE_VERSION" \
+            --archive "$SWIFTPODS_BUILD_ROOT/release-inputs/release-macos-15/SwiftPods.zip" \
+            --archive "$SWIFTPODS_BUILD_ROOT/release-inputs/release-macos-15-intel/SwiftPods.zip" \
+            --notarization "$SWIFTPODS_BUILD_ROOT/release-inputs/release-macos-15/SwiftPods.zip.notary.json" \
+            --notarization "$SWIFTPODS_BUILD_ROOT/release-inputs/release-macos-15-intel/SwiftPods.zip.notary.json" \
+            --destination "$SWIFTPODS_BUILD_ROOT/release"
+      - id: validate
+        name: Validate public release assets
+        env:
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.metadata.outputs.commit }}
+        run: python3 -m scripts.publish_release "$SWIFTPODS_BUILD_ROOT/release" --version "$RELEASE_VERSION" --commit "$RELEASE_COMMIT"
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: swiftpods-assets
+          path: ${{ env.SWIFTPODS_BUILD_ROOT }}/release/
+      - name: Remove temporary build files
+        if: always()
+        run: |
+          if [[ -n "${SWIFTPODS_BUILD_ROOT:-}" ]]; then
+            rm -rf -- "$SWIFTPODS_BUILD_ROOT"
+          fi
+  publish:
+    needs: [metadata, assemble]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.metadata.outputs.commit }}
+          persist-credentials: false
+      - name: Create temporary build directory
+        run: |
+          build_root="$(mktemp -d "$RUNNER_TEMP/swiftpods-release-publish.XXXXXX")"
+          echo "SWIFTPODS_BUILD_ROOT=$build_root" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: swiftpods-assets
+          path: ${{ env.SWIFTPODS_BUILD_ROOT }}/release
+      - name: Publish the signed archives and installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.metadata.outputs.commit }}
+        run: python3 -m scripts.publish_release "$SWIFTPODS_BUILD_ROOT/release" --version "$RELEASE_VERSION" --commit "$RELEASE_COMMIT" --publish
+      - name: Remove temporary build files
+        if: always()
+        run: |
+          if [[ -n "${SWIFTPODS_BUILD_ROOT:-}" ]]; then
+            rm -rf -- "$SWIFTPODS_BUILD_ROOT"
+          fi
+  update-integrations:
+    needs: [metadata, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: main
+      - name: Create temporary build directory
+        run: |
+          build_root="$(mktemp -d "$RUNNER_TEMP/swiftpods-release-integrations.XXXXXX")"
+          echo "SWIFTPODS_BUILD_ROOT=$build_root" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: swiftpods-assets
+          path: ${{ env.SWIFTPODS_BUILD_ROOT }}/release-assets
+      - name: Update the Homebrew formula
+        env:
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          # Pre-releases never reach Homebrew users, and a formula only follows
+          # the version currently on main.
+          if [[ "$RELEASE_VERSION" == *-* || "$(python3 -m scripts.support.version)" != "$RELEASE_VERSION" ]]; then
+            echo "The Homebrew formula stays unchanged for $RELEASE_VERSION"
+            exit 0
+          fi
+          python3 -m scripts.prepare_integrations "$SWIFTPODS_BUILD_ROOT/release-assets/release.json"
+          git add Formula/swiftpods.rb
+          if ! git diff --cached --quiet; then
+            git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m "Update the Homebrew formula to $RELEASE_VERSION"
+            git push origin HEAD:main
+          fi
+      - name: Remove temporary build files
+        if: always()
+        run: |
+          if [[ -n "${SWIFTPODS_BUILD_ROOT:-}" ]]; then
+            rm -rf -- "$SWIFTPODS_BUILD_ROOT"
+          fi

@@ -1,0 +1,59 @@
+name: Build SwiftPods
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Create temporary build directory
+        run: |
+          build_root="$(mktemp -d "$RUNNER_TEMP/swiftpods-build.XXXXXX")"
+          echo "SWIFTPODS_BUILD_ROOT=$build_root" >> "$GITHUB_ENV"
+      - name: Run unit and integration tests
+        run: swift test -Xswiftc -warnings-as-errors
+      - name: Install into a sample app and build it with Xcode
+        if: matrix.runner == 'macos-15'
+        env:
+          SWIFTPODS_E2E: '1'
+        run: swift test -Xswiftc -warnings-as-errors --filter EndToEndTests
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13.16'
+      - name: Check release tooling
+        run: python3 -m unittest discover -s Tests/Tooling -t . -p '*_tests.py'
+      - name: Build and package SwiftPods
+        run: python3 -m scripts.package --destination "$SWIFTPODS_BUILD_ROOT/SwiftPods"
+      - name: Archive the distribution
+        working-directory: ${{ env.SWIFTPODS_BUILD_ROOT }}
+        run: |
+          /usr/bin/ditto -c -k --norsrc --noextattr --noqtn --keepParent SwiftPods SwiftPods.zip
+          /usr/bin/shasum -a 256 SwiftPods.zip > SwiftPods.zip.sha256
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: swiftpods-${{ matrix.runner }}
+          path: |
+            ${{ env.SWIFTPODS_BUILD_ROOT }}/SwiftPods.zip
+            ${{ env.SWIFTPODS_BUILD_ROOT }}/SwiftPods.zip.sha256
+          if-no-files-found: error
+      - name: Remove temporary build files
+        if: always()
+        run: |
+          if [[ -n "${SWIFTPODS_BUILD_ROOT:-}" ]]; then
+            rm -rf -- "$SWIFTPODS_BUILD_ROOT"
+          fi

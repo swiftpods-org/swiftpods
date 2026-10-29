@@ -1,0 +1,9 @@
+.build/
+/.swiftpods/
+.swiftpm/
+.bundle/
+*.gem
+.DS_Store
+__pycache__/
+*.pyc
+.ruff_cache/

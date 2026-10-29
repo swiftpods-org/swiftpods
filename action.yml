@@ -1,0 +1,30 @@
+name: Setup SwiftPods
+description: Install a pinned macOS SwiftPods release with SHA-256 verification
+inputs:
+  version:
+    description: Exact release version, without leading v
+    required: true
+  manifest-sha256:
+    description: SHA-256 of the release.json pinned by the caller
+    required: true
+outputs:
+  bin-directory:
+    description: Directory added to PATH
+    value: ${{ steps.install.outputs.bin-directory }}
+runs:
+  using: composite
+  steps:
+    - id: install
+      shell: bash
+      env:
+        SWIFTPODS_VERSION: ${{ inputs.version }}
+        SWIFTPODS_MANIFEST_SHA256: ${{ inputs.manifest-sha256 }}
+      run: |
+        set -euo pipefail
+        install_prefix="$RUNNER_TEMP/swiftpods/$SWIFTPODS_VERSION"
+        python3 "$GITHUB_ACTION_PATH/scripts/install.py" \
+          --version "$SWIFTPODS_VERSION" \
+          --manifest-sha256 "$SWIFTPODS_MANIFEST_SHA256" \
+          --prefix "$install_prefix"
+        echo "$install_prefix/bin" >> "$GITHUB_PATH"
+        echo "bin-directory=$install_prefix/bin" >> "$GITHUB_OUTPUT"
