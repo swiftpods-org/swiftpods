@@ -19,6 +19,17 @@ swiftpods(podfile: 'src/MyApp/Podfile')
 swiftpods(podfile: 'src/MyApp/Podfile', deployment: true)
 ```
 
+The action returns what the Podfile declares, so a lane can depend on it without
+reading the Podfile itself:
+
+```ruby
+dependencies = swiftpods(podfile: 'src/MyApp/Podfile')
+setup_ad_review if dependencies.include?('AppLovinSDK')
+```
+
+`include?` matches package and binary SDK names from any target, ignoring case;
+`packages` and `binaries` list them.
+
 | Option | Meaning |
 | --- | --- |
 | `podfile` | The Podfile or its directory (default `Podfile`). |

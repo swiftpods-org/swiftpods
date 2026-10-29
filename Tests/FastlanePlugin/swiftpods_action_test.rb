@@ -7,9 +7,15 @@ class SwiftpodsActionTest < Minitest::Test
     FileUtils.mkdir_p(@project)
     @podfile = File.join(@project, 'Podfile')
     File.write(@podfile, "target 'App' do\nend\n")
-    @capture = File.join(@temporary, 'arguments.json')
+    @capture = File.join(@temporary, 'arguments.jsonl')
     @executable = File.join(@temporary, "swiftpods ' $(touch injected)")
-    File.write(@executable, "#!/usr/bin/env ruby\nrequire 'json'\nFile.write(#{@capture.inspect}, JSON.generate(ARGV))\n")
+    manifest = { packages: [{ name: 'AppLovinSDK' }], binaries: [{ name: 'HyprMX' }], targets: [] }
+    File.write(@executable, <<~RUBY)
+      #!/usr/bin/env ruby
+      require 'json'
+      File.write(#{@capture.inspect}, JSON.generate(ARGV) + "\n", mode: 'a')
+      puts #{JSON.generate(manifest).inspect} if ARGV.first == 'check'
+    RUBY
     File.chmod(0o700, @executable)
   end
 
@@ -21,13 +27,22 @@ class SwiftpodsActionTest < Minitest::Test
     configuration = FastlaneCore::Configuration.create(
       Fastlane::Actions::SwiftpodsAction.available_options, { podfile: @podfile, executable: @executable }.merge(options)
     )
-    Fastlane::Actions::SwiftpodsAction.run(configuration)
-    JSON.parse(File.read(@capture))
+    @result = Fastlane::Actions::SwiftpodsAction.run(configuration)
+    File.readlines(@capture).map { |line| JSON.parse(line) }.first
   end
 
   def test_runs_install_for_the_podfile_directory
     assert_equal ['install', '--project-directory', @project], run_action
     refute File.exist?(File.join(@temporary, 'injected'))
+  end
+
+  def test_returns_what_the_podfile_declares
+    run_action
+    assert_equal ['check', '--project-directory', @project, '--offline', '--json'], JSON.parse(File.readlines(@capture).last)
+    assert_equal ['AppLovinSDK'], @result.packages
+    assert @result.include?('applovinsdk')
+    assert @result.include?('HyprMX')
+    refute @result.include?('Datadog')
   end
 
   def test_forwards_options_as_flags

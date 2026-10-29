@@ -19,6 +19,7 @@ let help = """
       deintegrate   Remove everything SwiftPods added
         --cocoapods   Also remove a CocoaPods or SwiftPods 0.1 integration
       check         Read the Podfile and show what each target gets
+        --offline     Use cached catalogs only
       search TEXT   Find packages in a catalog (the public one, or --source URL)
       catalog lint [DIR]  Check a catalog repository (default: current directory)
       version       Print the version
@@ -105,7 +106,7 @@ func run(_ arguments: [String]) throws {
     }
     let allowed: [String: Set<String>] = [
         "install": ["--deployment", "--resolve", "--adopt", "--offline", "--update-sources"], "deintegrate": ["--cocoapods"],
-        "check": ["--update-sources"], "search": ["--update-sources"], "catalog": [], "version": [], "help": [],
+        "check": ["--update-sources", "--offline"], "search": ["--update-sources"], "catalog": [], "version": [], "help": [],
     ]
     let operandCounts: [String: ClosedRange<Int>] = ["search": 1...1, "catalog": 1...2]
     guard let command = command ?? (flags.isEmpty ? "help" : nil), let options = allowed[command] else {
@@ -133,7 +134,7 @@ func run(_ arguments: [String]) throws {
         let report = try installer.deintegrate(cocoapods: flags.contains("--cocoapods"))
         if json { try output(report) } else { printReport(report) }
     case "check":
-        let manifest = try installer.manifest(updateSources: flags.contains("--update-sources"))
+        let manifest = try installer.manifest(updateSources: flags.contains("--update-sources"), offline: flags.contains("--offline"))
         if json { try output(manifest) } else { describe(manifest) }
     case "search":
         let entries = try CatalogTools.search(

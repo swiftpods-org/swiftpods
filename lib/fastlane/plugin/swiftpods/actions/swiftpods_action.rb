@@ -1,4 +1,7 @@
 require 'fastlane/action'
+require 'json'
+require 'open3'
+require_relative '../helper/dependencies'
 require_relative '../helper/executable'
 
 module Fastlane
@@ -21,6 +24,14 @@ module Fastlane
         command = [executable, 'install', '--project-directory', File.dirname(podfile)]
         FLAGS.each { |key, flag| command << flag if params[key] }
         sh(*command)
+        dependencies(executable, File.dirname(podfile))
+      end
+
+      # Reads the Podfile from the catalogs the install just cached.
+      def self.dependencies(executable, directory)
+        output, errors, status = Open3.capture3(executable, 'check', '--project-directory', directory, '--offline', '--json')
+        UI.user_error!("swiftpods check failed: #{errors.strip}") unless status.success?
+        Fastlane::Swiftpods::Dependencies.new(JSON.parse(output))
       end
 
       def self.available_options
@@ -49,6 +60,10 @@ module Fastlane
         'Runs swiftpods install for the project'
       end
 
+      def self.return_value
+        'The packages and binary SDKs the Podfile declares; include?(name) tells whether any target gets one'
+      end
+
       def self.authors
         ['SwiftPods']
       end
@@ -62,7 +77,12 @@ module Fastlane
       end
 
       def self.example_code
-        ['swiftpods(podfile: "./Podfile")', 'swiftpods(podfile: "src/MyApp/Podfile", deployment: true)']
+        [
+          'swiftpods(podfile: "./Podfile")',
+          'swiftpods(podfile: "src/MyApp/Podfile", deployment: true)',
+          'dependencies = swiftpods(podfile: "src/MyApp/Podfile")
+          setup_ad_review if dependencies.include?("AppLovinSDK")'
+        ]
       end
     end
   end
