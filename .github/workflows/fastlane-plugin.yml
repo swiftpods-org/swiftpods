@@ -1,0 +1,37 @@
+name: Fastlane plugin
+on:
+  push:
+    branches: ['**']
+    paths:
+      - 'lib/**'
+      - 'Tests/FastlanePlugin/**'
+      - 'fastlane-plugin-swiftpods.gemspec'
+      - 'scripts/install.py'
+      - '.github/workflows/fastlane-plugin.yml'
+  pull_request:
+    paths:
+      - 'lib/**'
+      - 'Tests/FastlanePlugin/**'
+      - 'fastlane-plugin-swiftpods.gemspec'
+      - 'scripts/install.py'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Install fastlane
+        run: |
+          gem_home="$RUNNER_TEMP/gems"
+          echo "GEM_HOME=$gem_home" >> "$GITHUB_ENV"
+          echo "GEM_PATH=$gem_home" >> "$GITHUB_ENV"
+          GEM_HOME="$gem_home" gem install --no-document fastlane minitest
+      - name: Run plugin tests
+        run: ruby Tests/FastlanePlugin/run.rb
+      - name: Build the gem
+        run: gem build fastlane-plugin-swiftpods.gemspec --strict --output "$RUNNER_TEMP/plugin.gem"

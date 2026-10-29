@@ -111,6 +111,9 @@ product into the target.
 
 ### Binary SDKs
 
+Binaries in the catalog need only a version, as `binary 'HyprMX', '6.4.2'`; the
+catalog supplies the archive, its checksum and how to link it.
+
 ```ruby
 binary 'HyprMXAdapter',
        url: 'https://example.com/HyprMX-6.4.2.zip',
@@ -123,8 +126,8 @@ binary 'Analytics', path: 'Vendor/Analytics.xcframework'
 
 SwiftPods downloads the archive (`.zip`, `.tar.gz`, `.tgz`, `.tar.xz`), checks
 its SHA-256, and exposes every `.xcframework` inside it as one product named
-after the declaration. Use `xcframeworks: ['Path/In/Archive.xcframework']` to
-choose some of them and `dependencies: ['OtherBinary']` when one binary
+after the declaration. Use `xcframeworks: ['Path/In/Archive.xcframework']` (or just
+`'Archive.xcframework'`, found at any depth) to choose some of them and `dependencies: ['OtherBinary']` when one binary
 requires another. `resources: ['SDK/Resources.bundle']` copies resource bundles
 into the app bundle of every target that links the binary, where SDKs that
 shipped through CocoaPods expect them. Archives are cached by checksum.

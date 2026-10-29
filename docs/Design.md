@@ -39,6 +39,10 @@ reads them from the package's tags; a package is registered once, not per releas
 - Catalogs are cached. `install` uses the cache; `--update-sources` refreshes it;
   `source …, revision:` pins a commit. `--deployment` fails when a catalog now
   resolves a name to a repository the committed project does not reference.
+- An entry may also list releases of a prebuilt SDK, each an archive URL with
+  its SHA-256, plus how to link it. A Podfile then writes
+  `binary 'HyprMX', '6.4.2'`. One name can have both a package and binary
+  releases, when only older versions are archives.
 - The public catalog accepts entries by reviewed pull request, checked by
   `swiftpods catalog lint`. Whoever controls a catalog controls where names
   point, so redirects are reviewed like new entries.

@@ -39,31 +39,14 @@ struct BinaryStore {
             root = try unpacked(url: url, sha256: sha256, binary: binary)
         }
         let resources = try binary.resources.map { path in
-            let url = root.appendingPathComponent(path).standardizedFileURL
-            var directory: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &directory), directory.boolValue else {
-                throw SwiftPodsError(
-                    "Binary `\(binary.name)` has no \(path)", file: binary.declaredAt.description,
-                    hint: "Found: " + Self.find(root, extension: "bundle").map { Paths.relative(from: root, to: $0) }.joined(separator: ", "))
-            }
-            return url
+            try Self.locate(path, in: root, extension: "bundle", binary: binary)
         }
         return Contents(xcframeworks: try select(binary, in: root), resources: resources)
     }
 
     private func select(_ binary: Binary, in root: URL) throws -> [URL] {
         if let paths = binary.xcframeworks {
-            return try paths.map { path in
-                let url = root.appendingPathComponent(path).standardizedFileURL
-                var directory: ObjCBool = false
-                guard url.pathExtension == "xcframework", FileManager.default.fileExists(atPath: url.path, isDirectory: &directory),
-                    directory.boolValue
-                else {
-                    throw SwiftPodsError("Binary `\(binary.name)` has no \(path)", file: binary.declaredAt.description,
-                        hint: "Found: " + Self.find(root, extension: "xcframework").map { Paths.relative(from: root, to: $0) }.joined(separator: ", "))
-                }
-                return url
-            }
+            return try paths.map { try Self.locate($0, in: root, extension: "xcframework", binary: binary) }
         }
         let found = Self.find(root, extension: "xcframework")
         guard !found.isEmpty else {
@@ -74,6 +57,29 @@ struct BinaryStore {
                     + "wrap each with `xcodebuild -create-xcframework -framework …` and use `path:`")
         }
         return found
+    }
+
+    /// A path inside the archive, or a bare name found at any depth (archives often nest a versioned folder).
+    static func locate(_ path: String, in root: URL, extension pathExtension: String, binary: Binary) throws -> URL {
+        let candidates = find(root, extension: pathExtension)
+        let found = { candidates.map { Paths.relative(from: root, to: $0) }.joined(separator: ", ") }
+        if !path.contains("/") {
+            let matches = candidates.filter { $0.lastPathComponent == path }
+            guard matches.count == 1 else {
+                throw SwiftPodsError(
+                    matches.isEmpty ? "Binary `\(binary.name)` has no \(path)" : "Binary `\(binary.name)` has several \(path)",
+                    file: binary.declaredAt.description, hint: "Found: " + found())
+            }
+            return matches[0]
+        }
+        let url = root.appendingPathComponent(path).standardizedFileURL
+        var directory: ObjCBool = false
+        guard url.pathExtension == pathExtension, FileManager.default.fileExists(atPath: url.path, isDirectory: &directory),
+            directory.boolValue
+        else {
+            throw SwiftPodsError("Binary `\(binary.name)` has no \(path)", file: binary.declaredAt.description, hint: "Found: " + found())
+        }
+        return url
     }
 
     /// Directories with the extension, not descending into matches.

@@ -1,0 +1,10 @@
+ENV['FASTLANE_OPT_OUT_USAGE'] = '1'
+ENV['FASTLANE_SKIP_UPDATE_CHECK'] = '1'
+
+require 'minitest/autorun'
+require 'fastlane'
+require 'fastlane/helper/sh_helper'
+require 'fastlane/plugin/swiftpods'
+require 'fileutils'
+require 'json'
+require 'tmpdir'

@@ -96,7 +96,8 @@ swiftpods deintegrate           # remove everything SwiftPods added
 swiftpods deintegrate --cocoapods  # also remove a CocoaPods or SwiftPods 0.1 integration
 ```
 
-`--json` gives machine-readable output.
+`--json` gives machine-readable output. In Fastlane lanes, use the
+[SwiftPods plugin](docs/Fastlane.md).
 
 ## Coming from CocoaPods or SwiftPods 0.1
 

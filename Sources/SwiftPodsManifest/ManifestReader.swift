@@ -449,8 +449,13 @@ private struct Evaluator {
         } else {
             if url == nil {
                 let entry = try self.catalogEntry(name, at: statement.location)
+                guard let packageURL = entry.url else {
+                    throw ManifestError(
+                        "`\(entry.name)` is a binary SDK in the catalog", at: statement.location,
+                        hint: "Use `binary '\(entry.name)', '<version>'`")
+                }
                 catalogEntry = entry
-                url = entry.url
+                url = packageURL
                 name = entry.name
             }
             guard let url else { preconditionFailure("set above") }
@@ -518,9 +523,9 @@ private struct Evaluator {
     private func binary(_ statement: Statement) throws(ManifestError) -> Binary {
         var arguments = try Arguments(statement)
         try arguments.requireNoBlock()
-        try arguments.positionalCount(1...1, usage: "binary 'Name', url: 'https://…', sha256: '…'")
+        try arguments.positionalCount(1...2, usage: "binary 'Name', url: 'https://…', sha256: '…'  or  binary 'Name', '1.2.3'")
         let nameNode = arguments.positional[0]
-        let name = try Convert.string(nameNode, "The binary name")
+        var name = try Convert.string(nameNode, "The binary name")
         guard name.range(of: #"\A[A-Za-z_][A-Za-z0-9_]*\z"#, options: .regularExpression) != nil else {
             throw ManifestError(
                 "'\(name)' is not a valid binary name", at: nameNode.location,
@@ -544,6 +549,38 @@ private struct Evaluator {
         ])
         if let bundle = resources.first(where: { !$0.hasSuffix(".bundle") }) {
             throw ManifestError("Resource '\(bundle)' is not a .bundle", at: statement.location, hint: "List the SDK's resource bundles")
+        }
+        if arguments.positional.count == 2 {
+            // A version alone: the catalog supplies the archive and how to link it.
+            let versionNode = arguments.positional[1]
+            let version = try Convert.versionText(versionNode, "The binary version")
+            if let other = urlNode ?? shaNode ?? pathNode {
+                throw ManifestError("A catalog binary takes a version, not a location", at: other.location)
+            }
+            if xcframeworks != nil || !frameworks.isEmpty || !libraries.isEmpty || !flags.isEmpty || !resources.isEmpty {
+                throw ManifestError(
+                    "How `\(name)` links comes from the catalog", at: statement.location,
+                    hint: "Declare it with `url:` and `sha256:` to choose frameworks, libraries or resources yourself")
+            }
+            let entry = try catalogEntry(name, at: statement.location)
+            guard let sdk = entry.binary else {
+                throw ManifestError(
+                    "`\(entry.name)` is a Swift package in the catalog", at: statement.location,
+                    hint: "Use `spm '\(entry.name)', '\(version)'`")
+            }
+            guard let release = sdk.releases.first(where: { $0.version == version }) else {
+                throw ManifestError(
+                    "The catalog has no version \(version) of `\(entry.name)`", at: versionNode.location,
+                    hint: "Versions: " + sdk.releases.map(\.version).joined(separator: ", "))
+            }
+            name = entry.name
+            guard name.range(of: #"\A[A-Za-z_][A-Za-z0-9_]*\z"#, options: .regularExpression) != nil else {
+                throw ManifestError("Catalog binary '\(name)' is not a valid binary name", at: statement.location)
+            }
+            return Binary(
+                name: name, source: .remote(url: release.url, sha256: release.sha256), xcframeworks: sdk.xcframeworks,
+                systemFrameworks: sdk.systemFrameworks, libraries: sdk.libraries, linkerFlags: sdk.linkerFlags,
+                dependencies: dependencies, resources: sdk.resources, declaredAt: statement.location)
         }
         let source: Binary.Source
         if let pathNode {

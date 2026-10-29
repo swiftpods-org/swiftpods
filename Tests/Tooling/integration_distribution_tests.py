@@ -1,3 +1,4 @@
+import hashlib
 import json
 import tempfile
 import unittest
@@ -48,6 +49,14 @@ class IntegrationDistributionTests(unittest.TestCase):
         self.assertNotIn("SWIFTPODS_", formula)
         self.assertEqual(
             sorted(path.name for path in self.root.rglob("*.rb")), ["swiftpods.rb"]
+        )
+
+    def test_plugin_pins_the_release_manifest(self):
+        self.generate()
+        pin = json.loads((self.root / "lib/fastlane/plugin/swiftpods/release.json").read_text())
+        self.assertEqual(
+            pin,
+            {"version": "0.2.0", "manifest_sha256": hashlib.sha256(self.path.read_bytes()).hexdigest()},
         )
 
     def test_rejects_unpublishable_or_incomplete_releases_before_writing(self):

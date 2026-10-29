@@ -35,11 +35,13 @@ public enum CatalogTools {
                     problems.append("\(label): `\(entry.name)` is already declared by \(other)")
                 }
                 names[entry.name.lowercased()] = label
-                let location = PackageLocation.canonical(entry.url)
-                if let other = locations[location] {
-                    problems.append("\(label): \(entry.url) is already declared by \(other)")
+                if let url = entry.url {
+                    let location = PackageLocation.canonical(url)
+                    if let other = locations[location] {
+                        problems.append("\(label): \(url) is already declared by \(other)")
+                    }
+                    locations[location] = label
                 }
-                locations[location] = label
             } catch let error as ManifestError {
                 problems.append(error.description)
             } catch {

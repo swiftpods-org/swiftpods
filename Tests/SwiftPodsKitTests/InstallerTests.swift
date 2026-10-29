@@ -192,7 +192,7 @@ final class InstallerTests: XCTestCase {
     }
 
     func testBinaryResourcesAreCopiedIntoTheApp() throws {
-        let directory = try fixture("target 'App' do\n  binary 'Ads', path: 'Vendor/Ads', resources: ['Res/AdsRes.bundle']\nend\n")
+        let directory = try fixture("target 'App' do\n  binary 'Ads', path: 'Vendor/Ads', resources: ['AdsRes.bundle']\nend\n")
         try makeXCFramework(directory.appendingPathComponent("Vendor/Ads/Ads.xcframework"))
         try FileManager.default.createDirectory(
             at: directory.appendingPathComponent("Vendor/Ads/Res/AdsRes.bundle"), withIntermediateDirectories: true)

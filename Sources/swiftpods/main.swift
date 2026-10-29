@@ -2,7 +2,7 @@ import Foundation
 import SwiftPodsKit
 import SwiftPodsManifest
 
-let version = "0.2.0"
+let version = "0.2.1"
 
 let help = """
     SwiftPods \(version): Swift packages and binary SDKs for Xcode projects, declared in a Podfile.
@@ -139,12 +139,20 @@ func run(_ arguments: [String]) throws {
         let entries = try CatalogTools.search(
             operands[0], sources: [Source(url: source ?? Source.publicCatalog)], update: flags.contains("--update-sources"))
         if json {
-            try output(entries.map { ["name": $0.name, "url": $0.url, "products": $0.products.joined(separator: " ")] })
+            try output(entries.map {
+                ["name": $0.name, "url": $0.url ?? "", "products": $0.products.joined(separator: " "),
+                 "binary_versions": ($0.binary?.releases.map(\.version) ?? []).joined(separator: " ")]
+            })
         } else if entries.isEmpty {
             print("No packages match '\(operands[0])'")
         } else {
             for entry in entries {
-                print("\(entry.name)  \(entry.url)" + (entry.products.isEmpty ? "" : "  products: " + entry.products.joined(separator: ", ")))
+                var line = entry.name
+                if let url = entry.url {
+                    line += "  \(url)" + (entry.products.isEmpty ? "" : "  products: " + entry.products.joined(separator: ", "))
+                }
+                if let sdk = entry.binary { line += "  binary: " + sdk.releases.map(\.version).joined(separator: ", ") }
+                print(line)
             }
         }
     case "catalog":

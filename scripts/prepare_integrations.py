@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Generate the Homebrew formula from a verified release manifest."""
+"""Pin a verified release in the Homebrew formula and the Fastlane plugin."""
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
@@ -98,6 +99,19 @@ def prepare(manifest_path, root=ROOT):
     formula = root / "Formula/swiftpods.rb"
     formula.parent.mkdir(parents=True, exist_ok=True)
     formula.write_text(homebrew_formula(manifest["version"], manifest["assets"]))
+    # The plugin installs exactly this release, identified by its manifest checksum.
+    pin = root / "lib/fastlane/plugin/swiftpods/release.json"
+    pin.parent.mkdir(parents=True, exist_ok=True)
+    pin.write_text(
+        json.dumps(
+            {
+                "version": manifest["version"],
+                "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+            },
+            indent=2,
+        )
+        + "\n"
+    )
 
 
 def main():
