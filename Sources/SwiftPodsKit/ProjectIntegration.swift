@@ -32,7 +32,7 @@ struct ProjectPlan {
 
 /// A change made to a project, for the command's report.
 public struct ProjectChange: Sendable, Equatable, Codable, CustomStringConvertible {
-    public enum Kind: String, Sendable, Codable { case added, removed, updated }
+    public enum Kind: String, Sendable, Codable { case added, removed, updated, reordered }
     public let kind: Kind
     public let subject: String
 
@@ -334,7 +334,9 @@ enum ProjectIntegration {
                 project[id] = configuration
             }
         }
-        return changes(before: before, after: project.objects)
+        let result = changes(before: before, after: project.objects)
+        // An empty report must mean an unchanged file, whatever else was rewritten.
+        return result.isEmpty && project.hasChanges ? [ProjectChange(kind: .updated, subject: "project file")] : result
     }
 
     private static func describe(_ id: String, in objects: [String: PBXObject]) -> String? {
@@ -357,11 +359,18 @@ enum ProjectIntegration {
         var added: [String] = []
         var removed: [String] = []
         var updated: [String] = []
+        var reordered: [String] = []
+        let replaced = Set(before.keys).symmetricDifference(after.keys)
         for id in Set(before.keys).union(after.keys) {
             switch (before[id], after[id]) {
             case (nil, _?): describe(id, in: after).map { added.append($0) }
             case (_?, nil): describe(id, in: before).map { removed.append($0) }
-            case (let old?, let new?) where old != new: describe(id, in: after).map { updated.append($0) }
+            case (let old?, let new?) where old != new:
+                if let subject = describe(id, in: after) {
+                    updated.append(subject)
+                } else {
+                    reordered += reorderedLists(id, old, new, ignoring: replaced, in: after)
+                }
             default: break
             }
         }
@@ -372,8 +381,28 @@ enum ProjectIntegration {
             updated.append(subject)
         }
         let result = added.map { ProjectChange(kind: .added, subject: $0) } + removed.map { ProjectChange(kind: .removed, subject: $0) }
-            + Set(updated).map { ProjectChange(kind: .updated, subject: $0) }
+            + Set(updated).map { ProjectChange(kind: .updated, subject: $0) } + reordered.map { ProjectChange(kind: .reordered, subject: $0) }
         return result.sorted { ($0.kind.rawValue, $0.subject) < ($1.kind.rawValue, $1.subject) }
+    }
+
+    /// Lists of a container, such as a target's products, whose entries only moved. Entries added or removed are set aside:
+    /// they are reported with their own objects.
+    private static func reorderedLists(
+        _ id: String, _ old: PBXObject, _ new: PBXObject, ignoring replaced: Set<String>, in objects: [String: PBXObject]
+    ) -> [String] {
+        old.keys.sorted().compactMap { key in
+            guard let before = old[key]?.strings?.filter({ !replaced.contains($0) }),
+                let after = new[key]?.strings?.filter({ !replaced.contains($0) }),
+                before != after, before.sorted() == after.sorted()
+            else { return nil }
+            var noun = ["packageReferences": "packages", "packageProductDependencies": "products", "buildPhases": "build phases", "children": "files"][key] ?? key
+            var owner = new.string("name") ?? new.string("path") ?? "the project"
+            if let isa = new.isa, isa.hasSuffix("BuildPhase") {
+                noun = ["PBXFrameworksBuildPhase": "frameworks", "PBXResourcesBuildPhase": "resources"][isa] ?? "files"
+                owner = objects.values.first { $0.strings("buildPhases").contains(id) }?.string("name") ?? owner
+            }
+            return noun + " in " + owner
+        }
     }
 
     /// The directory a file reference's path is relative to.

@@ -102,6 +102,29 @@ final class InstallerTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("SwiftPods").path))
     }
 
+    func testReorderedDeclarationsAreReported() throws {
+        let directory = try fixture(
+            """
+            target 'App' do
+              spm 'https://github.com/firebase/firebase-ios-sdk.git', '~> 13.0', products: ['FirebaseCore']
+              spm 'https://github.com/Alamofire/Alamofire.git', '~> 5.9'
+            end
+            """)
+        _ = try installer(directory).install(InstallOptions())
+        try """
+            target 'App' do
+              spm 'https://github.com/Alamofire/Alamofire.git', '~> 5.9'
+              spm 'https://github.com/firebase/firebase-ios-sdk.git', '~> 13.0', products: ['FirebaseCore']
+            end
+            """.write(to: directory.appendingPathComponent("Podfile"), atomically: true, encoding: .utf8)
+        let report = try installer(directory).install(InstallOptions())
+        XCTAssertEqual(report.projects[0].changes.map(\.description), [
+            "Reordered frameworks in App", "Reordered packages in the project", "Reordered products in App",
+        ])
+        XCTAssertEqual(products(try project(directory), "App"), ["Alamofire", "FirebaseCore"])
+        XCTAssertEqual(try installer(directory).install(InstallOptions()).projects[0].changes, [])
+    }
+
     func testRemovedDeclarationsLeaveUserObjectsAlone() throws {
         let directory = try fixture(
             """
