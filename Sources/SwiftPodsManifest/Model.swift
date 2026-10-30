@@ -2,6 +2,8 @@
 public struct Manifest: Sendable, Codable, Equatable {
     /// The Podfile that was read.
     public var file: String
+    /// Files the Podfile included, in reading order.
+    public var includes: [String]
     /// Catalogs that resolve package names, in lookup order.
     public var sources: [Source]
     /// Every distinct Swift package, in declaration order.

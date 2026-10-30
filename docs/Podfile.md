@@ -174,6 +174,13 @@ is missing. `swiftpods install` prints a note for each repair.
 `execution_position` (`:before_compile`, `:after_compile`, `:any`),
 `based_on_dependency_analysis`, `show_env_vars_in_log`.
 
+Scripts do not become phases of their own, so editing them leaves the project
+alone. `[SwiftPods] Prepare`, before compiling, runs `:before_compile` scripts;
+`[SwiftPods] Finish`, after the target's other phases, runs `:after_compile` and
+`:any` scripts. Both run on every build, in declaration order. Input and output
+files declare what the scripts read and write, for Xcode's script sandbox and
+build order; input and output file lists are read when installing.
+
 ## Not supported
 
 `pod`, `use_frameworks!`, `use_modular_headers!`,

@@ -38,7 +38,7 @@ reads them from the package's tags; a package is registered once, not per releas
   it is listed too, as in CocoaPods.
 - Catalogs are cached. `install` uses the cache; `--update-sources` refreshes it;
   `source …, revision:` pins a commit. `--deployment` fails when a catalog now
-  resolves a name to a repository the committed project does not reference.
+  resolves a name to a repository the committed `Package.resolved` does not pin.
 - An entry may also list releases of a prebuilt SDK, each an archive URL with
   its SHA-256, plus how to link it. A Podfile then writes
   `binary 'HyprMX', '6.4.2'`. One name can have both a package and binary
@@ -87,6 +87,18 @@ or the target and script phase name). An object is SwiftPods' own exactly when
 its identifier matches that derivation, so a fresh clone, a deleted cache or a
 hand-edited project never loses track of what SwiftPods manages, and objects
 users create in Xcode are never touched.
+
+**A project that does not follow the Podfile.** The project references one
+generated local package, `SwiftPods/SwiftPodsDependencies`, by a file reference
+to its folder, and each target links its product `SwiftPods-<Target>` and has a
+generated settings file and the phases `[SwiftPods] Prepare` and
+`[SwiftPods] Finish`, which run generated scripts. None of this depends on what
+the Podfile declares, so the Podfile changes alone: the package lists
+requirements and products, the scripts run script phases, copy binary resource
+bundles and check `Podfile.sha256` so that a build after an uninstalled Podfile
+change stops, as CocoaPods' manifest check does. A file reference rather than an
+`XCLocalSwiftPackageReference` also avoids a crash in Xcode 26.2 when the
+package graph shrinks during resolution.
 
 **Binary packaging.** SDK archives are used as published, except that
 SwiftPods normalizes, in its own copy, the iOS framework slices Xcode would embed

@@ -1,3 +1,4 @@
+import CryptoKit
 import Darwin
 import Foundation
 import SwiftPodsManifest
@@ -93,17 +94,8 @@ public struct Installer: Sendable {
 
         if options.deployment {
             for path in projectPaths {
+                // A catalog that moved a name since Package.resolved was committed leaves that package without a pin.
                 let used = Set(targetsByProject[path]!.flatMap { $0.products.map(\.package) })
-                // A catalog may have changed since the project was committed; deployment must not follow it.
-                let referenced = Set(projects[path]!.objects.values.compactMap { $0.string("repositoryURL").map(PackageLocation.canonical) })
-                if let moved = manifest.packages.first(where: { package in
-                    guard used.contains(package.identity), package.catalog != nil, case .remote(let url) = package.location else { return false }
-                    return !referenced.contains(PackageLocation.canonical(url))
-                }), case .remote(let url) = moved.location {
-                    throw SwiftPodsError(
-                        "The catalog resolves `\(moved.name)` to \(url), which \(path) does not reference", file: moved.declaredAt.description,
-                        hint: "Run `swiftpods install` without --deployment, review the change and commit the project")
-                }
                 let packages = manifest.packages.filter { used.contains($0.identity) && $0.requirement != nil }
                 guard !packages.isEmpty else { continue }
                 let file = PackageResolved.location(project: projects[path]!.path)
@@ -122,21 +114,25 @@ public struct Installer: Sendable {
         var staged: [(URL, URL)] = []
         var obsolete: [URL] = []
 
-        // Binaries become one generated local package.
-        let binaryDirectory = generated.appendingPathComponent(BinaryPackage.directoryName, isDirectory: true)
-        let usesBinaries = manifest.targets.contains { !$0.binaries.isEmpty }
-        var binaryEntries: [BinaryPackage.Entry] = []
-        var binaryNotes: [String] = []
-        if usesBinaries {
-            let store = BinaryStore(cache: cache, runner: runner, offline: options.offline)
-            for binary in manifest.binaries {
-                let contents = try store.contents(binary, podfileDirectory: directory)
-                binaryEntries.append(BinaryPackage.Entry(binary: binary, xcframeworks: contents.xcframeworks, resources: contents.resources))
+        func stage(_ name: String, _ files: [String: String]) throws {
+            let destination = generated.appendingPathComponent(name, isDirectory: true)
+            guard Self.files(in: destination) != files else { return }
+            let target = staging.appendingPathComponent(name, isDirectory: true)
+            for (relative, text) in files {
+                let file = target.appendingPathComponent(relative)
+                try fileManager.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try Data(text.utf8).write(to: file)
             }
-            let entries = binaryEntries
-            var platforms: [Platform] = []
-            for target in manifest.targets where !target.binaries.isEmpty {
-                guard let platform = target.platform else { continue }
+            staged.append((target, destination))
+        }
+        func stem(_ path: String) -> String { ((path as NSString).lastPathComponent as NSString).deletingPathExtension }
+        func folder(_ target: Target) -> String { target.name.replacingOccurrences(of: "/", with: "_") }
+
+        // Both generated packages support the lowest deployment target any target has.
+        var platforms: [Platform] = []
+        for path in projectPaths {
+            for target in targetsByProject[path]! {
+                guard let platform = Self.platform(of: target, in: projects[path]!) else { continue }
                 if let index = platforms.firstIndex(where: { $0.name == platform.name }) {
                     let current = platforms[index].deploymentTarget.flatMap(Version.init)
                     if let new = platform.deploymentTarget.flatMap(Version.init), current.map({ new < $0 }) ?? true {
@@ -146,99 +142,172 @@ public struct Installer: Sendable {
                     platforms.append(platform)
                 }
             }
-            let package = BinaryPackage(entries: entries, platforms: platforms)
+        }
+
+        // Binaries become one generated local package.
+        let binaryDirectory = generated.appendingPathComponent(BinaryPackage.directoryName, isDirectory: true)
+        let usesBinaries = manifest.targets.contains { !$0.binaries.isEmpty }
+        var binaryEntries: [BinaryPackage.Entry] = []
+        var notes: [String] = []
+        if usesBinaries {
+            let store = BinaryStore(cache: cache, runner: runner, offline: options.offline)
+            for binary in manifest.binaries {
+                let contents = try store.contents(binary, podfileDirectory: directory)
+                binaryEntries.append(BinaryPackage.Entry(binary: binary, xcframeworks: contents.xcframeworks, resources: contents.resources))
+            }
+            let package = BinaryPackage(entries: binaryEntries, platforms: platforms)
             try package.validate()
             let current = try? String(contentsOf: binaryDirectory.appendingPathComponent(".fingerprint"), encoding: .utf8)
             if current != package.fingerprint {
                 let target = staging.appendingPathComponent(BinaryPackage.directoryName, isDirectory: true)
-                binaryNotes = try package.render(into: target)
+                notes = try package.render(into: target)
                 staged.append((target, binaryDirectory))
             }
         } else if fileManager.fileExists(atPath: binaryDirectory.path) {
             obsolete.append(binaryDirectory)
         }
 
-        // Build settings become one xcconfig per target.
+        // Everything the targets use goes into one generated package with a product per target, so projects keep
+        // referencing the same products whatever the Podfile declares.
+        let dependencyDirectory = generated.appendingPathComponent(DependencyPackage.directoryName, isDirectory: true)
+        let targetCounts = Dictionary(projectPaths.flatMap { path in targetsByProject[path]!.map { ($0.name, 1) } }, uniquingKeysWith: +)
+        func productBase(_ target: Target, _ path: String) -> String {
+            targetCounts[target.name]! > 1 ? stem(path) + "-" + target.name : target.name
+        }
+        let used = Set(manifest.targets.flatMap { $0.products.map(\.package) })
+        let usedPackages = manifest.packages.filter { used.contains($0.identity) }
+        var products: [DependencyPackage.Product] = []
+        for path in projectPaths {
+            for target in targetsByProject[path]! {
+                let linked = DependencyPackage.productName(productBase(target, path))
+                products.append(.init(
+                    name: linked, module: DependencyPackage.moduleName(linked),
+                    dependencies: target.products.filter(\.link).map { ($0.product, $0.package) }
+                        + target.binaries.map { ($0, BinaryPackage.directoryName) }))
+                let unlinked = target.products.filter { !$0.link }
+                if !unlinked.isEmpty {
+                    let name = DependencyPackage.productName(productBase(target, path), unlinked: true)
+                    products.append(.init(
+                        name: name, module: DependencyPackage.moduleName(name), dependencies: unlinked.map { ($0.product, $0.package) }))
+                }
+            }
+        }
+        let dependencies = DependencyPackage(
+            platforms: platforms,
+            remote: usedPackages.compactMap { package in
+                guard case .remote(let url) = package.location else { return nil }
+                return .init(url: url, requirement: package.requirement!)
+            },
+            local: usedPackages.compactMap { package in
+                guard case .local(let relative) = package.location else { return nil }
+                return Paths.relative(from: dependencyDirectory, to: directory.appendingPathComponent(relative))
+            } + (usesBinaries ? [Paths.relative(from: dependencyDirectory, to: binaryDirectory)] : []),
+            products: products)
+        try stage(DependencyPackage.directoryName, dependencies.files())
+
+        // Build settings become one xcconfig per target; every target has one, so adding settings changes no project.
         let settingsDirectory = generated.appendingPathComponent("Settings", isDirectory: true)
         var settingsFiles: [String: [String: URL]] = [:]
-        var settingsTexts: [URL: String] = [:]
+        var settingsTexts: [String: String] = [:]
         for path in projectPaths {
-            let stem = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
-            for target in targetsByProject[path]! where !target.settings.isEmpty {
-                let name = target.name.replacingOccurrences(of: "/", with: "_") + ".xcconfig"
-                let file = settingsDirectory.appendingPathComponent(stem).appendingPathComponent(name)
+            for target in targetsByProject[path]! {
+                let file = settingsDirectory.appendingPathComponent(stem(path)).appendingPathComponent(folder(target) + ".xcconfig")
                 settingsFiles[path, default: [:]][target.name] = file
-                settingsTexts[file] = Self.xcconfig(target.settings)
+                settingsTexts[Paths.relative(from: settingsDirectory, to: file)] = Self.xcconfig(target.settings)
             }
         }
-        if !settingsTexts.isEmpty {
-            let current = Self.files(in: settingsDirectory)
-            let wanted = Dictionary(uniqueKeysWithValues: settingsTexts.map { (Paths.relative(from: settingsDirectory, to: $0.key), $0.value) })
-            if current != wanted {
-                let target = staging.appendingPathComponent("Settings", isDirectory: true)
-                for (relative, text) in wanted {
-                    let file = target.appendingPathComponent(relative)
-                    try fileManager.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
-                    try Data(text.utf8).write(to: file)
-                }
-                staged.append((target, settingsDirectory))
-            }
-        } else if fileManager.fileExists(atPath: settingsDirectory.path) {
-            obsolete.append(settingsDirectory)
-        }
+        try stage("Settings", settingsTexts)
 
-        var report = InstallReport()
-        var packageProjects = Set<String>()
-        report.binaries = usesBinaries ? manifest.binaries.map(\.name) : []
-        report.notes = binaryNotes
+        // Script phases, binary resources and the check that the installation is current run from generated scripts.
+        let scriptsDirectory = generated.appendingPathComponent(TargetScripts.directoryName, isDirectory: true)
+        let signed = [directory.appendingPathComponent("Podfile")] + manifest.includes.map { URL(fileURLWithPath: $0) }
+        var scriptFiles: [String: String] = [:]
+        scriptFiles[TargetScripts.signatureFile] = try signed.map { file in
+            let digest = SHA256.hash(data: try Data(contentsOf: file)).map { String(format: "%02x", $0) }.joined()
+            return digest + "  " + Paths.relative(from: directory, to: file)
+        }.joined(separator: "\n") + "\n"
+        var scriptLocations: [String: [String: TargetScripts.Locations]] = [:]
         for path in projectPaths {
-            var project = projects[path]!
-            let projectDirectory = project.sourceRoot
-            func reference(_ package: Package) -> ProjectPlan.PackageReference {
-                switch package.location {
-                case .remote(let url):
-                    return .init(
-                        key: "package:" + PackageLocation.canonical(url),
-                        object: ["isa": "XCRemoteSwiftPackageReference", "repositoryURL": .string(url), "requirement": Self.requirement(package.requirement!)])
-                case .local(let relative):
-                    return local(directory.appendingPathComponent(relative))
-                }
-            }
-            // A file reference to the package folder rather than an XCLocalSwiftPackageReference: Xcode 26.2 crashes
-            // resolving a graph that shrinks, as Firebase's does, when the project holds the latter.
-            func local(_ url: URL) -> ProjectPlan.PackageReference {
-                let relative = Paths.relative(from: projectDirectory, to: url)
-                return .init(key: "package:local:" + relative, object: [
-                    "isa": "PBXFileReference", "lastKnownFileType": "wrapper", "name": .string(url.lastPathComponent),
-                    "path": .string(relative), "sourceTree": "SOURCE_ROOT",
-                ])
-            }
-            let targets = targetsByProject[path]!
-            var plan = ProjectPlan()
-            var references: [String: ProjectPlan.PackageReference] = [:]
-            for package in manifest.packages where targets.contains(where: { $0.products.contains { $0.package == package.identity } }) {
-                let value = reference(package)
-                references[package.identity] = value
-                plan.packages.append(value)
-            }
-            let binaries = targets.contains { !$0.binaries.isEmpty } ? local(binaryDirectory) : nil
-            if let binaries { plan.packages.append(binaries) }
-            for target in targets {
-                var products = target.products.map { ProjectPlan.Product(package: references[$0.package]!, name: $0.product, link: $0.link) }
-                products += target.binaries.map { ProjectPlan.Product(package: binaries!, name: $0, link: true) }
+            let projectDirectory = projects[path]!.sourceRoot
+            for target in targetsByProject[path]! {
+                let targetDirectory = scriptsDirectory.appendingPathComponent(stem(path)).appendingPathComponent(folder(target))
+                let locations = TargetScripts.Locations(
+                    generated: Paths.relative(from: projectDirectory, to: generated), podfile: Paths.relative(from: projectDirectory, to: directory),
+                    target: Paths.relative(from: projectDirectory, to: targetDirectory))
+                scriptLocations[path, default: [:]][target.name] = locations
                 let resources = binaryEntries.filter { target.binaries.contains($0.binary.name) }.flatMap { entry in
                     entry.resources.map {
                         Paths.relative(
-                            from: projectDirectory,
-                            to: binaryDirectory.appendingPathComponent(BinaryPackage.resourcePath(entry.binary.name, $0)))
+                            from: projectDirectory, to: binaryDirectory.appendingPathComponent(BinaryPackage.resourcePath(entry.binary.name, $0)))
                     }
                 }
-                plan.targets.append(.init(
-                    name: target.name, products: products, scripts: target.scriptPhases,
-                    settingsFile: settingsFiles[path]?[target.name].map { Paths.relative(from: projectDirectory, to: $0) },
-                    resources: resources))
+                // File lists cannot include other lists, so the scripts' own lists are read now.
+                var fileLists: [String: [String]] = [:]
+                for list in target.scriptPhases.flatMap({ $0.inputFileLists + $0.outputFileLists }) {
+                    let resolved = list.replacingOccurrences(of: "$(SRCROOT)", with: projectDirectory.path)
+                        .replacingOccurrences(of: "${SRCROOT}", with: projectDirectory.path)
+                    let url = resolved.hasPrefix("/") ? URL(fileURLWithPath: resolved) : projectDirectory.appendingPathComponent(resolved)
+                    if let text = try? String(contentsOf: url, encoding: .utf8) {
+                        fileLists[list] = text.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+                            .filter { !$0.isEmpty && !$0.hasPrefix("#") }
+                    } else {
+                        notes.append("\(target.name): file list \(list) is read when installing and was not found, so its files are not declared")
+                    }
+                }
+                let files = TargetScripts.files(
+                    scripts: target.scriptPhases, resources: resources, signed: signed.map { Paths.relative(from: directory, to: $0) },
+                    fileLists: fileLists, paths: locations)
+                for (relative, text) in files {
+                    scriptFiles[Paths.relative(from: scriptsDirectory, to: targetDirectory.appendingPathComponent(relative))] = text
+                }
             }
-            if !plan.packages.isEmpty { packageProjects.insert(path) }
+        }
+        try stage(TargetScripts.directoryName, scriptFiles)
+
+        var report = InstallReport()
+        report.binaries = usesBinaries ? manifest.binaries.map(\.name) : []
+        report.notes = notes
+        for path in projectPaths {
+            var project = projects[path]!
+            let projectDirectory = project.sourceRoot
+            let relative = Paths.relative(from: projectDirectory, to: dependencyDirectory)
+            // A file reference to the package folder rather than an XCLocalSwiftPackageReference: Xcode 26.2 crashes
+            // resolving a graph that shrinks, as Firebase's does, when the project holds the latter.
+            let package = ProjectPlan.PackageReference(key: "package:local:" + relative, object: [
+                "isa": "PBXFileReference", "lastKnownFileType": "wrapper", "name": .string(DependencyPackage.directoryName),
+                "path": .string(relative), "sourceTree": "SOURCE_ROOT",
+            ])
+            var plan = ProjectPlan()
+            plan.packages = [package]
+            let targets = targetsByProject[path]!
+            for declared in usedPackages where targets.contains(where: { $0.products.contains { $0.package == declared.identity } }) {
+                switch declared.location {
+                case .remote(let url):
+                    plan.managedPackageKeys.insert("package:" + PackageLocation.canonical(url))
+                case .local(let path):
+                    plan.managedPackageKeys.insert(
+                        "package:local:" + Paths.relative(from: projectDirectory, to: directory.appendingPathComponent(path)))
+                    plan.managedLocalProducts.formUnion(targets.flatMap { $0.products.filter { $0.package == declared.identity }.map(\.product) })
+                }
+            }
+            for target in targets {
+                let base = productBase(target, path)
+                var products = [ProjectPlan.Product(package: package, name: DependencyPackage.productName(base), link: true)]
+                if target.products.contains(where: { !$0.link }) {
+                    products.append(.init(package: package, name: DependencyPackage.productName(base, unlinked: true), link: false))
+                }
+                let locations = scriptLocations[path]![target.name]!
+                let phases = TargetScripts.Phase.allCases.map { phase in
+                    ProjectPlan.PhasePlan(
+                        name: phase.rawValue, script: TargetScripts.phaseScript(phase, paths: locations),
+                        inputFileLists: [TargetScripts.fileList(phase, outputs: false, paths: locations)],
+                        outputFileLists: [TargetScripts.fileList(phase, outputs: true, paths: locations)], position: phase.position)
+                }
+                plan.targets.append(.init(
+                    name: target.name, products: products, phases: phases,
+                    settingsFile: Paths.relative(from: projectDirectory, to: settingsFiles[path]![target.name]!),
+                    hasSettings: !target.settings.isEmpty))
+            }
             let changes = try ProjectIntegration.apply(plan, to: &project, adopt: options.adopt)
             projects[path] = project
             report.projects.append(.init(project: path, changes: changes))
@@ -254,7 +323,7 @@ public struct Installer: Sendable {
         }
 
         if options.resolve {
-            for path in projectPaths where packageProjects.contains(path) {
+            for path in projectPaths {
                 _ = try runner.run(
                     "/usr/bin/xcrun", ["xcodebuild", "-resolvePackageDependencies", "-project", projects[path]!.path.path],
                     in: directory)
@@ -321,13 +390,38 @@ public struct Installer: Sendable {
         return lines.joined(separator: "\n") + "\n"
     }
 
+    /// Text files below `directory` by relative path; hidden files, such as Xcode's `.swiftpm`, are not SwiftPods'.
     private static func files(in directory: URL) -> [String: String] {
-        guard let enumerator = FileManager.default.enumerator(at: directory, includingPropertiesForKeys: nil) else { return [:] }
+        guard let enumerator = FileManager.default.enumerator(
+            at: directory, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles])
+        else { return [:] }
         var result: [String: String] = [:]
-        for case let url as URL in enumerator where url.pathExtension == "xcconfig" {
+        for case let url as URL in enumerator where (try? url.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true {
             result[Paths.relative(from: directory, to: url)] = try? String(contentsOf: url, encoding: .utf8)
         }
         return result
+    }
+
+    /// The platform a target builds for: the Podfile's, or the deployment target in the project's build settings.
+    static func platform(of target: Target, in project: XcodeProject) -> Platform? {
+        if let platform = target.platform, platform.deploymentTarget != nil { return platform }
+        var settings: [String: PBXValue] = [:]
+        let owners = (project.nativeTargets.first { $0.name == target.name }.map { [$0.id] } ?? []) + [project.rootID]
+        for owner in owners {
+            for id in project.configurations(of: owner).values.sorted() {
+                for (key, value) in project[id]?["buildSettings"]?.dictionary ?? [:] where settings[key] == nil { settings[key] = value }
+            }
+        }
+        let platforms: [(PlatformName, String, String)] = [
+            (.ios, "iphoneos", "IPHONEOS_DEPLOYMENT_TARGET"), (.macos, "macosx", "MACOSX_DEPLOYMENT_TARGET"),
+            (.tvos, "appletvos", "TVOS_DEPLOYMENT_TARGET"), (.watchos, "watchos", "WATCHOS_DEPLOYMENT_TARGET"),
+            (.visionos, "xros", "XROS_DEPLOYMENT_TARGET"),
+        ]
+        let sdk = settings["SDKROOT"]?.string
+        guard let (name, _, key) = platforms.first(where: { $0.0 == target.platform?.name || ($0.1 == sdk && target.platform == nil) }),
+            let version = settings[key]?.string, Version(version) != nil
+        else { return target.platform }
+        return Platform(name: name, deploymentTarget: version)
     }
 
     /// Puts `source` at `destination`, swapping atomically when something is already there.

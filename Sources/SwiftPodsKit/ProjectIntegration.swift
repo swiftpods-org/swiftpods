@@ -16,18 +16,33 @@ struct ProjectPlan {
         let link: Bool
     }
 
+    /// A Run Script phase whose project entry stays the same; its script runs generated files.
+    struct PhasePlan {
+        let name: String
+        let script: String
+        let inputFileLists: [String]
+        let outputFileLists: [String]
+        let position: ScriptPhase.Position
+    }
+
     struct TargetPlan {
         let name: String
         let products: [Product]
-        let scripts: [ScriptPhase]
+        let phases: [PhasePlan]
         /// The generated settings file, relative to the project directory.
         let settingsFile: String?
+        /// Whether the Podfile gives the target build settings, which a base configuration of its own must include.
+        var hasSettings = true
         /// Resource bundles copied into the target's product, relative to the project directory.
-        let resources: [String]
+        var resources: [String] = []
     }
 
     var packages: [PackageReference] = []
     var targets: [TargetPlan] = []
+    /// Keys of every package the Podfile declares; the project must not reference them itself.
+    var managedPackageKeys: Set<String> = []
+    /// Products of the Podfile's local packages, which a project may name without a package.
+    var managedLocalProducts: Set<String> = []
 }
 
 /// A change made to a project, for the command's report.
@@ -126,17 +141,13 @@ enum ProjectIntegration {
 
     /// Package references and product links SwiftPods did not create but would now manage.
     static func adoptable(_ project: XcodeProject, plan: ProjectPlan, owned: Set<String>) -> [String] {
-        let keys = Set(plan.packages.map(\.key))
+        let keys = Set(plan.packages.map(\.key)).union(plan.managedPackageKeys)
         let references = project.objects.filter { id, object in
             !owned.contains(id) && packageKey(object).map(keys.contains) == true
         }.keys
         var result = Set(references)
-        // Products of a local package referenced by its folder name no package; match them by the products planned for it.
-        let localProducts = Set(plan.targets.flatMap { target in
-            target.products.filter { product in
-                isLocalPackage(product.package.object) && references.contains { packageKey(project[$0] ?? [:]) == product.package.key }
-            }.map(\.name)
-        })
+        // Products of a local package referenced by its folder name no package; match them by name.
+        let localProducts = references.contains { project[$0].map(isLocalPackage) == true } ? plan.managedLocalProducts : []
         for (id, object) in project.objects where object.isa == "XCSwiftPackageProductDependency" && !owned.contains(id) {
             if let package = object.string("package") {
                 guard references.contains(package) else { continue }
@@ -202,20 +213,16 @@ enum ProjectIntegration {
                     edit.buildFiles.append(put("build-file:" + id, ["isa": "PBXBuildFile", "productRef": .string(id)]))
                 }
             }
-            for script in target.scripts {
-                var object: PBXObject = [
-                    "isa": "PBXShellScriptBuildPhase", "buildActionMask": "2147483647", "files": [],
-                    "inputFileListPaths": .array(script.inputFileLists.map(PBXValue.string)),
-                    "inputPaths": .array(script.inputFiles.map(PBXValue.string)),
-                    "name": .string(scriptPrefix + script.name),
-                    "outputFileListPaths": .array(script.outputFileLists.map(PBXValue.string)),
-                    "outputPaths": .array(script.outputFiles.map(PBXValue.string)),
-                    "runOnlyForDeploymentPostprocessing": "0", "shellPath": .string(script.shellPath),
-                    "shellScript": .string(script.script),
+            for phase in target.phases {
+                let object: PBXObject = [
+                    "isa": "PBXShellScriptBuildPhase", "alwaysOutOfDate": "1", "buildActionMask": "2147483647", "files": [],
+                    "inputFileListPaths": .array(phase.inputFileLists.map(PBXValue.string)), "inputPaths": [],
+                    "name": .string(scriptPrefix + phase.name),
+                    "outputFileListPaths": .array(phase.outputFileLists.map(PBXValue.string)), "outputPaths": [],
+                    "runOnlyForDeploymentPostprocessing": "0", "shellPath": "/bin/sh", "shellScript": .string(phase.script),
+                    "showEnvVarsInLog": "0",
                 ]
-                if !script.showEnvironmentInLog { object["showEnvVarsInLog"] = "0" }
-                if !script.basedOnDependencyAnalysis { object["alwaysOutOfDate"] = "1" }
-                edit.scripts.append((put(scriptKey(target: target.name, name: script.name), object), script.position))
+                edit.scripts.append((put(scriptKey(target: target.name, name: phase.name), object), phase.position))
             }
             if let path = target.settingsFile {
                 edit.settings = put(
@@ -271,7 +278,9 @@ enum ProjectIntegration {
 
         // Settings files need the base configuration slot, or an include from the file already there.
         for (name, edit) in edits {
-            guard let settings = edit.settings, let path = plan.targets.first(where: { $0.name == name })?.settingsFile else { continue }
+            guard let settings = edit.settings, let targetPlan = plan.targets.first(where: { $0.name == name }), targetPlan.hasSettings,
+                let path = targetPlan.settingsFile
+            else { continue }
             for (configuration, id) in project.configurations(of: targets[name]!.id) {
                 guard let base = project[id]?.string("baseConfigurationReference"), base != settings, !owned.contains(base) else { continue }
                 if !includes(project, base: base, settings: path) {

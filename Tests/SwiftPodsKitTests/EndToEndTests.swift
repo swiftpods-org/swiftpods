@@ -17,7 +17,8 @@ final class EndToEndTests: XCTestCase {
 
                 group :common do
                   settings 'GENERATE_INFOPLIST_FILE' => 'YES', 'PRODUCT_BUNDLE_IDENTIFIER' => 'org.swiftpods.e2e',
-                           'CODE_SIGNING_ALLOWED' => 'NO', 'SWIFT_VERSION' => '5.0', 'IPHONEOS_DEPLOYMENT_TARGET' => '15.0'
+                           'CODE_SIGNING_ALLOWED' => 'NO', 'SWIFT_VERSION' => '5.0', 'IPHONEOS_DEPLOYMENT_TARGET' => '15.0',
+                           'ENABLE_USER_SCRIPT_SANDBOXING' => 'YES'
                 end
 
                 target 'App' do

@@ -819,7 +819,8 @@ private struct Evaluator {
                 hint: "Add `target 'MyApp' do … end`")
         }
         return Manifest(
-            file: file, sources: sources, packages: collector.packages, binaries: collector.binaries, targets: collector.targets)
+            file: file, includes: Array(included.dropFirst()), sources: sources, packages: collector.packages, binaries: collector.binaries,
+            targets: collector.targets)
     }
 
     private mutating func walk(_ node: TargetNode, _ parent: Context, _ collector: inout Collector) throws(ManifestError) {

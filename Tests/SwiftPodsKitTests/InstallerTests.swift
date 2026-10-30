@@ -1,5 +1,6 @@
 import Foundation
-import SwiftPodsKit
+@testable import SwiftPodsKit
+import SwiftPodsManifest
 import SwiftPodsTestSupport
 import SwiftPodsXcode
 import XCTest
@@ -51,6 +52,10 @@ final class InstallerTests: XCTestCase {
             .filter { $0.isa == "PBXFileReference" && $0.string("lastKnownFileType") == "wrapper" }.compactMap { $0.string("path") }
     }
 
+    private func generated(_ directory: URL, _ path: String) throws -> String {
+        try String(contentsOf: directory.appendingPathComponent("SwiftPods").appendingPathComponent(path), encoding: .utf8)
+    }
+
     private func makeXCFramework(_ url: URL) throws {
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         try Data("<plist version=\"1.0\"><dict/></plist>".utf8).write(to: url.appendingPathComponent("Info.plist"))
@@ -79,22 +84,37 @@ final class InstallerTests: XCTestCase {
             end
             """)
         let report = try installer(directory).install(InstallOptions())
-        XCTAssertTrue(report.projects[0].changes.contains { $0.description == "Added package https://github.com/firebase/firebase-ios-sdk.git" })
+        XCTAssertTrue(report.projects[0].changes.contains { $0.description == "Added local package SwiftPods/SwiftPodsDependencies" })
 
+        // The project references one generated package and links one of its products per target.
         let installed = try project(directory)
-        let references = installed.project.strings("packageReferences").compactMap { installed[$0] }
-        XCTAssertEqual(references.compactMap { $0.string("repositoryURL") }, [
-            "https://github.com/firebase/firebase-ios-sdk.git", "https://github.com/pointfreeco/swift-snapshot-testing.git",
-        ])
-        XCTAssertEqual(references[0]["requirement"], ["kind": "upToNextMajorVersion", "minimumVersion": "13.0.0"])
-        XCTAssertEqual(localPackages(installed), ["Modules/Networking"])
-        XCTAssertNil(installed[target(installed, "App").strings("packageProductDependencies")[2]]?["package"], "Local products name no package")
-        XCTAssertEqual(products(installed, "App"), ["FirebaseCore", "FirebaseAnalytics", "Networking"])
-        XCTAssertEqual(linked(installed, "App"), ["FirebaseCore", "FirebaseAnalytics", "Networking"])
-        XCTAssertEqual(phaseNames(installed, "App"), ["[SwiftPods] Generate", "PBXSourcesBuildPhase", "[SwiftPods] Crashlytics", "PBXFrameworksBuildPhase"])
-        XCTAssertEqual(products(installed, "AppTests"), ["SnapshotTesting"])
-        XCTAssertEqual(products(installed, "Plugin"), ["FirebaseCore"])
-        XCTAssertEqual(linked(installed, "Plugin"), [], "link: false adds a build dependency only")
+        XCTAssertEqual(installed.project.strings("packageReferences"), [])
+        XCTAssertEqual(localPackages(installed), ["SwiftPods/SwiftPodsDependencies"])
+        XCTAssertEqual(products(installed, "App"), ["SwiftPods-App"])
+        XCTAssertEqual(linked(installed, "App"), ["SwiftPods-App"])
+        XCTAssertNil(installed[target(installed, "App").strings("packageProductDependencies")[0]]?["package"], "Local products name no package")
+        XCTAssertEqual(phaseNames(installed, "App"), ["[SwiftPods] Prepare", "PBXSourcesBuildPhase", "PBXFrameworksBuildPhase", "[SwiftPods] Finish"])
+        XCTAssertEqual(products(installed, "AppTests"), ["SwiftPods-AppTests"])
+        XCTAssertEqual(products(installed, "Plugin"), ["SwiftPods-Plugin", "SwiftPods-Plugin-Unlinked"])
+        XCTAssertEqual(linked(installed, "Plugin"), ["SwiftPods-Plugin"], "link: false adds a build dependency only")
+
+        // The generated package carries the requirements and products.
+        let manifest = try generated(directory, "SwiftPodsDependencies/Package.swift")
+        XCTAssertTrue(manifest.contains(#"platforms: [.iOS("15.0")]"#), manifest)
+        XCTAssertTrue(manifest.contains(#".package(url: "https://github.com/firebase/firebase-ios-sdk.git", from: "13.0.0")"#), manifest)
+        XCTAssertTrue(manifest.contains(#".package(url: "https://github.com/pointfreeco/swift-snapshot-testing.git", exact: "1.18.0")"#), manifest)
+        XCTAssertTrue(manifest.contains(#".package(path: "../../Modules/Networking")"#), manifest)
+        XCTAssertTrue(manifest.contains(#".product(name: "FirebaseAnalytics", package: "firebase-ios-sdk")"#), manifest)
+        XCTAssertTrue(manifest.contains(#".product(name: "Networking", package: "networking")"#), manifest)
+        XCTAssertTrue(manifest.contains(#".library(name: "SwiftPods-Plugin-Unlinked", targets: ["SwiftPods_Plugin_Unlinked"])"#), manifest)
+
+        // Script phases run generated scripts; groups' scripts come first.
+        let prepare = try generated(directory, "Scripts/App/App/prepare.sh")
+        XCTAssertTrue(prepare.contains("/usr/bin/shasum -a 256 --check --status"), prepare)
+        XCTAssertTrue(prepare.contains(#"'/bin/sh' "${SRCROOT}/SwiftPods/Scripts/App/App/2.sh""#), prepare)
+        XCTAssertEqual(try generated(directory, "Scripts/App/App/2.sh"), "gen\n")
+        XCTAssertTrue(try generated(directory, "Scripts/App/App/finish.sh").contains("/App/App/1.sh"))
+        XCTAssertTrue(try generated(directory, "Scripts/Podfile.sha256").hasSuffix("  Podfile\n"))
 
         let settings = directory.appendingPathComponent("SwiftPods/Settings/App/App.xcconfig")
         XCTAssertEqual(try String(contentsOf: settings, encoding: .utf8), "// Generated by SwiftPods from the Podfile. Do not edit.\nOTHER_LDFLAGS = $(inherited) -ObjC\n")
@@ -111,7 +131,40 @@ final class InstallerTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("SwiftPods").path))
     }
 
-    func testLocalPackageReferencesFromSwiftPods022AreReplaced() throws {
+    func testChangingThePodfileLeavesTheProjectAlone() throws {
+        let directory = try fixture(
+            """
+            platform :ios, '15.0'
+            target 'App' do
+              spm 'https://github.com/firebase/firebase-ios-sdk.git', exact: '13.0.1', products: ['FirebaseCore']
+              spm 'https://github.com/Alamofire/Alamofire.git', '~> 5.9'
+            end
+            """)
+        _ = try installer(directory).install(InstallOptions())
+        let text = try String(contentsOf: try project(directory).file, encoding: .utf8)
+
+        // New versions, products, packages, order, settings and scripts.
+        try """
+            platform :ios, '15.0'
+            target 'App' do
+              spm 'https://github.com/Alamofire/Alamofire.git', '~> 5.10'
+              spm 'https://github.com/firebase/firebase-ios-sdk.git', exact: '13.1.0', products: %w[FirebaseCore FirebaseAnalytics]
+              spm 'https://github.com/DataDog/dd-sdk-ios.git', '~> 3.15', products: ['DatadogCore']
+              settings 'OTHER_LDFLAGS' => '-ObjC'
+              script_phase name: 'Upload', script: 'upload', execution_position: :after_compile
+            end
+            """.write(to: directory.appendingPathComponent("Podfile"), atomically: true, encoding: .utf8)
+        let report = try installer(directory).install(InstallOptions())
+        XCTAssertEqual(report.projects[0].changes, [])
+        XCTAssertEqual(try String(contentsOf: try project(directory).file, encoding: .utf8), text)
+
+        let manifest = try generated(directory, "SwiftPodsDependencies/Package.swift")
+        XCTAssertTrue(manifest.contains(#"exact: "13.1.0""#) && manifest.contains("dd-sdk-ios") && manifest.contains(#"from: "5.10.0""#), manifest)
+        XCTAssertTrue(try generated(directory, "Settings/App/App.xcconfig").contains("OTHER_LDFLAGS = -ObjC"))
+        XCTAssertTrue(try generated(directory, "Scripts/App/App/finish.sh").contains("SwiftPods: Upload"))
+    }
+
+    func testProjectsFromSwiftPods02AreConverted() throws {
         let directory = try fixture(
             """
             target 'App' do
@@ -122,45 +175,55 @@ final class InstallerTests: XCTestCase {
         _ = try installer(directory).install(InstallOptions())
         let current = try String(contentsOf: try project(directory).file, encoding: .utf8)
 
-        // SwiftPods 0.2.2 wrote an XCLocalSwiftPackageReference under the same identifier and named it from the product.
+        // What SwiftPods 0.2 kept in the project, under identifiers derived from what the objects describe.
         var old = try project(directory)
-        let id = XcodeProject.identifier("package:local:Modules/Networking")
-        old[id] = ["isa": "XCLocalSwiftPackageReference", "relativePath": "Modules/Networking"]
-        var root = old.project
-        root["packageReferences"] = .array(root.strings("packageReferences").map(PBXValue.string) + [.string(id)])
-        old.project = root
-        let group = old.objects.first { $0.value.isa == "PBXGroup" && $0.value.string("name") == "SwiftPods" }!
-        old[group.key]!["children"] = .array(group.value.strings("children").filter { $0 != id }.map(PBXValue.string))
-        let product = target(old, "App").strings("packageProductDependencies")[1]
-        old[product]!["package"] = .string(id)
+        let app = old.nativeTargets.first { $0.name == "App" }!.id
+        let remote = "package:" + PackageLocation.canonical("https://github.com/firebase/firebase-ios-sdk.git")
+        let local = "package:local:Modules/Networking"
+        old[XcodeProject.identifier(remote)] = [
+            "isa": "XCRemoteSwiftPackageReference", "repositoryURL": "https://github.com/firebase/firebase-ios-sdk.git",
+            "requirement": ["kind": "upToNextMajorVersion", "minimumVersion": "13.0.0"],
+        ]
+        old[XcodeProject.identifier(local)] = ["isa": "XCLocalSwiftPackageReference", "relativePath": "Modules/Networking"]
+        for key in [remote, local] { old.append(XcodeProject.identifier(key), to: "packageReferences", of: old.rootID) }
+        for (key, product) in [(remote, "FirebaseCore"), (local, "Networking")] {
+            let dependency = XcodeProject.identifier(ProjectIntegration.productKey(target: "App", package: key, product: product))
+            old[dependency] = ["isa": "XCSwiftPackageProductDependency", "package": .string(XcodeProject.identifier(key)), "productName": .string(product)]
+            old.append(dependency, to: "packageProductDependencies", of: app)
+            let file = XcodeProject.identifier("build-file:" + dependency)
+            old[file] = ["isa": "PBXBuildFile", "productRef": .string(dependency)]
+            old.append(file, to: "files", of: "A30000000000000000000001")
+        }
+        let script = XcodeProject.identifier(ProjectIntegration.scriptKey(target: "App", name: "Upload"))
+        old[script] = [
+            "isa": "PBXShellScriptBuildPhase", "buildActionMask": "2147483647", "files": [], "name": "[SwiftPods] Upload",
+            "runOnlyForDeploymentPostprocessing": "0", "shellPath": "/bin/sh", "shellScript": "upload",
+        ]
+        old.append(script, to: "buildPhases", of: app)
         try old.save()
 
-        let report = try installer(directory).install(InstallOptions())
-        XCTAssertTrue(report.projects[0].changes.contains { $0.description == "Updated local package Modules/Networking" }, "\(report.projects[0].changes)")
+        let changes = try installer(directory).install(InstallOptions()).projects[0].changes.map(\.description)
+        XCTAssertTrue(changes.contains("Removed package https://github.com/firebase/firebase-ios-sdk.git"), "\(changes)")
+        XCTAssertTrue(changes.contains("Removed local package Modules/Networking"), "\(changes)")
+        XCTAssertTrue(changes.contains("Removed product FirebaseCore in App"), "\(changes)")
+        XCTAssertTrue(changes.contains { $0.contains("script phase [SwiftPods] Upload") }, "\(changes)")
         XCTAssertEqual(try String(contentsOf: try project(directory).file, encoding: .utf8), current)
     }
 
-    func testReorderedDeclarationsAreReported() throws {
-        let directory = try fixture(
-            """
-            target 'App' do
-              spm 'https://github.com/firebase/firebase-ios-sdk.git', '~> 13.0', products: ['FirebaseCore']
-              spm 'https://github.com/Alamofire/Alamofire.git', '~> 5.9'
-            end
-            """)
+    func testReorderedPhasesAreReported() throws {
+        let directory = try fixture("target 'App' do\nend\n")
         _ = try installer(directory).install(InstallOptions())
-        try """
-            target 'App' do
-              spm 'https://github.com/Alamofire/Alamofire.git', '~> 5.9'
-              spm 'https://github.com/firebase/firebase-ios-sdk.git', '~> 13.0', products: ['FirebaseCore']
-            end
-            """.write(to: directory.appendingPathComponent("Podfile"), atomically: true, encoding: .utf8)
+        var moved = try project(directory)
+        let text = try String(contentsOf: moved.file, encoding: .utf8)
+        // Someone drags SwiftPods' last phase to the front.
+        var phases = target(moved, "App").strings("buildPhases")
+        phases.insert(phases.removeLast(), at: 0)
+        moved[moved.nativeTargets[0].id]!["buildPhases"] = .array(phases.map(PBXValue.string))
+        try moved.save()
+
         let report = try installer(directory).install(InstallOptions())
-        XCTAssertEqual(report.projects[0].changes.map(\.description), [
-            "Reordered frameworks in App", "Reordered packages in the project", "Reordered products in App",
-        ])
-        XCTAssertEqual(products(try project(directory), "App"), ["Alamofire", "FirebaseCore"])
-        XCTAssertEqual(try installer(directory).install(InstallOptions()).projects[0].changes, [])
+        XCTAssertEqual(report.projects[0].changes.map(\.description), ["Reordered build phases in App"])
+        XCTAssertEqual(try String(contentsOf: moved.file, encoding: .utf8), text)
     }
 
     func testRemovedDeclarationsLeaveUserObjectsAlone() throws {
@@ -185,11 +248,11 @@ final class InstallerTests: XCTestCase {
         let report = try installer(directory).install(InstallOptions())
         let after = try project(directory)
         let urls = after.project.strings("packageReferences").compactMap { after[$0]?.string("repositoryURL") }
-        XCTAssertEqual(urls, ["https://github.com/user/Own.git", "https://github.com/a/Kit.git"])
-        XCTAssertEqual(products(after, "App"), ["Kit"])
-        XCTAssertTrue(report.projects[0].changes.contains(ProjectChange(kind: .removed, subject: "package https://github.com/a/Extra.git")))
-        XCTAssertTrue(report.projects[0].changes.contains(ProjectChange(kind: .removed, subject: "product Extra in App")))
-        XCTAssertTrue(report.projects[0].changes.contains(ProjectChange(kind: .updated, subject: "package https://github.com/a/Kit.git")))
+        XCTAssertEqual(urls, ["https://github.com/user/Own.git"])
+        XCTAssertEqual(products(after, "App"), ["SwiftPods-App"])
+        XCTAssertEqual(report.projects[0].changes, [])
+        let manifest = try generated(directory, "SwiftPodsDependencies/Package.swift")
+        XCTAssertTrue(manifest.contains(#"exact: "1.1.0""#) && !manifest.contains("Extra"), manifest)
     }
 
     func testForeignReferencesNeedAdoption() throws {
@@ -210,8 +273,9 @@ final class InstallerTests: XCTestCase {
         _ = try installer(directory).install(options)
         let after = try project(directory)
         XCTAssertNil(after["B00000000000000000000001"])
-        XCTAssertEqual(after.project.strings("packageReferences").count, 1)
-        XCTAssertEqual(products(after, "App"), ["Kit"])
+        XCTAssertNil(after["B00000000000000000000002"])
+        XCTAssertEqual(after.project.strings("packageReferences"), [])
+        XCTAssertEqual(products(after, "App"), ["SwiftPods-App"])
     }
 
     func testBinariesBecomeAGeneratedPackage() throws {
@@ -238,13 +302,18 @@ final class InstallerTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: package.appendingPathComponent("Artifacts/Core/Core.xcframework/Info.plist").path))
 
         let installed = try project(directory)
-        XCTAssertEqual(installed.project.strings("packageReferences"), [])
-        XCTAssertEqual(localPackages(installed), ["SwiftPods/SwiftPodsBinaries"])
-        XCTAssertEqual(products(installed, "App"), ["Ads", "Core"])
+        XCTAssertEqual(localPackages(installed), ["SwiftPods/SwiftPodsDependencies"])
+        XCTAssertEqual(products(installed, "App"), ["SwiftPods-App"])
+        let dependencies = try generated(directory, "SwiftPodsDependencies/Package.swift")
+        XCTAssertTrue(dependencies.contains(#".package(path: "../SwiftPodsBinaries")"#), dependencies)
+        XCTAssertTrue(dependencies.contains(#".product(name: "Ads", package: "SwiftPodsBinaries")"#), dependencies)
 
-        // Swift Package Manager accepts the generated manifest.
+        // Swift Package Manager accepts the generated manifests.
         let dump = try ProcessRunner().run("/usr/bin/xcrun", ["swift", "package", "dump-package"], in: package)
         XCTAssertTrue(dump.contains("\"AdsLinkage\""))
+        let dependencyDump = try ProcessRunner().run(
+            "/usr/bin/xcrun", ["swift", "package", "dump-package"], in: directory.appendingPathComponent("SwiftPods/SwiftPodsDependencies"))
+        XCTAssertTrue(dependencyDump.contains("\"SwiftPods_App\""))
 
         let modified = try FileManager.default.attributesOfItem(atPath: package.appendingPathComponent("Package.swift").path)[.modificationDate] as? Date
         _ = try installer(directory).install(InstallOptions())
@@ -259,13 +328,15 @@ final class InstallerTests: XCTestCase {
             at: directory.appendingPathComponent("Vendor/Ads/Res/AdsRes.bundle"), withIntermediateDirectories: true)
         try Data("x".utf8).write(to: directory.appendingPathComponent("Vendor/Ads/Res/AdsRes.bundle/strings.txt"))
 
-        let report = try installer(directory).install(InstallOptions())
-        XCTAssertTrue(report.projects[0].changes.contains(
-            ProjectChange(kind: .added, subject: "resource SwiftPods/SwiftPodsBinaries/Artifacts/Ads/Resources/AdsRes.bundle")))
+        _ = try installer(directory).install(InstallOptions())
+        // The Finish phase copies bundles, so the project lists none.
+        let finish = try generated(directory, "Scripts/App/App/finish.sh")
+        XCTAssertTrue(finish.contains(
+            #"/usr/bin/rsync -a --delete "${SRCROOT}/SwiftPods/SwiftPodsBinaries/Artifacts/Ads/Resources/AdsRes.bundle" "$destination/""#), finish)
+        XCTAssertEqual(
+            try generated(directory, "Scripts/App/App/finish.outputs.xcfilelist"), "$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/AdsRes.bundle\n")
         let installed = try project(directory)
-        let phase = target(installed, "App").strings("buildPhases").compactMap { installed[$0] }.first { $0.isa == "PBXResourcesBuildPhase" }
-        let files = phase?.strings("files").compactMap { installed[$0]?.string("fileRef") }.compactMap { installed[$0]?.string("path") }
-        XCTAssertEqual(files, ["SwiftPods/SwiftPodsBinaries/Artifacts/Ads/Resources/AdsRes.bundle"])
+        XCTAssertFalse(installed.objects.values.contains { $0.string("path")?.hasSuffix(".bundle") == true })
         XCTAssertTrue(FileManager.default.fileExists(
             atPath: directory.appendingPathComponent("SwiftPods/SwiftPodsBinaries/Artifacts/Ads/Resources/AdsRes.bundle/strings.txt").path))
 
@@ -389,18 +460,23 @@ final class InstallerTests: XCTestCase {
             _ = try Installer(directory: directory, cache: directory.appendingPathComponent(".cache"), sourcesCache: sources).install(options)
         }
         func urls() throws -> [String] {
-            let project = try project(directory)
-            return project.project.strings("packageReferences").compactMap { project[$0]?.string("repositoryURL") }
+            let manifest = try generated(directory, "SwiftPodsDependencies/Package.swift")
+            return ["https://github.com/a/Kit.git", "https://github.com/b/Kit.git"].filter(manifest.contains)
         }
         try install()
         XCTAssertEqual(try urls(), ["https://github.com/a/Kit.git"])
+        let resolved = directory.appendingPathComponent("App.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved")
+        try FileManager.default.createDirectory(at: resolved.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try #"{"pins":[{"identity":"kit","kind":"remoteSourceControl","location":"https://github.com/a/Kit.git","state":{"revision":"abc","version":"1.0.0"}}],"version":3}"#
+            .write(to: resolved, atomically: true, encoding: .utf8)
 
         // The catalog moves Kit; the cached catalog keeps installs repeatable until sources are updated.
         try publish("https://github.com/b/Kit.git")
         try install()
         XCTAssertEqual(try urls(), ["https://github.com/a/Kit.git"])
+        try install { $0.deployment = true }
         XCTAssertThrowsError(try install { $0.deployment = true; $0.updateSources = true }) { error in
-            XCTAssertTrue("\(error)".contains("does not reference"), "\(error)")
+            XCTAssertTrue("\(error)".contains("https://github.com/b/Kit.git) has no pin"), "\(error)")
         }
         try install { $0.updateSources = true }
         XCTAssertEqual(try urls(), ["https://github.com/b/Kit.git"])
@@ -489,5 +565,10 @@ final class InstallerTests: XCTestCase {
         XCTAssertTrue(after.configurations(of: after.nativeTargets[0].id).values.allSatisfy {
             after[$0]?.string("baseConfigurationReference") == "C00000000000000000000001"
         })
+
+        // Without settings, a base configuration of the target's own need not include SwiftPods'.
+        try "SDKROOT = iphoneos\n".write(to: directory.appendingPathComponent("Config/App.xcconfig"), atomically: true, encoding: .utf8)
+        try "target 'App' do\nend\n".write(to: directory.appendingPathComponent("Podfile"), atomically: true, encoding: .utf8)
+        _ = try installer(directory).install(InstallOptions())
     }
 }
