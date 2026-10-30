@@ -51,10 +51,15 @@ enum ProjectIntegration {
     static func packageKey(_ object: PBXObject) -> String? {
         switch object.isa {
         case "XCRemoteSwiftPackageReference": object.string("repositoryURL").map { "package:" + PackageLocation.canonical($0) }
+        // SwiftPods 0.2.2 and Xcode's Add Local button; SwiftPods now writes a file reference instead.
         case "XCLocalSwiftPackageReference": object.string("relativePath").map { "package:local:" + $0 }
+        case "PBXFileReference" where object.string("lastKnownFileType") == "wrapper": object.string("path").map { "package:local:" + $0 }
         default: nil
         }
     }
+
+    /// Local packages are file references to their folders; products of a package referenced that way name no package.
+    static func isLocalPackage(_ object: PBXObject) -> Bool { object.isa == "PBXFileReference" }
 
     static func productKey(target: String, package: String, product: String) -> String {
         "product:\(target)|\(package)|\(product)"
@@ -73,12 +78,17 @@ enum ProjectIntegration {
         func check(_ id: String, _ key: String?) {
             if let key, XcodeProject.identifier(key) == id { owned.insert(id) }
         }
+        var localPackages: [String] = []
         for (id, object) in project.objects {
             switch object.isa {
             case "XCRemoteSwiftPackageReference", "XCLocalSwiftPackageReference": check(id, packageKey(object))
             case "PBXFileReference":
                 check(id, object.string("path").map(settingsKey))
                 check(id, object.string("path").map(resourceKey))
+                if let key = packageKey(object), XcodeProject.identifier(key) == id {
+                    owned.insert(id)
+                    localPackages.append(key)
+                }
             case "PBXGroup": check(id, groupKey)
             default: break
             }
@@ -86,10 +96,12 @@ enum ProjectIntegration {
         for target in project.nativeTargets {
             let object = project[target.id] ?? [:]
             for id in object.strings("packageProductDependencies") {
-                guard let dependency = project[id], let product = dependency.string("productName"),
-                    let package = dependency.string("package").flatMap({ project[$0] }).flatMap(packageKey)
-                else { continue }
-                check(id, productKey(target: target.name, package: package, product: product))
+                guard let dependency = project[id], let product = dependency.string("productName") else { continue }
+                if let package = dependency.string("package") {
+                    check(id, project[package].flatMap(packageKey).map { productKey(target: target.name, package: $0, product: product) })
+                } else {
+                    for package in localPackages { check(id, productKey(target: target.name, package: package, product: product)) }
+                }
             }
             for id in object.strings("buildPhases") {
                 guard let phase = project[id] else { continue }
@@ -119,8 +131,18 @@ enum ProjectIntegration {
             !owned.contains(id) && packageKey(object).map(keys.contains) == true
         }.keys
         var result = Set(references)
-        for (id, object) in project.objects where object.isa == "XCSwiftPackageProductDependency" {
-            guard let package = object.string("package"), references.contains(package) else { continue }
+        // Products of a local package referenced by its folder name no package; match them by the products planned for it.
+        let localProducts = Set(plan.targets.flatMap { target in
+            target.products.filter { product in
+                isLocalPackage(product.package.object) && references.contains { packageKey(project[$0] ?? [:]) == product.package.key }
+            }.map(\.name)
+        })
+        for (id, object) in project.objects where object.isa == "XCSwiftPackageProductDependency" && !owned.contains(id) {
+            if let package = object.string("package") {
+                guard references.contains(package) else { continue }
+            } else {
+                guard let name = object.string("productName"), localProducts.contains(name) else { continue }
+            }
             result.insert(id)
             for (file, fileObject) in project.objects where fileObject.string("productRef") == id { result.insert(file) }
         }
@@ -131,7 +153,8 @@ enum ProjectIntegration {
         var owned = ownedIdentifiers(project)
         let foreign = adoptable(project, plan: plan, owned: owned)
         if !foreign.isEmpty {
-            let names = foreign.compactMap { project[$0] }.compactMap { $0.string("repositoryURL") ?? $0.string("relativePath") }
+            let names = foreign.compactMap { project[$0] }.filter { packageKey($0) != nil }
+                .compactMap { $0.string("repositoryURL") ?? $0.string("relativePath") ?? $0.string("path") }
             guard adopt else {
                 throw SwiftPodsError(
                     "\(project.path.lastPathComponent) already references \(names.joined(separator: ", ")) without SwiftPods",
@@ -155,7 +178,8 @@ enum ProjectIntegration {
             desired[id] = object
             return id
         }
-        let packageIDs = plan.packages.map { put($0.key, $0.object) }
+        let packageIDs = plan.packages.filter { !isLocalPackage($0.object) }.map { put($0.key, $0.object) }
+        let localPackageIDs = plan.packages.filter { isLocalPackage($0.object) }.map { put($0.key, $0.object) }
 
         struct TargetEdits {
             var products: [String] = []
@@ -170,12 +194,9 @@ enum ProjectIntegration {
         for target in plan.targets {
             var edit = TargetEdits()
             for product in target.products {
-                let id = put(
-                    productKey(target: target.name, package: product.package.key, product: product.name),
-                    [
-                        "isa": "XCSwiftPackageProductDependency", "package": .string(XcodeProject.identifier(product.package.key)),
-                        "productName": .string(product.name),
-                    ])
+                var object: PBXObject = ["isa": "XCSwiftPackageProductDependency", "productName": .string(product.name)]
+                if !isLocalPackage(product.package.object) { object["package"] = .string(XcodeProject.identifier(product.package.key)) }
+                let id = put(productKey(target: target.name, package: product.package.key, product: product.name), object)
                 edit.products.append(id)
                 if product.link {
                     edit.buildFiles.append(put("build-file:" + id, ["isa": "PBXBuildFile", "productRef": .string(id)]))
@@ -216,7 +237,7 @@ enum ProjectIntegration {
             }
             edits[target.name] = edit
         }
-        let groupFiles = settingsFiles + resourceFiles
+        let groupFiles = localPackageIDs + settingsFiles + resourceFiles
         let groupID = groupFiles.isEmpty ? nil : put(groupKey, [
             "isa": "PBXGroup", "children": .array(groupFiles.map(PBXValue.string)), "name": "SwiftPods",
             "sourceTree": "<group>",
@@ -349,7 +370,7 @@ enum ProjectIntegration {
             return object.string("productName").map { "product \($0)" + (target?.string("name").map { " in " + $0 } ?? "") }
         case "PBXShellScriptBuildPhase": return object.string("name").map { "script phase " + $0 }
         case "PBXFileReference":
-            let kind = ["text.xcconfig": "settings file ", "wrapper.plug-in": "resource "][object.string("lastKnownFileType") ?? ""] ?? "file "
+            let kind = ["text.xcconfig": "settings file ", "wrapper.plug-in": "resource ", "wrapper": "local package "][object.string("lastKnownFileType") ?? ""] ?? "file "
             return object.string("path").map { kind + $0 }
         default: return nil
         }

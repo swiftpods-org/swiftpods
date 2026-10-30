@@ -44,6 +44,13 @@ final class InstallerTests: XCTestCase {
             .compactMap { project[$0]?.string("productName") }
     }
 
+    /// Local packages SwiftPods references by their folders, in its group.
+    private func localPackages(_ project: XcodeProject) -> [String] {
+        let group = project.objects.values.first { $0.isa == "PBXGroup" && $0.string("name") == "SwiftPods" }
+        return (group?.strings("children") ?? []).compactMap { project[$0] }
+            .filter { $0.isa == "PBXFileReference" && $0.string("lastKnownFileType") == "wrapper" }.compactMap { $0.string("path") }
+    }
+
     private func makeXCFramework(_ url: URL) throws {
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         try Data("<plist version=\"1.0\"><dict/></plist>".utf8).write(to: url.appendingPathComponent("Info.plist"))
@@ -76,10 +83,12 @@ final class InstallerTests: XCTestCase {
 
         let installed = try project(directory)
         let references = installed.project.strings("packageReferences").compactMap { installed[$0] }
-        XCTAssertEqual(references.compactMap { $0.string("repositoryURL") ?? $0.string("relativePath") }, [
-            "https://github.com/firebase/firebase-ios-sdk.git", "Modules/Networking", "https://github.com/pointfreeco/swift-snapshot-testing.git",
+        XCTAssertEqual(references.compactMap { $0.string("repositoryURL") }, [
+            "https://github.com/firebase/firebase-ios-sdk.git", "https://github.com/pointfreeco/swift-snapshot-testing.git",
         ])
         XCTAssertEqual(references[0]["requirement"], ["kind": "upToNextMajorVersion", "minimumVersion": "13.0.0"])
+        XCTAssertEqual(localPackages(installed), ["Modules/Networking"])
+        XCTAssertNil(installed[target(installed, "App").strings("packageProductDependencies")[2]]?["package"], "Local products name no package")
         XCTAssertEqual(products(installed, "App"), ["FirebaseCore", "FirebaseAnalytics", "Networking"])
         XCTAssertEqual(linked(installed, "App"), ["FirebaseCore", "FirebaseAnalytics", "Networking"])
         XCTAssertEqual(phaseNames(installed, "App"), ["[SwiftPods] Generate", "PBXSourcesBuildPhase", "[SwiftPods] Crashlytics", "PBXFrameworksBuildPhase"])
@@ -100,6 +109,35 @@ final class InstallerTests: XCTestCase {
         _ = try installer(directory).deintegrate()
         XCTAssertEqual(try String(contentsOf: installed.file, encoding: .utf8), Fixtures.project)
         XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("SwiftPods").path))
+    }
+
+    func testLocalPackageReferencesFromSwiftPods022AreReplaced() throws {
+        let directory = try fixture(
+            """
+            target 'App' do
+              spm 'https://github.com/firebase/firebase-ios-sdk.git', '~> 13.0', products: ['FirebaseCore']
+              spm 'Networking', path: 'Modules/Networking'
+            end
+            """)
+        _ = try installer(directory).install(InstallOptions())
+        let current = try String(contentsOf: try project(directory).file, encoding: .utf8)
+
+        // SwiftPods 0.2.2 wrote an XCLocalSwiftPackageReference under the same identifier and named it from the product.
+        var old = try project(directory)
+        let id = XcodeProject.identifier("package:local:Modules/Networking")
+        old[id] = ["isa": "XCLocalSwiftPackageReference", "relativePath": "Modules/Networking"]
+        var root = old.project
+        root["packageReferences"] = .array(root.strings("packageReferences").map(PBXValue.string) + [.string(id)])
+        old.project = root
+        let group = old.objects.first { $0.value.isa == "PBXGroup" && $0.value.string("name") == "SwiftPods" }!
+        old[group.key]!["children"] = .array(group.value.strings("children").filter { $0 != id }.map(PBXValue.string))
+        let product = target(old, "App").strings("packageProductDependencies")[1]
+        old[product]!["package"] = .string(id)
+        try old.save()
+
+        let report = try installer(directory).install(InstallOptions())
+        XCTAssertTrue(report.projects[0].changes.contains { $0.description == "Updated local package Modules/Networking" }, "\(report.projects[0].changes)")
+        XCTAssertEqual(try String(contentsOf: try project(directory).file, encoding: .utf8), current)
     }
 
     func testReorderedDeclarationsAreReported() throws {
@@ -200,8 +238,8 @@ final class InstallerTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: package.appendingPathComponent("Artifacts/Core/Core.xcframework/Info.plist").path))
 
         let installed = try project(directory)
-        let local = installed.project.strings("packageReferences").compactMap { installed[$0]?.string("relativePath") }
-        XCTAssertEqual(local, ["SwiftPods/SwiftPodsBinaries"])
+        XCTAssertEqual(installed.project.strings("packageReferences"), [])
+        XCTAssertEqual(localPackages(installed), ["SwiftPods/SwiftPodsBinaries"])
         XCTAssertEqual(products(installed, "App"), ["Ads", "Core"])
 
         // Swift Package Manager accepts the generated manifest.

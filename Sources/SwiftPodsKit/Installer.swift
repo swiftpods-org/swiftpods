@@ -188,6 +188,7 @@ public struct Installer: Sendable {
         }
 
         var report = InstallReport()
+        var packageProjects = Set<String>()
         report.binaries = usesBinaries ? manifest.binaries.map(\.name) : []
         report.notes = binaryNotes
         for path in projectPaths {
@@ -203,9 +204,14 @@ public struct Installer: Sendable {
                     return local(directory.appendingPathComponent(relative))
                 }
             }
+            // A file reference to the package folder rather than an XCLocalSwiftPackageReference: Xcode 26.2 crashes
+            // resolving a graph that shrinks, as Firebase's does, when the project holds the latter.
             func local(_ url: URL) -> ProjectPlan.PackageReference {
                 let relative = Paths.relative(from: projectDirectory, to: url)
-                return .init(key: "package:local:" + relative, object: ["isa": "XCLocalSwiftPackageReference", "relativePath": .string(relative)])
+                return .init(key: "package:local:" + relative, object: [
+                    "isa": "PBXFileReference", "lastKnownFileType": "wrapper", "name": .string(url.lastPathComponent),
+                    "path": .string(relative), "sourceTree": "SOURCE_ROOT",
+                ])
             }
             let targets = targetsByProject[path]!
             var plan = ProjectPlan()
@@ -232,11 +238,7 @@ public struct Installer: Sendable {
                     settingsFile: settingsFiles[path]?[target.name].map { Paths.relative(from: projectDirectory, to: $0) },
                     resources: resources))
             }
-            if plan.packages.contains(where: { $0.object.isa == "XCLocalSwiftPackageReference" }), (project.objectVersion ?? 0) < 60 {
-                throw SwiftPodsError(
-                    "\(path) uses an Xcode project format without local package references", file: project.file.path,
-                    hint: "In Xcode, select the project and set Project Format to Xcode 15.0 or later")
-            }
+            if !plan.packages.isEmpty { packageProjects.insert(path) }
             let changes = try ProjectIntegration.apply(plan, to: &project, adopt: options.adopt)
             projects[path] = project
             report.projects.append(.init(project: path, changes: changes))
@@ -252,7 +254,7 @@ public struct Installer: Sendable {
         }
 
         if options.resolve {
-            for path in projectPaths where !(projects[path]!.project["packageReferences"]?.array ?? []).isEmpty {
+            for path in projectPaths where packageProjects.contains(path) {
                 _ = try runner.run(
                     "/usr/bin/xcrun", ["xcodebuild", "-resolvePackageDependencies", "-project", projects[path]!.path.path],
                     in: directory)
