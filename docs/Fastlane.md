@@ -9,7 +9,7 @@ Add it to `fastlane/Pluginfile`, pinned to a release tag:
 ```ruby
 gem 'fastlane-plugin-swiftpods',
     git: 'https://github.com/swiftpods-org/swiftpods.git',
-    tag: 'fastlane-v0.3.0'
+    tag: 'fastlane-v0.3.1'
 ```
 
 Then call the action from a lane:

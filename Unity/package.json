@@ -1,6 +1,6 @@
 {
   "name": "org.swiftpods.unity",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "displayName": "SwiftPods",
   "description": "Installs the iOS dependencies declared in a Podfile with SwiftPods after every iOS build, in place of CocoaPods.",
   "unity": "2021.3",

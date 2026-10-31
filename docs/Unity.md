@@ -11,7 +11,7 @@ External Dependency Manager (EDM4U).
 1. Add the package to `Packages/manifest.json`:
 
    ```json
-   "org.swiftpods.unity": "https://github.com/swiftpods-org/swiftpods.git?path=Unity#v0.3.0"
+   "org.swiftpods.unity": "https://github.com/swiftpods-org/swiftpods.git?path=Unity#v0.3.1"
    ```
 
 2. Install `swiftpods` on every Mac that builds the game ([Installation](Release.md)).
