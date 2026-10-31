@@ -126,7 +126,7 @@ public struct Installer: Sendable {
             staged.append((target, destination))
         }
         func stem(_ path: String) -> String { ((path as NSString).lastPathComponent as NSString).deletingPathExtension }
-        func folder(_ target: Target) -> String { target.name.replacingOccurrences(of: "/", with: "_") }
+        func folder(_ name: String) -> String { name.replacingOccurrences(of: "/", with: "_") }
 
         // Both generated packages support the lowest deployment target any target has.
         var platforms: [Platform] = []
@@ -211,7 +211,7 @@ public struct Installer: Sendable {
         var settingsTexts: [String: String] = [:]
         for path in projectPaths {
             for target in targetsByProject[path]! {
-                let file = settingsDirectory.appendingPathComponent(stem(path)).appendingPathComponent(folder(target) + ".xcconfig")
+                let file = settingsDirectory.appendingPathComponent(stem(path)).appendingPathComponent(folder(target.name) + ".xcconfig")
                 settingsFiles[path, default: [:]][target.name] = file
                 settingsTexts[Paths.relative(from: settingsDirectory, to: file)] = Self.xcconfig(target.settings)
             }
@@ -227,14 +227,23 @@ public struct Installer: Sendable {
             return digest + "  " + Paths.relative(from: directory, to: file)
         }.joined(separator: "\n") + "\n"
         var scriptLocations: [String: [String: TargetScripts.Locations]] = [:]
+        // Targets that embed a framework target of the Podfile embed its dynamic frameworks; they need not be in the Podfile.
+        var embedders: [String: [String]] = [:]
+        for path in projectPaths {
+            embedders[path] = ProjectIntegration.embeddingTargets(projects[path]!, of: Set(targetsByProject[path]!.map(\.name)))
+        }
         for path in projectPaths {
             let projectDirectory = projects[path]!.sourceRoot
-            for target in targetsByProject[path]! {
-                let targetDirectory = scriptsDirectory.appendingPathComponent(stem(path)).appendingPathComponent(folder(target))
+            func locate(_ name: String) -> (URL, TargetScripts.Locations) {
+                let targetDirectory = scriptsDirectory.appendingPathComponent(stem(path)).appendingPathComponent(folder(name))
                 let locations = TargetScripts.Locations(
                     generated: Paths.relative(from: projectDirectory, to: generated), podfile: Paths.relative(from: projectDirectory, to: directory),
                     target: Paths.relative(from: projectDirectory, to: targetDirectory))
-                scriptLocations[path, default: [:]][target.name] = locations
+                scriptLocations[path, default: [:]][name] = locations
+                return (targetDirectory, locations)
+            }
+            for target in targetsByProject[path]! {
+                let (targetDirectory, locations) = locate(target.name)
                 let resources = binaryEntries.filter { target.binaries.contains($0.binary.name) }.flatMap { entry in
                     entry.resources.map {
                         Paths.relative(
@@ -255,9 +264,17 @@ public struct Installer: Sendable {
                     }
                 }
                 let files = TargetScripts.files(
-                    scripts: target.scriptPhases, resources: resources, signed: signed.map { Paths.relative(from: directory, to: $0) },
-                    fileLists: fileLists, paths: locations)
+                    scripts: target.scriptPhases, resources: resources, embedsFrameworks: embedders[path]!.contains(target.name),
+                    signed: signed.map { Paths.relative(from: directory, to: $0) }, fileLists: fileLists, paths: locations)
                 for (relative, text) in files {
+                    scriptFiles[Paths.relative(from: scriptsDirectory, to: targetDirectory.appendingPathComponent(relative))] = text
+                }
+            }
+            let declared = Set(targetsByProject[path]!.map(\.name))
+            for name in embedders[path]! where !declared.contains(name) {
+                let (targetDirectory, locations) = locate(name)
+                let files = TargetScripts.files(scripts: [], resources: [], embedsFrameworks: true, signed: [], fileLists: [:], paths: locations)
+                for (relative, text) in files where relative.hasPrefix(TargetScripts.Phase.finish.file + ".") {
                     scriptFiles[Paths.relative(from: scriptsDirectory, to: targetDirectory.appendingPathComponent(relative))] = text
                 }
             }
@@ -277,6 +294,13 @@ public struct Installer: Sendable {
                 "isa": "PBXFileReference", "lastKnownFileType": "wrapper", "name": .string(DependencyPackage.directoryName),
                 "path": .string(relative), "sourceTree": "SOURCE_ROOT",
             ])
+            func phasePlan(_ phase: TargetScripts.Phase, _ target: String) -> ProjectPlan.PhasePlan {
+                let locations = scriptLocations[path]![target]!
+                return ProjectPlan.PhasePlan(
+                    name: phase.rawValue, script: TargetScripts.phaseScript(phase, paths: locations),
+                    inputFileLists: [TargetScripts.fileList(phase, outputs: false, paths: locations)],
+                    outputFileLists: [TargetScripts.fileList(phase, outputs: true, paths: locations)], position: phase.position)
+            }
             var plan = ProjectPlan()
             plan.packages = [package]
             let targets = targetsByProject[path]!
@@ -296,17 +320,14 @@ public struct Installer: Sendable {
                 if target.products.contains(where: { !$0.link }) {
                     products.append(.init(package: package, name: DependencyPackage.productName(base, unlinked: true), link: false))
                 }
-                let locations = scriptLocations[path]![target.name]!
-                let phases = TargetScripts.Phase.allCases.map { phase in
-                    ProjectPlan.PhasePlan(
-                        name: phase.rawValue, script: TargetScripts.phaseScript(phase, paths: locations),
-                        inputFileLists: [TargetScripts.fileList(phase, outputs: false, paths: locations)],
-                        outputFileLists: [TargetScripts.fileList(phase, outputs: true, paths: locations)], position: phase.position)
-                }
                 plan.targets.append(.init(
-                    name: target.name, products: products, phases: phases,
+                    name: target.name, products: products, phases: TargetScripts.Phase.allCases.map { phasePlan($0, target.name) },
                     settingsFile: Paths.relative(from: projectDirectory, to: settingsFiles[path]![target.name]!),
                     hasSettings: !target.settings.isEmpty))
+            }
+            let declared = Set(targets.map(\.name))
+            for name in embedders[path]! where !declared.contains(name) {
+                plan.targets.append(.init(name: name, products: [], phases: [phasePlan(.finish, name)], settingsFile: nil, hasSettings: false))
             }
             let changes = try ProjectIntegration.apply(plan, to: &project, adopt: options.adopt)
             projects[path] = project

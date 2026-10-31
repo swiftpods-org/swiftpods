@@ -44,13 +44,61 @@ enum TargetScripts {
         "$(SRCROOT)/\(paths.target)/\(phase.file).\(outputs ? "outputs" : "inputs").xcfilelist"
     }
 
+    /// Embeds dynamic frameworks that the target's embedded frameworks link but Xcode left out: Xcode embeds a
+    /// package's dynamic frameworks only into the target that links them, so a framework such as Unity's
+    /// UnityFramework links them while the app lacks them. Runs every build; frameworks it copied last time are
+    /// copied again, so an SDK update or removal reaches the app. The app's executable is scanned too, so a framework
+    /// it links stays when the copy from last time is removed.
+    static let embedFrameworks = #"""
+        frameworks="${TARGET_BUILD_DIR}/${FRAMEWORKS_FOLDER_PATH}"
+        record="${DERIVED_FILE_DIR}/SwiftPodsEmbeddedFrameworks.txt"
+        if [ -f "$record" ]; then
+          while read -r name; do rm -rf "$frameworks/$name.framework"; done < "$record"
+        fi
+        mkdir -p "${DERIVED_FILE_DIR}"
+        : > "$record"
+        missing=" "
+        embedded=1
+        while [ "$embedded" = 1 ]; do
+          embedded=0
+          for framework in "${TARGET_BUILD_DIR}/${EXECUTABLE_PATH}" "$frameworks"/*.framework; do
+            binary="$framework"
+            [ -d "$framework" ] && binary="$framework/$(basename "$framework" .framework)"
+            [ -f "$binary" ] || continue
+            for name in $(xcrun otool -L "$binary" | sed -n 's|^[[:space:]]*@rpath/\([^/]*\)\.framework/.*|\1|p'); do
+              [ -d "$frameworks/$name.framework" ] && continue
+              source="${BUILT_PRODUCTS_DIR}/$name.framework"
+              [ -d "$source" ] || source="${BUILT_PRODUCTS_DIR}/PackageFrameworks/$name.framework"
+              if [ ! -d "$source" ]; then
+                case "$missing" in
+                  *" $name "*) ;;
+                  *) echo "warning: SwiftPods: $(basename "$framework") links $name.framework, which the build did not produce"; missing="$missing$name " ;;
+                esac
+                continue
+              fi
+              echo "SwiftPods: embedding $name.framework"
+              mkdir -p "$frameworks"
+              /usr/bin/rsync -a --exclude Headers --exclude PrivateHeaders --exclude Modules "$source" "$frameworks/"
+              if [ -n "${EXPANDED_CODE_SIGN_IDENTITY}" ] && [ "${CODE_SIGNING_REQUIRED}" != NO ] && [ "${CODE_SIGNING_ALLOWED}" != NO ]; then
+                /usr/bin/codesign --force --sign "${EXPANDED_CODE_SIGN_IDENTITY}" ${OTHER_CODE_SIGN_FLAGS} \
+                  --preserve-metadata=identifier,entitlements "$frameworks/$name.framework"
+              fi
+              echo "$name" >> "$record"
+              embedded=1
+            done
+          done
+        done
+        """#
+
     /// One target's generated files, relative to its scripts directory.
     /// - Parameters:
     ///   - signed: the Podfile and its includes, relative to the Podfile's directory.
     ///   - resources: resource bundles to copy, relative to `$(SRCROOT)`.
+    ///   - embedsFrameworks: whether the target embeds a framework target of the Podfile.
     ///   - fileLists: contents of the scripts' input and output file lists, by the path the Podfile gives.
     static func files(
-        scripts: [ScriptPhase], resources: [String], signed: [String], fileLists: [String: [String]], paths: Locations
+        scripts: [ScriptPhase], resources: [String], embedsFrameworks: Bool = false, signed: [String], fileLists: [String: [String]],
+        paths: Locations
     ) -> [String: String] {
         var files: [String: String] = [:]
         var numbered: [(Int, ScriptPhase)] = []
@@ -94,6 +142,7 @@ enum TargetScripts {
             finish += ["destination=\"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}\"", "mkdir -p \"$destination\""]
             finish += resources.map { "/usr/bin/rsync -a --delete \"${SRCROOT}/\($0)\" \"$destination/\"" }
         }
+        if embedsFrameworks { finish.append(embedFrameworks) }
         files["finish.sh"] = finish.joined(separator: "\n") + "\n"
         files["finish.inputs.xcfilelist"] = lines(
             ["$(SRCROOT)/\(paths.target)/finish.sh"] + after.map { "$(SRCROOT)/\(paths.target)/\($0.0).sh" }

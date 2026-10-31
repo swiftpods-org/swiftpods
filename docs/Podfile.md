@@ -181,6 +181,17 @@ alone. `[SwiftPods] Prepare`, before compiling, runs `:before_compile` scripts;
 files declare what the scripts read and write, for Xcode's script sandbox and
 build order; input and output file lists are read when installing.
 
+## Frameworks embedded in an app
+
+Xcode embeds the dynamic frameworks of a package only into the target that
+links them. A framework target that an app embeds, as Unity's `Unity-iPhone`
+embeds `UnityFramework`, therefore links them while the app lacks them, and the
+app fails at launch. Every target that embeds a framework target of the Podfile
+gets a `[SwiftPods] Finish` phase, whether the Podfile declares it or not. After
+Xcode's own embedding, the phase copies into the app the dynamic frameworks that
+the embedded frameworks link and Xcode left out, without headers and modules,
+and signs them. Static SDKs stay in the framework.
+
 ## Not supported
 
 `pod`, `use_frameworks!`, `use_modular_headers!`,

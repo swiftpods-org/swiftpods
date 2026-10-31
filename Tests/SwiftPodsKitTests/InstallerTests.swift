@@ -321,6 +321,40 @@ final class InstallerTests: XCTestCase {
         XCTAssertEqual(modified, unchanged, "An unchanged binary package is not regenerated")
     }
 
+    func testAppsEmbeddingAFrameworkTargetEmbedItsDynamicFrameworks() throws {
+        let directory = try Fixtures.directory(
+            podfile: "target 'Plugin' do\n  spm 'https://github.com/Alamofire/Alamofire.git', '~> 5.9'\nend\n", project: Fixtures.embeddingProject)
+        directories.append(directory)
+        _ = try installer(directory).install(InstallOptions())
+        let installed = try project(directory)
+        // App is not in the Podfile: it gets only the Finish phase, which embeds the dynamic frameworks Plugin links.
+        XCTAssertEqual(phaseNames(installed, "App"), ["PBXSourcesBuildPhase", "PBXFrameworksBuildPhase", "Embed Frameworks", "[SwiftPods] Finish"])
+        XCTAssertEqual(products(installed, "App"), [])
+        XCTAssertNil(installed[installed.configurations(of: installed.nativeTargets[0].id)["Debug"]!]?.string("baseConfigurationReference"))
+        XCTAssertTrue(try generated(directory, "Scripts/App/App/finish.sh").contains(TargetScripts.embedFrameworks))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("SwiftPods/Scripts/App/App/prepare.sh").path))
+        XCTAssertFalse(try generated(directory, "Scripts/App/Plugin/finish.sh").contains(TargetScripts.embedFrameworks))
+        let text = try String(contentsOf: installed.file, encoding: .utf8)
+
+        try "target 'Plugin' do\n  spm 'https://github.com/Alamofire/Alamofire.git', '~> 5.10'\n  binary 'Ads', path: 'Vendor/Ads.xcframework'\nend\n"
+            .write(to: directory.appendingPathComponent("Podfile"), atomically: true, encoding: .utf8)
+        try makeXCFramework(directory.appendingPathComponent("Vendor/Ads.xcframework"))
+        XCTAssertEqual(try installer(directory).install(InstallOptions()).projects[0].changes, [])
+        XCTAssertEqual(try String(contentsOf: installed.file, encoding: .utf8), text)
+
+        // Declared, App keeps the embedding after its own scripts.
+        try "target 'App' do\n  script_phase name: 'Upload', script: 'upload'\nend\ntarget 'Plugin' do\nend\n"
+            .write(to: directory.appendingPathComponent("Podfile"), atomically: true, encoding: .utf8)
+        _ = try installer(directory).install(InstallOptions())
+        let finish = try generated(directory, "Scripts/App/App/finish.sh")
+        XCTAssertLessThan(finish.range(of: "SwiftPods: Upload")!.lowerBound, finish.range(of: TargetScripts.embedFrameworks)!.lowerBound)
+
+        _ = try installer(directory).deintegrate()
+        XCTAssertEqual(
+            try String(contentsOf: installed.file, encoding: .utf8),
+            try XcodeProject(path: installed.path, text: Fixtures.embeddingProject).serialized())
+    }
+
     func testBinaryResourcesAreCopiedIntoTheApp() throws {
         let directory = try fixture("target 'App' do\n  binary 'Ads', path: 'Vendor/Ads', resources: ['AdsRes.bundle']\nend\n")
         try makeXCFramework(directory.appendingPathComponent("Vendor/Ads/Ads.xcframework"))

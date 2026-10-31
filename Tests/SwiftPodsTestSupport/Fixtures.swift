@@ -236,8 +236,85 @@ public enum Fixtures {
 
         """
 
+    /// `project` with Plugin as a framework that App depends on and embeds, as Unity's app embeds UnityFramework.
+    public static let embeddingProject: String = {
+        var text = project
+        func replace(_ old: String, _ new: String) {
+            precondition(text.contains(old), old)
+            text = text.replacingOccurrences(of: old, with: new)
+        }
+        replace(
+            "/* main.swift */; };\n",
+            """
+            /* main.swift */; };
+            \t\tA10000000000000000000002 /* Plugin.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = A20000000000000000000003 /* Plugin.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+            \t\tA10000000000000000000003 /* plugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = A20000000000000000000005 /* plugin.swift */; };
+
+            """)
+        replace(
+            "A20000000000000000000003 /* libPlugin.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = libPlugin.a; sourceTree = BUILT_PRODUCTS_DIR; };",
+            """
+            A20000000000000000000003 /* Plugin.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Plugin.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+            \t\tA20000000000000000000005 /* plugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = plugin.swift; sourceTree = "<group>"; };
+            """)
+        replace("A20000000000000000000003 /* libPlugin.a */,", "A20000000000000000000003 /* Plugin.framework */,")
+        replace("A20000000000000000000001 /* main.swift */,\n", "A20000000000000000000001 /* main.swift */,\n\t\t\t\tA20000000000000000000005 /* plugin.swift */,\n")
+        replace(
+            "/* Begin PBXFrameworksBuildPhase section */",
+            """
+            /* Begin PBXContainerItemProxy section */
+            \t\tA90000000000000000000002 /* PBXContainerItemProxy */ = {isa = PBXContainerItemProxy; containerPortal = A00000000000000000000001 /* Project object */; proxyType = 1; remoteGlobalIDString = A50000000000000000000002; remoteInfo = Plugin; };
+            /* End PBXContainerItemProxy section */
+
+            /* Begin PBXCopyFilesBuildPhase section */
+            \t\tA30000000000000000000002 /* Embed Frameworks */ = {
+            \t\t\tisa = PBXCopyFilesBuildPhase;
+            \t\t\tbuildActionMask = 2147483647;
+            \t\t\tdstPath = "";
+            \t\t\tdstSubfolderSpec = 10;
+            \t\t\tfiles = (
+            \t\t\t\tA10000000000000000000002 /* Plugin.framework in Embed Frameworks */,
+            \t\t\t);
+            \t\t\tname = "Embed Frameworks";
+            \t\t\trunOnlyForDeploymentPostprocessing = 0;
+            \t\t};
+            /* End PBXCopyFilesBuildPhase section */
+
+            /* Begin PBXFrameworksBuildPhase section */
+            """)
+        replace(
+            "\t\t\t\tA30000000000000000000001 /* Frameworks */,\n\t\t\t);",
+            "\t\t\t\tA30000000000000000000001 /* Frameworks */,\n\t\t\t\tA30000000000000000000002 /* Embed Frameworks */,\n\t\t\t);")
+        replace(
+            "\t\t\tdependencies = (\n\t\t\t);\n\t\t\tname = App;",
+            "\t\t\tdependencies = (\n\t\t\t\tA90000000000000000000001 /* PBXTargetDependency */,\n\t\t\t);\n\t\t\tname = App;")
+        replace(
+            "\t\t\tbuildPhases = (\n\t\t\t);\n\t\t\tbuildRules = (\n\t\t\t);\n\t\t\tdependencies = (\n\t\t\t);\n\t\t\tname = Plugin;",
+            "\t\t\tbuildPhases = (\n\t\t\t\tA60000000000000000000002 /* Sources */,\n\t\t\t);\n\t\t\tbuildRules = (\n\t\t\t);\n\t\t\tdependencies = (\n\t\t\t);\n\t\t\tname = Plugin;")
+        replace("productReference = A20000000000000000000003 /* libPlugin.a */;", "productReference = A20000000000000000000003 /* Plugin.framework */;")
+        replace("productType = \"com.apple.product-type.library.static\";", "productType = \"com.apple.product-type.framework\";")
+        replace(
+            "/* End PBXSourcesBuildPhase section */",
+            """
+            \t\tA60000000000000000000002 /* Sources */ = {
+            \t\t\tisa = PBXSourcesBuildPhase;
+            \t\t\tbuildActionMask = 2147483647;
+            \t\t\tfiles = (
+            \t\t\t\tA10000000000000000000003 /* plugin.swift in Sources */,
+            \t\t\t);
+            \t\t\trunOnlyForDeploymentPostprocessing = 0;
+            \t\t};
+            /* End PBXSourcesBuildPhase section */
+
+            /* Begin PBXTargetDependency section */
+            \t\tA90000000000000000000001 /* PBXTargetDependency */ = {isa = PBXTargetDependency; target = A50000000000000000000002 /* Plugin */; targetProxy = A90000000000000000000002 /* PBXContainerItemProxy */; };
+            /* End PBXTargetDependency section */
+            """)
+        return text
+    }()
+
     /// A fresh directory with `App.xcodeproj` holding `project` and, optionally, a Podfile.
-    public static func directory(podfile: String? = nil, files: [String: String] = [:]) throws -> URL {
+    public static func directory(podfile: String? = nil, project: String = project, files: [String: String] = [:]) throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("swiftpods-tests-" + UUID().uuidString, isDirectory: true)
         let projectDirectory = root.appendingPathComponent("App.xcodeproj", isDirectory: true)

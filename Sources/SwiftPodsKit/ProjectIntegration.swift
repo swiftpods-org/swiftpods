@@ -76,6 +76,18 @@ enum ProjectIntegration {
     /// Local packages are file references to their folders; products of a package referenced that way name no package.
     static func isLocalPackage(_ object: PBXObject) -> Bool { object.isa == "PBXFileReference" }
 
+    /// Targets that copy the product of one of `frameworks` into their Frameworks folder, as Unity's app embeds UnityFramework.
+    static func embeddingTargets(_ project: XcodeProject, of frameworks: Set<String>) -> [String] {
+        let products = Set(project.nativeTargets.filter { frameworks.contains($0.name) }.compactMap { project[$0.id]?.string("productReference") })
+        guard !products.isEmpty else { return [] }
+        return project.nativeTargets.filter { target in
+            (project[target.id]?.strings("buildPhases") ?? []).contains { id in
+                guard let phase = project[id], phase.isa == "PBXCopyFilesBuildPhase", phase.string("dstSubfolderSpec") == "10" else { return false }
+                return phase.strings("files").contains { products.contains(project[$0]?.string("fileRef") ?? "") }
+            }
+        }.map(\.name)
+    }
+
     static func productKey(target: String, package: String, product: String) -> String {
         "product:\(target)|\(package)|\(product)"
     }

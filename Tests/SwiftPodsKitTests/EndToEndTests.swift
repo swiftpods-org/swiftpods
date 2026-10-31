@@ -69,4 +69,66 @@ final class EndToEndTests: XCTestCase {
         let again = try installer.install(InstallOptions())
         XCTAssertEqual(again.projects.flatMap(\.changes), [])
     }
+
+    /// The app embeds Plugin, which links a dynamic binary; Xcode leaves the binary out of the app, SwiftPods adds it.
+    func testDynamicFrameworksOfAnEmbeddedFrameworkReachTheApp() throws {
+        guard ProcessInfo.processInfo.environment["SWIFTPODS_E2E"] == "1" else {
+            throw XCTSkip("Set SWIFTPODS_E2E=1 to build with Xcode")
+        }
+        let shell = ProcessRunner()
+        let directory = try Fixtures.directory(
+            podfile: """
+                platform :ios, '15.0'
+
+                group :common do
+                  settings 'GENERATE_INFOPLIST_FILE' => 'YES', 'PRODUCT_NAME' => '$(TARGET_NAME)', 'SWIFT_VERSION' => '5.0',
+                           'IPHONEOS_DEPLOYMENT_TARGET' => '15.0', 'ENABLE_USER_SCRIPT_SANDBOXING' => 'YES'
+                end
+
+                target 'App' do
+                  use :common
+                  settings 'PRODUCT_BUNDLE_IDENTIFIER' => 'org.swiftpods.e2e'
+                end
+
+                target 'Plugin' do
+                  use :common
+                  settings 'PRODUCT_BUNDLE_IDENTIFIER' => 'org.swiftpods.e2e.plugin'
+                  binary 'Greeting', path: 'Vendor/Greeting.xcframework'
+                end
+                """,
+            project: Fixtures.embeddingProject,
+            files: [
+                "main.swift": "print(\"app\")\n",
+                "plugin.swift": "import Greeting\n\npublic func pluginValue() -> Int32 { greeting() }\n",
+                "GreetingSource/greeting.c": "int greeting(void) { return 7; }\n",
+                "GreetingSource/Greeting.framework/Headers/Greeting.h": "int greeting(void);\n",
+                "GreetingSource/Greeting.framework/Modules/module.modulemap":
+                    "framework module Greeting {\n  umbrella header \"Greeting.h\"\n  export *\n}\n",
+            ])
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        // A real dynamic framework for the simulator.
+        let source = directory.appendingPathComponent("GreetingSource")
+        _ = try shell.run("/usr/bin/xcrun", [
+            "--sdk", "iphonesimulator", "clang", "-arch", "arm64", "-mios-simulator-version-min=15.0", "-dynamiclib",
+            "-install_name", "@rpath/Greeting.framework/Greeting", "greeting.c", "-o", "Greeting.framework/Greeting",
+        ], in: source)
+        _ = try shell.run("/usr/bin/xcrun", [
+            "xcodebuild", "-create-xcframework", "-framework", "Greeting.framework",
+            "-output", directory.appendingPathComponent("Vendor/Greeting.xcframework").path,
+        ], in: source)
+
+        _ = try Installer(directory: directory, cache: directory.appendingPathComponent(".cache")).install(InstallOptions())
+        let derived = directory.appendingPathComponent("DerivedData")
+        let log = try shell.run("/usr/bin/xcrun", [
+            "xcodebuild", "build", "-project", "App.xcodeproj", "-scheme", "App",
+            "-destination", "generic/platform=iOS Simulator", "-derivedDataPath", derived.path, "ARCHS=arm64",
+        ], in: directory)
+        XCTAssertTrue(log.contains("** BUILD SUCCEEDED **"))
+        let frameworks = derived.appendingPathComponent("Build/Products/Debug-iphonesimulator/App.app/Frameworks")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: frameworks.path).sorted(), ["Greeting.framework", "Plugin.framework"])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: frameworks.appendingPathComponent("Greeting.framework/Headers").path))
+        let signature = try shell.run("/usr/bin/codesign", ["-dv", frameworks.appendingPathComponent("Greeting.framework").path], in: nil)
+        XCTAssertTrue(signature.contains("Signature=adhoc"), signature)
+    }
 }

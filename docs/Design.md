@@ -98,7 +98,10 @@ requirements and products, the scripts run script phases, copy binary resource
 bundles and check `Podfile.sha256` so that a build after an uninstalled Podfile
 change stops, as CocoaPods' manifest check does. A file reference rather than an
 `XCLocalSwiftPackageReference` also avoids a crash in Xcode 26.2 when the
-package graph shrinks during resolution.
+package graph shrinks during resolution. A target that embeds a framework target
+of the Podfile, such as Unity's app, gets the Finish phase too, whether the
+Podfile declares it or not; it embeds the dynamic frameworks Xcode leaves out,
+which a build-time script finds without knowing the packages in advance.
 
 **Binary packaging.** SDK archives are used as published, except that
 SwiftPods normalizes, in its own copy, the iOS framework slices Xcode would embed
