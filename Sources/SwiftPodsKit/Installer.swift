@@ -34,14 +34,19 @@ public struct InstallReport: Sendable, Codable {
 /// Installs a directory's Podfile into its Xcode projects.
 public struct Installer: Sendable {
     public let directory: URL
+    /// The project of targets that do not name one; nil means the only project next to the Podfile.
+    public let project: URL?
     private let runner: CommandRunner
     private let cache: URL
     private let sourcesCache: URL
 
     public static let generatedDirectory = "SwiftPods"
 
-    public init(directory: URL, runner: CommandRunner = ProcessRunner(), cache: URL? = nil, sourcesCache: URL? = nil) {
+    public init(
+        directory: URL, project: URL? = nil, runner: CommandRunner = ProcessRunner(), cache: URL? = nil, sourcesCache: URL? = nil
+    ) {
         self.directory = directory.standardizedFileURL
+        self.project = project?.standardizedFileURL
         self.runner = runner
         self.cache = cache ?? BinaryStore.defaultCache
         self.sourcesCache = sourcesCache ?? GitCatalog.defaultCache
@@ -67,13 +72,19 @@ public struct Installer: Sendable {
     }
 
     private func defaultProject() throws -> String {
+        if let project {
+            guard FileManager.default.fileExists(atPath: project.appendingPathComponent("project.pbxproj").path) else {
+                throw SwiftPodsError("No Xcode project at \(project.path)")
+            }
+            return Paths.relative(from: directory, to: project)
+        }
         let projects = (try? FileManager.default.contentsOfDirectory(atPath: directory.path))?
             .filter { $0.hasSuffix(".xcodeproj") }.sorted() ?? []
         guard projects.count == 1 else {
             throw SwiftPodsError(
                 projects.isEmpty ? "No Xcode project next to the Podfile" : "Several Xcode projects next to the Podfile: " + projects.joined(separator: ", "),
                 file: directory.appendingPathComponent("Podfile").path,
-                hint: "Declare `project 'Path/To.xcodeproj'`")
+                hint: "Declare `project 'Path/To.xcodeproj'` or pass --project")
         }
         return projects[0]
     }
@@ -365,6 +376,7 @@ public struct Installer: Sendable {
     public func deintegrate(cocoapods: Bool = false) throws -> InstallReport {
         var paths = Set((try? FileManager.default.contentsOfDirectory(atPath: directory.path))?.filter { $0.hasSuffix(".xcodeproj") } ?? [])
         if let manifest = try? manifest() { paths.formUnion(manifest.targets.compactMap(\.project)) }
+        if let project { paths.insert(Paths.relative(from: directory, to: project)) }
         var report = InstallReport()
         do {
             var projects: [(String, XcodeProject)] = []

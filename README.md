@@ -97,6 +97,7 @@ swiftpods check                 # read the Podfile and show what each target get
 swiftpods search Datadog        # find a package in the catalog
 swiftpods install               # write it into the Xcode projects
 swiftpods install --deployment  # CI: require a Package.resolved that satisfies the Podfile
+swiftpods install --project ../Build/App.xcodeproj  # the project of targets that name none
 swiftpods deintegrate           # remove everything SwiftPods added
 swiftpods deintegrate --cocoapods  # also remove a CocoaPods or SwiftPods 0.1 integration
 ```

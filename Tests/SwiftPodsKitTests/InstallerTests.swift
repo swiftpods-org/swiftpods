@@ -355,6 +355,29 @@ final class InstallerTests: XCTestCase {
             try XcodeProject(path: installed.path, text: Fixtures.embeddingProject).serialized())
     }
 
+    func testTargetsWithoutAProjectUseTheGivenOne() throws {
+        let root = try fixture("")
+        let ios = root.appendingPathComponent("ios")
+        try FileManager.default.createDirectory(at: ios, withIntermediateDirectories: true)
+        try "target 'App' do\n  spm 'https://github.com/Alamofire/Alamofire.git', '~> 5.9'\nend\n"
+            .write(to: ios.appendingPathComponent("Podfile"), atomically: true, encoding: .utf8)
+        let cache = root.appendingPathComponent(".cache")
+        XCTAssertThrowsError(try Installer(directory: ios, cache: cache).install(InstallOptions())) {
+            XCTAssertTrue("\($0)".contains("No Xcode project next to the Podfile"), "\($0)")
+        }
+
+        let installer = Installer(directory: ios, project: root.appendingPathComponent("App.xcodeproj"), cache: cache)
+        _ = try installer.install(InstallOptions())
+        let installed = try project(root)
+        XCTAssertEqual(products(installed, "App"), ["SwiftPods-App"])
+        XCTAssertEqual(localPackages(installed), ["ios/SwiftPods/SwiftPodsDependencies"])
+        let prepare = try String(contentsOf: ios.appendingPathComponent("SwiftPods/Scripts/App/App/prepare.sh"), encoding: .utf8)
+        XCTAssertTrue(prepare.contains(#"cd "${SRCROOT}/ios""#), prepare)
+
+        _ = try installer.deintegrate()
+        XCTAssertEqual(try String(contentsOf: installed.file, encoding: .utf8), Fixtures.project)
+    }
+
     func testBinaryResourcesAreCopiedIntoTheApp() throws {
         let directory = try fixture("target 'App' do\n  binary 'Ads', path: 'Vendor/Ads', resources: ['AdsRes.bundle']\nend\n")
         try makeXCFramework(directory.appendingPathComponent("Vendor/Ads/Ads.xcframework"))

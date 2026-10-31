@@ -26,6 +26,7 @@ let help = """
 
     Options:
       --project-directory DIR   Directory with the Podfile (default: current directory)
+      --project PATH            Xcode project of targets that do not name one (default: the only one next to the Podfile)
       --json                    Machine-readable output
 
     Reference: https://swiftpods.org/docs/podfile/
@@ -82,12 +83,16 @@ func run(_ arguments: [String]) throws {
     var command: String?
     var operands: [String] = []
     var source: String?
+    var project: URL?
     while !arguments.isEmpty {
         let argument = arguments.removeFirst()
         switch argument {
         case "--project-directory":
             guard !arguments.isEmpty else { throw Usage(description: "--project-directory needs a path") }
             directory = URL(fileURLWithPath: arguments.removeFirst())
+        case "--project":
+            guard !arguments.isEmpty else { throw Usage(description: "--project needs a path") }
+            project = URL(fileURLWithPath: arguments.removeFirst())
         case "--json": json = true
         case "--source":
             guard !arguments.isEmpty else { throw Usage(description: "--source needs a catalog URL") }
@@ -119,7 +124,10 @@ func run(_ arguments: [String]) throws {
         throw Usage(description: "Unexpected arguments for `\(command)`. Run `swiftpods help`.")
     }
     if source != nil && command != "search" { throw Usage(description: "--source applies to `search`") }
-    let installer = Installer(directory: directory)
+    if project != nil && !["install", "deintegrate"].contains(command) {
+        throw Usage(description: "--project applies to `install` and `deintegrate`")
+    }
+    let installer = Installer(directory: directory, project: project)
     switch command {
     case "install":
         var options = InstallOptions()
