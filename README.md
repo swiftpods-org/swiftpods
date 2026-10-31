@@ -103,7 +103,7 @@ swiftpods deintegrate --cocoapods  # also remove a CocoaPods or SwiftPods 0.1 in
 ```
 
 `--json` gives machine-readable output. In Fastlane lanes, use the
-[SwiftPods plugin](docs/Fastlane.md).
+[SwiftPods plugin](docs/Fastlane.md); in Unity, the [SwiftPods package](docs/Unity.md).
 
 ## Coming from CocoaPods or SwiftPods 0.1
 

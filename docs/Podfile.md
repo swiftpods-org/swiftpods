@@ -190,7 +190,7 @@ app fails at launch. Every target that embeds a framework target of the Podfile
 gets a `[SwiftPods] Finish` phase, whether the Podfile declares it or not. After
 Xcode's own embedding, the phase copies into the app the dynamic frameworks that
 the embedded frameworks link and Xcode left out, without headers and modules,
-and signs them. Static SDKs stay in the framework.
+and signs them. Static SDKs stay in the framework. See [Unity](Unity.md).
 
 ## Not supported
 

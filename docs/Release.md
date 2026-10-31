@@ -56,7 +56,8 @@ release.
 ## Releasing
 
 1. Change the version line in `Sources/swiftpods/main.swift`
-   (`let version = "X.Y.Z"`). It is the only version source. Merge to `main`.
+   (`let version = "X.Y.Z"`). It is the only version source; `Unity/package.json`
+   repeats it, and a test keeps the two equal. Merge to `main`.
 2. When Build SwiftPods has passed for that commit, tag it and push the tag:
    `git tag vX.Y.Z COMMIT && git push origin vX.Y.Z`.
 3. Release SwiftPods checks that the tag matches the version line, points to a
