@@ -4,14 +4,26 @@
 import argparse
 import hashlib
 import json
+import os
+import re
 import subprocess
 from pathlib import Path
 
-from scripts.support.version import ROOT, source_version
+from scripts.apple_signing import apple_tool_environment, inspect_signature, trusted_xcode_tool
+from scripts.support.version import ROOT
+
+
+def release_environment():
+    return apple_tool_environment()
 
 
 def run(*arguments):
-    subprocess.run(list(map(str, arguments)), check=True)
+    subprocess.run(
+        list(map(str, arguments)),
+        check=True,
+        env=release_environment(),
+        stdin=subprocess.DEVNULL,
+    )
 
 
 def main():
@@ -20,7 +32,10 @@ def main():
     parser.add_argument(
         "--identity",
         required=True,
-        help="Explicit Developer ID Application certificate identity",
+        help="Exact 40-character SHA-1 fingerprint of the Developer ID certificate",
+    )
+    parser.add_argument(
+        "--team-id", required=True, help="Exact 10-character Apple Developer Team ID"
     )
     parser.add_argument("--notarize", action="store_true")
     parser.add_argument("--keychain-profile")
@@ -28,7 +43,9 @@ def main():
     args = parser.parse_args()
     bundle = args.bundle.resolve()
     executable = bundle / "bin/swiftpods"
-    if subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT).strip():
+    if subprocess.check_output(
+        ["git", "status", "--porcelain"], cwd=ROOT, env=release_environment()
+    ).strip():
         raise RuntimeError("Release signing requires a clean committed source revision")
     if not executable.is_file():
         raise RuntimeError("Package a complete bundle before signing")
@@ -37,17 +54,31 @@ def main():
         raise RuntimeError("Release archive already exists: " + str(archive))
     if args.notarize and not args.keychain_profile:
         parser.error("--notarize requires an explicit --keychain-profile")
+    fingerprint = args.identity.upper()
+    if re.fullmatch(r"[0-9A-F]{40}", fingerprint) is None:
+        parser.error("--identity must be an exact 40-character certificate fingerprint")
+    if re.fullmatch(r"[A-Z0-9]{10}", args.team_id) is None:
+        parser.error("--team-id must be an exact 10-character Apple Developer Team ID")
     identity = subprocess.check_output(
-        ["/usr/bin/security", "find-identity", "-v", "-p", "codesigning"], text=True
+        ["/usr/bin/security", "find-identity", "-v", "-p", "codesigning"],
+        text=True,
+        env=release_environment(),
+        stdin=subprocess.DEVNULL,
     )
     matches = [
-        line
+        match
         for line in identity.splitlines()
-        if args.identity in line and "Developer ID Application:" in line
+        if (
+            match := re.match(
+                r'^\s*\d+\)\s+([0-9A-Fa-f]{40})\s+"([^"]+)"\s*$', line
+            )
+        )
+        and match.group(1).upper() == fingerprint
+        and match.group(2).startswith("Developer ID Application: ")
     ]
     if len(matches) != 1:
         raise RuntimeError(
-            "Identity must uniquely select an available Developer ID Application certificate"
+            "Fingerprint must select exactly one available Developer ID Application certificate"
         )
     run(
         "/usr/bin/codesign",
@@ -56,16 +87,20 @@ def main():
         "--options",
         "runtime",
         "--sign",
-        args.identity,
+        fingerprint,
         executable,
     )
-    run("/usr/bin/codesign", "--verify", "--strict", executable)
-    # The hardened, signed executable must still start and report its source version.
-    actual = json.loads(
-        subprocess.check_output([str(executable), "version", "--json"], timeout=60)
-    )
-    if actual["version"] != source_version(ROOT):
-        raise RuntimeError("Signed CLI version differs from its source version")
+    publisher = inspect_signature(executable)
+    if publisher is None:
+        raise RuntimeError("Signed release failed strict code-signature verification")
+    if (
+        publisher["certificate_sha1"] != fingerprint
+        or publisher["team_id"] != args.team_id
+    ):
+        raise RuntimeError("Signed release publisher differs from the pinned certificate or Team ID")
+    # Never execute artifact code in this process. CI imports signing and notarization
+    # credentials before calling this tool, so all functional smoke tests belong to a
+    # subsequent fresh job that has no release credentials.
     run(
         "/usr/bin/ditto",
         "-c",
@@ -78,9 +113,9 @@ def main():
         archive,
     )
     if args.notarize:
+        notarytool = trusted_xcode_tool("notarytool")
         command = [
-            "/usr/bin/xcrun",
-            "notarytool",
+            notarytool,
             "submit",
             archive,
             "--keychain-profile",
@@ -92,7 +127,12 @@ def main():
         if args.keychain:
             command += ["--keychain", args.keychain]
         submission = json.loads(
-            subprocess.check_output(list(map(str, command)), text=True)
+            subprocess.check_output(
+                list(map(str, command)),
+                text=True,
+                env=release_environment(),
+                stdin=subprocess.DEVNULL,
+            )
         )
         submission["archive_sha256"] = hashlib.sha256(archive.read_bytes()).hexdigest()
         archive.with_suffix(".zip.notary.json").write_text(

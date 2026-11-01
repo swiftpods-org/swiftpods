@@ -63,6 +63,8 @@ struct Arguments {
 }
 
 enum Convert {
+    private static let maximumListItems = 1_024
+
     static func string(_ node: Node, _ what: String) throws(ManifestError) -> String {
         if case .string(let text) = node.value { return text }
         throw ManifestError("\(what) must be a string, found \(node.kindName)", at: node.location)
@@ -92,7 +94,11 @@ enum Convert {
     static func strings(_ node: Node, _ what: String) throws(ManifestError) -> [String] {
         switch node.value {
         case .string(let text): return [text]
-        case .array(let elements): return try elements.map { (element) throws(ManifestError) in try string(element, what + " entries") }
+        case .array(let elements):
+            guard elements.count <= maximumListItems else {
+                throw ManifestError("\(what) cannot contain more than \(maximumListItems) entries", at: node.location)
+            }
+            return try elements.map { (element) throws(ManifestError) in try string(element, what + " entries") }
         default: throw ManifestError("\(what) must be a string or an array of strings, found \(node.kindName)", at: node.location)
         }
     }

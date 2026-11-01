@@ -1,7 +1,22 @@
+import Foundation
+
+/// The exact bytes of a Podfile or include that were parsed successfully.
+public struct ManifestFile: Sendable, Equatable {
+    public var path: String
+    public var contents: Data
+
+    public init(path: String, contents: Data) {
+        self.path = path
+        self.contents = contents
+    }
+}
+
 /// An evaluated Podfile: groups applied, inheritance resolved, declarations checked.
 public struct Manifest: Sendable, Codable, Equatable {
     /// The Podfile that was read.
     public var file: String
+    /// The exact parsed snapshots, starting with the root Podfile and followed by includes in reading order.
+    public var files: [ManifestFile]
     /// Files the Podfile included, in reading order.
     public var includes: [String]
     /// Catalogs that resolve package names, in lookup order.
@@ -12,6 +27,61 @@ public struct Manifest: Sendable, Codable, Equatable {
     public var binaries: [Binary]
     /// Concrete Xcode targets, in declaration order.
     public var targets: [Target]
+    /// Production filesystem readers retain descriptor-backed snapshots here. The closure is deliberately omitted
+    /// from Codable and equality: it is a process-local capability, not manifest data.
+    private var verifyFileSnapshotsBody: (@Sendable () throws -> Void)?
+
+    private enum CodingKeys: String, CodingKey {
+        case file, includes, sources, packages, binaries, targets
+    }
+
+    init(
+        file: String, files: [ManifestFile], includes: [String], sources: [Source], packages: [Package], binaries: [Binary],
+        targets: [Target], verifyFileSnapshots: (@Sendable () throws -> Void)? = nil
+    ) {
+        self.file = file
+        self.files = files
+        self.includes = includes
+        self.sources = sources
+        self.packages = packages
+        self.binaries = binaries
+        self.targets = targets
+        verifyFileSnapshotsBody = verifyFileSnapshots
+    }
+
+    /// Proves that every Podfile/include pathname still names the exact inode and metadata snapshot that supplied the
+    /// parsed bytes. Manifests produced by an injected in-memory reader have no filesystem capability and therefore
+    /// require no revalidation.
+    public func verifyFileSnapshots() throws {
+        try verifyFileSnapshotsBody?()
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        file = try values.decode(String.self, forKey: .file)
+        files = []
+        includes = try values.decode([String].self, forKey: .includes)
+        sources = try values.decode([Source].self, forKey: .sources)
+        packages = try values.decode([Package].self, forKey: .packages)
+        binaries = try values.decode([Binary].self, forKey: .binaries)
+        targets = try values.decode([Target].self, forKey: .targets)
+        verifyFileSnapshotsBody = nil
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(file, forKey: .file)
+        try values.encode(includes, forKey: .includes)
+        try values.encode(sources, forKey: .sources)
+        try values.encode(packages, forKey: .packages)
+        try values.encode(binaries, forKey: .binaries)
+        try values.encode(targets, forKey: .targets)
+    }
+
+    public static func == (lhs: Manifest, rhs: Manifest) -> Bool {
+        lhs.file == rhs.file && lhs.includes == rhs.includes && lhs.sources == rhs.sources
+            && lhs.packages == rhs.packages && lhs.binaries == rhs.binaries && lhs.targets == rhs.targets
+    }
 }
 
 public enum PlatformName: String, Sendable, Codable, CaseIterable {

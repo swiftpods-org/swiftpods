@@ -23,7 +23,7 @@ final class EndToEndTests: XCTestCase {
 
                 target 'App' do
                   use :common
-                  spm 'https://github.com/apple/swift-collections.git', '~> 1.1', products: ['DequeModule']
+                  spm 'https://github.com/apple/swift-collections.git', revision: '671108c96644956dddcd89dd59c203dcdb36cec7', products: ['DequeModule']
                   binary 'Answer', path: 'Vendor/Answer.xcframework', linker_flags: ['-ObjC'], system_frameworks: ['Foundation']
                   script_phase name: 'Stamp', script: 'echo stamped > "$DERIVED_FILE_DIR/stamp.txt"',
                                output_files: ['$(DERIVED_FILE_DIR)/stamp.txt'], execution_position: :before_compile

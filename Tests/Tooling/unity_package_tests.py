@@ -27,6 +27,40 @@ class UnityPackageTests(unittest.TestCase):
         self.assertEqual(len(guids), len(set(guids)))
         self.assertEqual(len(guids), len(list(PACKAGE.rglob("*.meta"))))
 
+    def test_process_arguments_are_not_interpolated_into_one_command_line(self):
+        source = (PACKAGE / "Editor" / "SwiftPodsBuild.cs").read_text()
+        self.assertIn('GetProperty("ArgumentList")', source)
+        self.assertIn("launcherArguments.Select(QuoteArgument)", source)
+        self.assertNotIn('$"install --project-directory', source)
+
+    def test_project_file_is_only_modified_by_the_hardened_swift_installer(self):
+        source = (PACKAGE / "Editor" / "SwiftPodsBuild.cs").read_text()
+        self.assertNotIn("ReadAllText", source)
+        self.assertNotIn("WriteAllText", source)
+        self.assertNotIn("ReplacePodsPaths", source)
+
+    def test_cli_is_an_explicit_absolute_trust_boundary_with_bounded_execution(self):
+        source = (PACKAGE / "Editor" / "SwiftPodsBuild.cs").read_text()
+        self.assertIn('Environment.GetEnvironmentVariable("SWIFTPODS")', source)
+        self.assertIn("Path.IsPathRooted(configured)", source)
+        self.assertNotIn('GetEnvironmentVariable("PATH")', source)
+        self.assertIn("MaximumCommandCharacters", source)
+        self.assertIn("CommandTimeout", source)
+        self.assertIn('new ProcessStartInfo("/usr/bin/python3")', source)
+        self.assertIn('"-I", "-c", SessionLauncher, executable', source)
+        self.assertIn("os.setsid()", source)
+        self.assertIn("os.execv(sys.argv[1], sys.argv[1:])", source)
+        self.assertNotIn('new ProcessStartInfo("/bin/sh")', source)
+        self.assertIn("proc_listallpids", source)
+        self.assertIn("getsid(processId) == sessionId", source)
+        self.assertIn("SignalSession(sessionId, SignalTerminate)", source)
+        self.assertIn("SignalSession(sessionId, SignalKill)", source)
+        self.assertEqual(source.count("Stop(process, outputTask, errorTask);"), 3)
+        self.assertNotIn('GetMethod("Kill", new[] { typeof(bool) })', source)
+        self.assertIn("process.Kill()", source)
+        self.assertIn('GetEnvironmentVariable("SWIFTPODS_ALLOW_EXTERNAL_FILE_LISTS")', source)
+        self.assertIn('arguments.Add("--allow-external-file-lists")', source)
+
 
 if __name__ == "__main__":
     unittest.main()

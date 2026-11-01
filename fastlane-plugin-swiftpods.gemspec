@@ -11,6 +11,8 @@ Gem::Specification.new do |spec|
   spec.required_ruby_version = '>= 3.0'
   spec.files = Dir.glob('lib/**/*.{rb,json}', base: __dir__) + ['scripts/install.py', 'LICENSE', 'docs/Fastlane.md']
   spec.require_paths = ['lib']
+  # ACL checks use Fiddle, which is no longer a default gem in Ruby 4.
+  spec.add_runtime_dependency 'fiddle', '~> 1.1'
   spec.metadata = {
     'source_code_uri' => 'https://github.com/swiftpods-org/swiftpods',
     'documentation_uri' => 'https://github.com/swiftpods-org/swiftpods/blob/main/docs/Fastlane.md'

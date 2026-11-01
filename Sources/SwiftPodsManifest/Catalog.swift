@@ -21,6 +21,8 @@ public struct Source: Sendable, Codable, Equatable {
 /// What a catalog knows about a name: a Swift package, a prebuilt SDK by version, or both.
 /// Package versions stay in the Podfile; Swift Package Manager reads them from tags.
 public struct CatalogEntry: Sendable, Equatable {
+    private static let maximumReleases = 1_024
+
     public struct Release: Sendable, Equatable {
         public var version: String
         public var url: String
@@ -82,6 +84,9 @@ public struct CatalogEntry: Sendable, Equatable {
             var arguments = try Arguments(statement)
             try arguments.positionalCount(1...1, usage: "\(statement.name) 'Name', …")
             let declared = try Convert.nonEmpty(try Convert.string(arguments.positional[0], "The name"), "The name", at: statement.location)
+            guard PackageLocation.isSafeMetadataText(declared) else {
+                throw ManifestError("Catalog names cannot contain control characters or exceed 4096 bytes", at: statement.location)
+            }
             if let name, name != declared {
                 throw ManifestError("A catalog file declares one name; found `\(name)` and `\(declared)`", at: statement.location)
             }
@@ -94,9 +99,14 @@ public struct CatalogEntry: Sendable, Equatable {
                     throw ManifestError("Catalog package `\(declared)` needs `git`", at: statement.location)
                 }
                 let url = try Convert.string(gitNode, "`git`")
-                guard PackageLocation.isRemote(url) else { throw ManifestError("`git` must be a repository URL", at: gitNode.location) }
+                guard PackageLocation.isSafeRemote(url) else {
+                    throw ManifestError("`git` must be a safe HTTPS or SSH repository URL", at: gitNode.location)
+                }
                 entry.url = url
                 entry.products = try arguments.take("products").map { (node) throws(ManifestError) in try Convert.strings(node, "`products`") } ?? []
+                guard entry.products.allSatisfy({ PackageLocation.isSafeMetadataText($0) }) else {
+                    throw ManifestError("Catalog product names cannot be empty, contain control characters or exceed 4096 bytes", at: statement.location)
+                }
                 if let node = arguments.take("version_format") {
                     let raw = try Convert.name(node, "`version_format`")
                     guard let format = VersionFormat(rawValue: raw) else {
@@ -127,12 +137,37 @@ public struct CatalogEntry: Sendable, Equatable {
         sdk.linkerFlags = try list("linker_flags")
         sdk.resources = try list("resources")
         try arguments.finish(allowed: ["xcframeworks", "system_frameworks", "libraries", "linker_flags", "resources"])
-        if let bundle = sdk.resources.first(where: { !$0.hasSuffix(".bundle") }) {
-            throw ManifestError("Resource '\(bundle)' is not a .bundle", at: statement.location)
+        guard sdk.systemFrameworks.allSatisfy({ PackageLocation.isSafeMetadataText($0) }),
+            sdk.libraries.allSatisfy({ PackageLocation.isSafeMetadataText($0) })
+        else {
+            throw ManifestError("Framework and library names cannot contain control characters or exceed 4096 bytes", at: statement.location)
+        }
+        // A catalog is remote metadata, not an authorization boundary for arbitrary compiler-driver arguments.
+        // Keep the two path-free archive-linking switches SDKs commonly need; path-taking and forwarding switches
+        // (`-force_load`, `-Xlinker`, `-Wl,`, response files, plug-ins, maps, search paths, …) remain available only
+        // to an explicitly reviewed local Podfile.
+        let safeCatalogLinkerFlags: Set<String> = ["-ObjC", "-all_load"]
+        if let flag = sdk.linkerFlags.first(where: { !safeCatalogLinkerFlags.contains($0) }) {
+            throw ManifestError(
+                "Catalog linker flag `\(flag)` is not allowed", at: statement.location,
+                hint: "Catalogs may use only -ObjC and -all_load; put other reviewed flags in the local Podfile")
+        }
+        if let bundle = sdk.resources.first(where: { !PackageLocation.isSafeArchivePath($0, extension: "bundle") }) {
+            throw ManifestError("Resource '\(bundle)' is not a safe relative .bundle path", at: statement.location)
+        }
+        if let framework = sdk.xcframeworks?.first(where: { !PackageLocation.isSafeArchivePath($0, extension: "xcframework") }) {
+            throw ManifestError("XCFramework '\(framework)' is not a safe relative .xcframework path", at: statement.location)
+        }
+        if sdk.xcframeworks?.isEmpty == true {
+            throw ManifestError("`xcframeworks` must name at least one framework", at: statement.location)
         }
         guard let block = statement.block, !block.isEmpty else {
             throw ManifestError("A catalog binary lists its releases in a block: version '1.0', url: '…', sha256: '…'", at: statement.location)
         }
+        guard block.count <= maximumReleases else {
+            throw ManifestError("A catalog binary cannot list more than \(maximumReleases) releases", at: statement.location)
+        }
+        var versions: Set<String> = []
         for release in block {
             guard release.name == "version" else {
                 throw ManifestError("Expected `version`, found `\(release.name)`", at: release.location)
@@ -145,13 +180,17 @@ public struct CatalogEntry: Sendable, Equatable {
                 throw ManifestError("Version \(version) needs `url` and `sha256`", at: release.location)
             }
             let url = try Convert.string(urlNode, "`url`")
-            guard url.hasPrefix("https://") else { throw ManifestError("`url` must use https", at: urlNode.location) }
+            guard PackageLocation.isSafeHTTPSDownloadURL(url) else {
+                throw ManifestError(
+                    "`url` must be a safe HTTPS URL", at: urlNode.location,
+                    hint: "Signed query parameters are supported; credentials and fragments are not")
+            }
             let sha = try Convert.string(shaNode, "`sha256`").lowercased()
             guard sha.range(of: #"\A[0-9a-f]{64}\z"#, options: .regularExpression) != nil else {
                 throw ManifestError("`sha256` must be 64 hexadecimal characters", at: shaNode.location)
             }
             try values.finish(allowed: ["url", "sha256"])
-            guard !sdk.releases.contains(where: { $0.version == version }) else {
+            guard versions.insert(version).inserted else {
                 throw ManifestError("Version \(version) is listed twice", at: release.location)
             }
             sdk.releases.append(Release(version: version, url: url, sha256: sha))

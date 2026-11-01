@@ -4,8 +4,10 @@
 import argparse
 import hashlib
 import json
+import re
 from pathlib import Path
 
+from scripts.apple_signing import validate_publisher
 from scripts.support.version import ROOT, source_version
 
 
@@ -81,13 +83,16 @@ def homebrew_formula(version, assets):
 def prepare(manifest_path, root=ROOT):
     manifest = json.loads(manifest_path.read_bytes())
     if (
-        manifest.get("schema_version") != 2
+        manifest.get("schema_version") != 3
         or manifest.get("publishable") is not True
         or manifest.get("development") is not False
+        or not validate_publisher(manifest.get("publisher"))
         or {asset["architecture"] for asset in manifest["assets"]}
         != {"arm64", "x86_64"}
         or any(
             (asset.get("notarization") or {}).get("status") != "Accepted"
+            or not isinstance(asset.get("content_sha256"), str)
+            or re.fullmatch(r"[0-9a-f]{64}", asset["content_sha256"]) is None
             for asset in manifest["assets"]
         )
     ):

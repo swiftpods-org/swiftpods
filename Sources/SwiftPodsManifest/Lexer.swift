@@ -20,20 +20,29 @@ struct Token {
 struct Lexer {
     private let scalars: [Unicode.Scalar]
     private let file: String
+    private let budget: Parser.Budget
     private var index = 0
     private var line = 1
     private var column = 1
 
-    init(_ text: String, file: String) {
+    init(_ text: String, file: String, budget: Parser.Budget) {
         scalars = Array(text.unicodeScalars)
         self.file = file
+        self.budget = budget
     }
 
-    static func tokens(_ text: String, file: String) throws(ManifestError) -> [Token] {
-        var lexer = Lexer(text, file: file)
+    static func tokens(_ text: String, file: String, budget: Parser.Budget) throws(ManifestError) -> [Token] {
+        var lexer = Lexer(text, file: file, budget: budget)
         var tokens: [Token] = []
         while true {
             let token = try lexer.next()
+            let units: Int
+            if case .words(let words, _) = token.kind {
+                units = 1 + words.count
+            } else {
+                units = 1
+            }
+            try budget.consumeTokenUnits(units, at: token.location)
             tokens.append(token)
             if token.kind == .end { return tokens }
         }
@@ -218,7 +227,10 @@ struct Lexer {
             guard let scalar = current else { throw error("Unterminated %\(Character(kind)) literal", at: start) }
             advance()
             if scalar == closing || scalar.properties.isWhitespace {
-                if !word.isEmpty { words.append(String(word)) }
+                if !word.isEmpty {
+                    try budget.requireTokenCapacity(words.count + 2, at: start)
+                    words.append(String(word))
+                }
                 word = String.UnicodeScalarView()
                 if scalar == closing { return .words(words, symbols: kind == "i") }
             } else {

@@ -14,7 +14,13 @@ External Dependency Manager (EDM4U).
    "org.swiftpods.unity": "https://github.com/swiftpods-org/swiftpods.git?path=Unity#v0.3.1"
    ```
 
+   Commit Unity's `Packages/packages-lock.json`; it records the exact Git
+   revision behind the release tag for reproducible CI installs.
+
 2. Install `swiftpods` on every Mac that builds the game ([Installation](Release.md)).
+   Set `SWIFTPODS` to its absolute path in the Unity/CI environment, for example
+   `/opt/homebrew/bin/swiftpods`. The explicit path is the executable trust
+   boundary; the package never searches a repository-controlled ambient `PATH`.
 3. Write the Podfile in `ios/` next to `Assets/`. Inside `Assets/`, Unity would
    import its Swift files as plugins.
 
@@ -49,6 +55,12 @@ On an iOS build of a project with `ios/Podfile`:
   `--project <export>/Unity-iPhone.xcodeproj` in `ios/`. A SwiftPods error fails
   the Unity build.
 
+On macOS the package starts the configured executable in a new process session,
+without a shell. If the install times out, exceeds its output limit, or leaves
+its output pipes open, Unity first sends `SIGTERM` and then `SIGKILL` to every
+process still in that session. This also covers tools that create a separate
+process group while remaining descendants of the install.
+
 Both of Unity's build modes work: Replace exports a new project, and Append
 keeps the project, which `swiftpods install` brings up to date. Without CocoaPods
 there is no workspace, so build `Unity-iPhone.xcodeproj` with `xcodebuild -project`
@@ -59,7 +71,9 @@ or Fastlane's `project:`.
 | Variable | Default |
 | --- | --- |
 | `SWIFTPODS_PODFILE_DIRECTORY` | `ios`, relative to the Unity project |
-| `SWIFTPODS` | the first `swiftpods` in `PATH`, `/opt/homebrew/bin` or `/usr/local/bin` |
+| `SWIFTPODS` | Required absolute path to the trusted `swiftpods` executable on macOS |
+| `SWIFTPODS_ALLOW_EXTERNAL_FILE_LISTS` | Set to `1` only to trust script file lists outside the Podfile directory |
 
-An editor started from the Dock or Unity Hub does not see the shell's `PATH`.
+An editor started from the Dock or Unity Hub must receive this variable from its
+launcher or CI environment.
 On Windows the package installs nothing and logs the command to run on a Mac.

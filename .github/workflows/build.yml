@@ -10,7 +10,7 @@ concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  build:
+  test:
     strategy:
       fail-fast: false
       matrix:
@@ -21,39 +21,117 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - name: Create temporary build directory
-        run: |
-          build_root="$(mktemp -d "$RUNNER_TEMP/swiftpods-build.XXXXXX")"
-          echo "SWIFTPODS_BUILD_ROOT=$build_root" >> "$GITHUB_ENV"
       - name: Run unit and integration tests
         run: swift test -Xswiftc -warnings-as-errors
-      - name: Install into a sample app and build it with Xcode
-        if: matrix.runner == 'macos-15'
-        env:
-          SWIFTPODS_E2E: '1'
-        run: swift test -Xswiftc -warnings-as-errors --filter EndToEndTests
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.13.16'
       - name: Check release tooling
         run: python3 -m unittest discover -s Tests/Tooling -t . -p '*_tests.py'
+
+  e2e:
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Install into a sample app and build it with Xcode
+        env:
+          SWIFTPODS_E2E: '1'
+        run: swift test -Xswiftc -warnings-as-errors --filter EndToEndTests
+
+  package:
+    needs: [test, e2e]
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Bind the package to the checked-out commit
+        run: |
+          source_commit="$(git rev-parse --verify HEAD)"
+          if [[ ! "$source_commit" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ || "$source_commit" != "$GITHUB_SHA" ]]; then
+            echo "Checked-out HEAD does not match the workflow event commit" >&2
+            exit 1
+          fi
+          echo "SWIFTPODS_SOURCE_COMMIT=$source_commit" >> "$GITHUB_ENV"
+      - name: Create temporary build directory
+        run: |
+          build_root="$(mktemp -d "$RUNNER_TEMP/swiftpods-build.XXXXXX")"
+          echo "SWIFTPODS_BUILD_ROOT=$build_root" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13.16'
+      - name: Require a pristine fresh checkout before packaging
+        run: |
+          if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
+            git status --short --untracked-files=all
+            echo "Fresh packaging checkout is not pristine" >&2
+            exit 1
+          fi
       - name: Build and package SwiftPods
         run: python3 -m scripts.package --destination "$SWIFTPODS_BUILD_ROOT/SwiftPods"
+      - name: Verify the packaged release and source tree
+        run: |
+          "$SWIFTPODS_BUILD_ROOT/SwiftPods/bin/swiftpods" version --json
+          "$SWIFTPODS_BUILD_ROOT/SwiftPods/bin/swiftpods" help >/dev/null
+          if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
+            git status --short --untracked-files=all
+            echo "Packaging changed the source checkout" >&2
+            exit 1
+          fi
       - name: Archive the distribution
         working-directory: ${{ env.SWIFTPODS_BUILD_ROOT }}
+        env:
+          BUILD_EVENT: ${{ github.event_name }}
+          BUILD_REF: ${{ github.ref }}
+          BUILD_RUNNER: ${{ matrix.runner }}
         run: |
           /usr/bin/ditto -c -k --norsrc --noextattr --noqtn --keepParent SwiftPods SwiftPods.zip
           /usr/bin/shasum -a 256 SwiftPods.zip > SwiftPods.zip.sha256
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          fields = Path("SwiftPods.zip.sha256").read_text().split()
+          if len(fields) != 2 or fields[1] != "SwiftPods.zip":
+              raise RuntimeError("Invalid archive checksum record")
+          provenance = {
+              "archive_sha256": fields[0],
+              "event": os.environ["BUILD_EVENT"],
+              "ref": os.environ["BUILD_REF"],
+              "runner": os.environ["BUILD_RUNNER"],
+              "schema": 1,
+              "source_revision": os.environ["SWIFTPODS_SOURCE_COMMIT"],
+          }
+          Path("SwiftPods.provenance.json").write_text(
+              json.dumps(provenance, separators=(",", ":"), sort_keys=True) + "\n"
+          )
+          PY
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: swiftpods-${{ matrix.runner }}
           path: |
             ${{ env.SWIFTPODS_BUILD_ROOT }}/SwiftPods.zip
             ${{ env.SWIFTPODS_BUILD_ROOT }}/SwiftPods.zip.sha256
+            ${{ env.SWIFTPODS_BUILD_ROOT }}/SwiftPods.provenance.json
           if-no-files-found: error
       - name: Remove temporary build files
         if: always()
         run: |
           if [[ -n "${SWIFTPODS_BUILD_ROOT:-}" ]]; then
+            parent="$(cd -- "$(dirname -- "$SWIFTPODS_BUILD_ROOT")" && pwd -P)"
+            runner_temp="$(cd -- "$RUNNER_TEMP" && pwd -P)"
+            name="$(basename -- "$SWIFTPODS_BUILD_ROOT")"
+            if [[ "$parent" != "$runner_temp" || ! "$name" =~ ^swiftpods-build\.[A-Za-z0-9]{6}$ || -L "$SWIFTPODS_BUILD_ROOT" ]]; then
+              echo "Refusing unsafe build cleanup: $SWIFTPODS_BUILD_ROOT" >&2
+              exit 1
+            fi
             rm -rf -- "$SWIFTPODS_BUILD_ROOT"
           fi

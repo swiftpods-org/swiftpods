@@ -3,6 +3,20 @@
 This document replaces the 0.1 specification and every earlier architecture
 decision. Where an older document disagrees, this one wins.
 
+## Resolver-owned package metadata
+
+Xcode may create or update top-level `.swiftpm` and `.build` directories in
+generated local Swift packages. These are derived state, not SwiftPods payload.
+After each resolver invocation (including failures), the transaction may advance
+its snapshots only if every managed member and the package root identity,
+permissions and security metadata are unchanged. Derived roots must be real
+directories, never symbolic links. The updated *complete* tree is then durably
+recorded and used for exact commit, rollback and cleanup comparisons. Derived
+state is not excluded from destructive-operation checks; a crash before the new
+snapshot is recorded or a later concurrent edit preserves evidence and fails
+closed. Ordinary validation also permits Xcode's group-writable derived state
+without relaxing ownership or permissions for managed package contents.
+
 ## ADR-010: product thesis
 
 SwiftPods is a declarative dependency manifest for Xcode projects, built on
@@ -36,13 +50,34 @@ reads them from the package's tags; a package is registered once, not per releas
 - `source 'url'` declares catalogs, in lookup order. Without any, SwiftPods uses
   the public catalog `swiftpods-org/swiftpods-catalog`; declared sources replace it unless
   it is listed too, as in CocoaPods.
-- Catalogs are cached. `install` uses the cache; `--update-sources` refreshes it;
-  `source …, revision:` pins a commit. `--deployment` fails when a catalog now
-  resolves a name to a repository the committed `Package.resolved` does not pin.
+- Catalogs are cached as exact-origin bare Git repositories and entries are
+  read directly from committed blobs. No checkout means hooks, smudge filters,
+  untracked files and working-tree symlinks cannot change an entry. An explicit
+  `source …, revision:` uses a complete 40- or 64-character commit object ID;
+  an existing `SwiftPods.lock` pins an unpinned catalog during ordinary installs;
+  `install --update-sources` explicitly refreshes it and writes the reviewed result.
+  Fetches retain a pack under a kernel-enforced 512 MiB per-file limit; a
+  bounded post-fetch scan also rejects excessive aggregate bytes, objects or entries
+  before the staging repository becomes durable cache.
+- A catalog-backed lookup writes `SwiftPods.lock`: the exact commit of every
+  catalog consulted (preserving source precedence) and SHA-256 of every raw
+  entry used. Ordinary install and `check` read it before catalog resolution and
+  keep existing revisions; `--update-sources` explicitly resolves newer metadata
+  without using the current lock. Check leaves it unchanged, and install updates it.
+  Keeping the file in version control
+  is optional; do it when clean checkouts must reproduce the same metadata.
+  Deployment requires the matching file to be present (not necessarily committed),
+  requires complete evidence, rejects entry drift and never writes the lock. A Podfile
+  whose packages and binaries all have explicit locations does not create or
+  require this lock; `Package.resolved` remains its only dependency lock.
 - An entry may also list releases of a prebuilt SDK, each an archive URL with
   its SHA-256, plus how to link it. A Podfile then writes
   `binary 'HyprMX', '6.4.2'`. One name can have both a package and binary
-  releases, when only older versions are archives.
+  releases, when only older versions are archives. Binary cache transactions live
+  in a versioned private subdirectory of the configured cache. SwiftPods does not
+  mutate or delete the layout used by an older executable during a rolling upgrade;
+  the first install with a new cache version must run online to warm that namespace,
+  while the old namespace can be removed later when no older SwiftPods process uses it.
 - The public catalog accepts entries by reviewed pull request, checked by
   `swiftpods catalog lint`. Whoever controls a catalog controls where names
   point, so redirects are reviewed like new entries.
@@ -56,8 +91,13 @@ reads them from the package's tags; a package is registered once, not per releas
 3. Share declarations between projects (`include`) and targets (`group`, target
    nesting, `abstract_target`).
 4. Declare build settings and script phases per target.
-5. Reproduce the integration in CI: `install --deployment` requires a committed
-   `Package.resolved` that satisfies every declared requirement.
+5. Reproduce the integration in CI: `install --deployment` requires a present
+   `Package.resolved` that satisfies every declared requirement and, only when
+   catalog entries are used, a matching `SwiftPods.lock`. The command verifies
+   contents, not whether either file is committed; version-control them only
+   when a clean checkout must be reproducible. Xcode then
+   validates the complete transitive graph with automatic resolution and
+   package updates disabled; changing `Package.resolved` is an error.
 6. Migrate: `deintegrate --cocoapods` removes a CocoaPods or SwiftPods 0.1
    integration without CocoaPods or Ruby, and `install --adopt` takes over package
    references another tool added.
@@ -78,7 +118,7 @@ Podfile ─► Manifest (parse, include, evaluate) ─► Plan ─► Apply
 | --- | --- |
 | `SwiftPodsManifest` | Podfile syntax, `include`, groups, inheritance, requirements. Pure; no IO except reading included files through an injected reader. |
 | `SwiftPodsXcode` | Reading and writing `project.pbxproj`, typed values, deterministic object identifiers. |
-| `SwiftPodsKit` | Integration plan, binary packages, `Package.resolved` checks, Xcode invocations. |
+| `SwiftPodsKit` | Integration plan, binary packages, `Package.resolved` and `SwiftPods.lock` checks, Xcode invocations. |
 | `swiftpods` | Command line. |
 
 **Ownership without a receipt.** Every object SwiftPods adds to a project has

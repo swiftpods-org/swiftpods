@@ -1,34 +1,340 @@
+import Darwin
 import Foundation
 
 /// Reads a Podfile and the files it includes into a checked `Manifest`.
 public struct ManifestReader: Sendable {
-    private let read: @Sendable (String) throws -> String
+    private static let maximumFileBytes = 8 * 1_024 * 1_024
+    private static let maximumTotalBytes = 16 * 1_024 * 1_024
+    private static let maximumIncludeDepth = 64
+    private static let maximumManifestFiles = 256
+
+    fileprivate struct Snapshot: Sendable {
+        let text: String
+        /// Stable path spelling used in diagnostics and generated freshness files.
+        let path: String
+        /// Physical identity derived by the same resolution that selected the bytes.
+        let identity: String
+        /// Keeps the selected inode alive until the complete include graph has been evaluated.
+        let verification: SnapshotVerification?
+    }
+
+    fileprivate final class SnapshotVerification: @unchecked Sendable {
+        private let descriptor: Int32
+        private let requestedPath: String
+        private let identity: PathIdentity
+
+        init(descriptor: Int32, requestedPath: String, identity: PathIdentity) {
+            self.descriptor = descriptor
+            self.requestedPath = requestedPath
+            self.identity = identity
+        }
+
+        deinit { close(descriptor) }
+
+        func verify() throws {
+            var opened = stat()
+            guard fstat(descriptor, &opened) == 0, PathIdentity(opened) == identity else {
+                throw SnapshotError.pathChanged
+            }
+            var linked = stat()
+            guard requestedPath.withCString({ lstat($0, &linked) }) == 0,
+                PathIdentity(linked) == identity
+            else { throw SnapshotError.pathChanged }
+        }
+    }
+
+    fileprivate enum SnapshotError: LocalizedError {
+        case symbolicLink
+        case nonRegular
+        case tooLarge
+        case pathChanged
+        case unsafeCanonicalPath
+
+        var errorDescription: String? {
+            switch self {
+            case .symbolicLink: "Refusing a symbolic link manifest file"
+            case .nonRegular: "Refusing a non-regular manifest file"
+            case .tooLarge: "Manifest file is too large"
+            case .pathChanged: "Manifest path changed while it was being read"
+            case .unsafeCanonicalPath: "A canonical manifest path cannot contain control characters or backslashes"
+            }
+        }
+    }
+
+    private let read: @Sendable (String) throws -> Snapshot
     private let catalog: (any PackageCatalog)?
 
-    /// `catalog` resolves packages the Podfile names without a location; without it they are errors.
+    /// Reads manifests through a descriptor-anchored component walk. Symlink aliases are resolved once, then every
+    /// directory edge is kept open and checked again after the read so an ancestor A -> B -> A swap cannot attribute
+    /// B's bytes to A's canonical path.
+    public init(catalog: (any PackageCatalog)? = nil) {
+        read = { try Self.secureSnapshot($0) }
+        self.catalog = catalog
+    }
+
+    /// Test seam for deterministic filesystem-race coverage. Production callers use `init(catalog:)` above.
+    init(
+        catalog: (any PackageCatalog)? = nil,
+        beforeAncestorVerification: @escaping @Sendable () throws -> Void
+    ) {
+        read = { try Self.secureSnapshot($0, beforeAncestorVerification: beforeAncestorVerification) }
+        self.catalog = catalog
+    }
+
+    /// Injects a reader for tests and virtual filesystems. The injected reader is a trusted boundary and is responsible
+    /// for providing stable bytes; filesystem callers should use `init(catalog:)` above.
     public init(
-        read: @escaping @Sendable (String) throws -> String = { try String(contentsOfFile: $0, encoding: .utf8) },
+        read: @escaping @Sendable (String) throws -> String,
         catalog: (any PackageCatalog)? = nil
     ) {
-        self.read = read
+        self.read = { path in
+            let before = physicalManifestPath(path) ?? canonicalManifestPath(path)
+            let display = standardizedManifestPath(path)
+            let text = try read(path)
+            guard (physicalManifestPath(path) ?? canonicalManifestPath(path)) == before else {
+                throw SnapshotError.pathChanged
+            }
+            return Snapshot(text: text, path: display, identity: before, verification: nil)
+        }
         self.catalog = catalog
     }
 
     public func load(_ path: String) throws(ManifestError) -> Manifest {
-        let file = URL(fileURLWithPath: path).standardizedFileURL.path
-        let text: String
-        do { text = try read(file) } catch {
+        let file = standardizedManifestPath(path)
+        guard isSafeManifestPath(file) else {
+            throw ManifestError("A manifest path cannot contain control characters or backslashes", at: nil)
+        }
+        let snapshot: Snapshot
+        do { snapshot = try read(file) } catch {
             throw ManifestError("Cannot read \(file): \(error.localizedDescription)", at: nil)
         }
-        return try evaluate(text, file: file)
+        guard isSafeManifestPath(snapshot.path), isSafeManifestPath(snapshot.identity) else {
+            throw ManifestError("A canonical manifest path cannot contain control characters or backslashes", at: nil)
+        }
+        return try evaluate(
+            snapshot.text, file: snapshot.path, identity: snapshot.identity,
+            verification: snapshot.verification)
     }
 
     /// Evaluates Podfile text; includes resolve against the directory of `file`.
     public func evaluate(_ text: String, file: String) throws(ManifestError) -> Manifest {
-        var evaluator = Evaluator(read: read, catalog: catalog, file: file)
-        try evaluator.readRoot(try Parser.statements(text, file: file))
+        let file = canonicalManifestPath(file)
+        return try evaluate(text, file: file, identity: file, verification: nil)
+    }
+
+    private func evaluate(
+        _ text: String, file: String, identity: String, verification: SnapshotVerification?
+    ) throws(ManifestError) -> Manifest {
+        guard isSafeManifestPath(file), isSafeManifestPath(identity) else {
+            throw ManifestError("A canonical manifest path cannot contain control characters or backslashes", at: nil)
+        }
+        guard text.utf8.count <= Self.maximumFileBytes else {
+            throw ManifestError("Podfile exceeds the \(Self.maximumFileBytes / 1_024 / 1_024) MiB limit", at: nil)
+        }
+        let parserBudget = Parser.Budget()
+        let rootStatements = try Parser.statements(text, file: file, budget: parserBudget)
+        var evaluator = Evaluator(
+            read: read, catalog: catalog, file: file, rootIdentity: identity, rootVerification: verification,
+            rootContents: Data(text.utf8), bytesRead: text.utf8.count,
+            maximumFileBytes: Self.maximumFileBytes, maximumTotalBytes: Self.maximumTotalBytes,
+            maximumIncludeDepth: Self.maximumIncludeDepth, maximumManifestFiles: Self.maximumManifestFiles,
+            parserBudget: parserBudget)
+        try evaluator.readRoot(rootStatements)
         return try evaluator.manifest()
     }
+
+    fileprivate struct PathIdentity: Equatable {
+        let device: UInt64
+        let inode: UInt64
+        let mode: UInt32
+        let links: UInt64
+        let size: Int64
+        let modifiedSeconds: Int64
+        let modifiedNanoseconds: Int64
+        let changedSeconds: Int64
+        let changedNanoseconds: Int64
+
+        init(_ status: stat) {
+            device = UInt64(status.st_dev)
+            inode = UInt64(status.st_ino)
+            mode = UInt32(status.st_mode)
+            links = UInt64(status.st_nlink)
+            size = status.st_size
+            modifiedSeconds = Int64(status.st_mtimespec.tv_sec)
+            modifiedNanoseconds = Int64(status.st_mtimespec.tv_nsec)
+            changedSeconds = Int64(status.st_ctimespec.tv_sec)
+            changedNanoseconds = Int64(status.st_ctimespec.tv_nsec)
+        }
+    }
+
+    /// A directory's contents may legitimately change while a manifest is read. Only the stable object identity and
+    /// file type are relevant when proving that an opened descriptor is still bound through the same parent edge.
+    private struct DirectoryIdentity: Equatable {
+        let device: UInt64
+        let inode: UInt64
+        let type: UInt32
+
+        init(_ status: stat) {
+            device = UInt64(status.st_dev)
+            inode = UInt64(status.st_ino)
+            type = UInt32(status.st_mode & S_IFMT)
+        }
+    }
+
+    private static func secureSnapshot(
+        _ requested: String, beforeAncestorVerification: (@Sendable () throws -> Void)? = nil
+    ) throws -> Snapshot {
+        var requestedInitial = stat()
+        guard requested.withCString({ lstat($0, &requestedInitial) }) == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        if requestedInitial.st_mode & S_IFMT == S_IFLNK { throw SnapshotError.symbolicLink }
+        guard requestedInitial.st_mode & S_IFMT == S_IFREG else {
+            throw SnapshotError.nonRegular
+        }
+        let requestedIdentity = PathIdentity(requestedInitial)
+        guard let pointer = requested.withCString({ realpath($0, nil) }) else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        defer { free(pointer) }
+        // Walk the physical path selected by this exact realpath call. Keep the caller's lexical spelling separately
+        // for diagnostics and freshness files; physical identity, rather than a second resolution, drives cycles.
+        let physical = String(cString: pointer)
+        let display = standardizedManifestPath(requested)
+        guard isSafeManifestPath(physical), physical.hasPrefix("/"), isSafeManifestPath(display) else {
+            throw SnapshotError.unsafeCanonicalPath
+        }
+        let components = URL(fileURLWithPath: physical).pathComponents.dropFirst()
+        guard let fileName = components.last, !fileName.isEmpty else {
+            throw CocoaError(.fileReadUnsupportedScheme)
+        }
+
+        let root = open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NONBLOCK)
+        guard root >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        var descriptors = [root]
+        var identities: [DirectoryIdentity] = []
+        defer { for descriptor in descriptors.reversed() { close(descriptor) } }
+        var rootStatus = stat()
+        guard fstat(root, &rootStatus) == 0 else { throw CocoaError(.fileReadUnknown) }
+        identities.append(DirectoryIdentity(rootStatus))
+
+        for component in components.dropLast() {
+            let descriptor = component.withCString {
+                openat(descriptors.last!, $0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
+            }
+            guard descriptor >= 0 else {
+                let code = errno
+                throw NSError(
+                    domain: NSPOSIXErrorDomain, code: Int(code),
+                    userInfo: [NSLocalizedDescriptionKey: "Cannot securely open directory component \(component): "
+                        + String(cString: strerror(code))])
+            }
+            var status = stat()
+            guard fstat(descriptor, &status) == 0, status.st_mode & S_IFMT == S_IFDIR else {
+                close(descriptor)
+                throw CocoaError(.fileReadUnsupportedScheme)
+            }
+            descriptors.append(descriptor)
+            identities.append(DirectoryIdentity(status))
+        }
+
+        let descriptor = fileName.withCString {
+            openat(descriptors.last!, $0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
+        }
+        guard descriptor >= 0 else {
+            if errno == ELOOP { throw CocoaError(.fileReadUnsupportedScheme) }
+            let code = errno
+            throw NSError(
+                domain: NSPOSIXErrorDomain, code: Int(code),
+                userInfo: [NSLocalizedDescriptionKey: "Cannot securely open manifest file \(fileName): "
+                    + String(cString: strerror(code))])
+        }
+        descriptors.append(descriptor)
+        var initial = stat()
+        guard fstat(descriptor, &initial) == 0, initial.st_mode & S_IFMT == S_IFREG else {
+            throw CocoaError(.fileReadUnsupportedScheme)
+        }
+        guard initial.st_size >= 0, initial.st_size <= maximumFileBytes else {
+            throw SnapshotError.tooLarge
+        }
+        let initialIdentity = PathIdentity(initial)
+        guard initialIdentity == requestedIdentity else { throw SnapshotError.pathChanged }
+        let reader = fcntl(descriptor, F_DUPFD_CLOEXEC, 0)
+        guard reader >= 0 else { throw CocoaError(.fileReadUnknown) }
+        let handle = FileHandle(fileDescriptor: reader, closeOnDealloc: true)
+        defer { try? handle.close() }
+        var data = Data()
+        while let chunk = try handle.read(upToCount: min(1 << 20, maximumFileBytes + 1 - data.count)), !chunk.isEmpty {
+            data.append(chunk)
+            guard data.count <= maximumFileBytes else { throw SnapshotError.tooLarge }
+        }
+        var final = stat()
+        guard fstat(descriptor, &final) == 0, PathIdentity(final) == initialIdentity,
+            data.count == Int(initial.st_size)
+        else { throw SnapshotError.pathChanged }
+        try beforeAncestorVerification?()
+        for index in identities.indices {
+            var opened = stat()
+            guard fstat(descriptors[index], &opened) == 0, DirectoryIdentity(opened) == identities[index] else {
+                throw SnapshotError.pathChanged
+            }
+            if index + 1 < identities.count {
+                var linked = stat()
+                let component = components[components.index(components.startIndex, offsetBy: index)]
+                guard component.withCString({ fstatat(descriptors[index], $0, &linked, AT_SYMLINK_NOFOLLOW) }) == 0,
+                    DirectoryIdentity(linked) == identities[index + 1]
+                else { throw SnapshotError.pathChanged }
+            }
+        }
+        var linkedFile = stat()
+        guard fileName.withCString({ fstatat(descriptors[descriptors.count - 2], $0, &linkedFile, AT_SYMLINK_NOFOLLOW) }) == 0,
+            PathIdentity(linkedFile) == initialIdentity
+        else { throw SnapshotError.pathChanged }
+        var requestedFinal = stat()
+        guard requested.withCString({ lstat($0, &requestedFinal) }) == 0,
+            PathIdentity(requestedFinal) == requestedIdentity
+        else { throw SnapshotError.pathChanged }
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw CocoaError(.fileReadInapplicableStringEncoding)
+        }
+        let retained = fcntl(descriptor, F_DUPFD_CLOEXEC, 0)
+        guard retained >= 0 else { throw CocoaError(.fileReadUnknown) }
+        return Snapshot(
+            text: text, path: display, identity: physical,
+            verification: SnapshotVerification(
+                descriptor: retained, requestedPath: display, identity: initialIdentity))
+    }
+}
+
+private func canonicalManifestPath(_ path: String) -> String {
+    URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path
+}
+
+private func physicalManifestPath(_ path: String) -> String? {
+    guard let pointer = path.withCString({ realpath($0, nil) }) else { return nil }
+    defer { free(pointer) }
+    return String(cString: pointer)
+}
+
+private func standardizedManifestPath(_ path: String) -> String {
+    URL(fileURLWithPath: path).standardizedFileURL.path
+}
+
+private func isSafeManifestPath(_ path: String) -> Bool {
+    PackageLocation.isSafePathText(path) && !path.contains("\\")
+}
+
+private func sourceIdentity(_ source: String) -> String {
+    if PackageLocation.isSafeRemote(source) { return PackageLocation.fetchIdentity(source) }
+    let url: URL
+    if source.hasPrefix("/") {
+        url = URL(fileURLWithPath: source)
+    } else if let parsed = URL(string: source), parsed.isFileURL {
+        url = parsed
+    } else {
+        return source.precomposedStringWithCanonicalMapping
+    }
+    return url.standardizedFileURL.resolvingSymlinksInPath().path.precomposedStringWithCanonicalMapping
 }
 
 private enum Inheritance: String {
@@ -53,8 +359,9 @@ private struct Declarations {
 
     /// A `with :parameter do … end` block of a group.
     struct Conditional {
-        let parameter: String
+        let parameterIndex: Int
         let declarations: Declarations
+        let location: SourceLocation
     }
 
     var packages: [PackageUse] = []
@@ -78,6 +385,8 @@ private struct Expanded {
         settings += other.settings
         scripts += other.scripts
     }
+
+    var itemCount: Int { packages.count + binaries.count + settings.count + scripts.count }
 }
 
 private struct TargetNode {
@@ -95,11 +404,37 @@ private struct Group {
     let location: SourceLocation
     /// Parameters with their defaults, in declaration order.
     let parameters: [(name: String, value: Bool)]
+    let parameterIndices: [String: Int]
     let declarations: Declarations
 }
 
+private struct ExpansionKey: Hashable {
+    let group: String
+    let values: [Bool]
+}
+
+private final class CatalogLookupCache {
+    enum Value {
+        case found(CatalogEntry)
+        case missing
+    }
+
+    var values: [String: Value] = [:]
+    var nameBytes = 0
+}
+
 private struct Evaluator {
-    let read: @Sendable (String) throws -> String
+    private static let maximumGroupExpansionDepth = 128
+    private static let maximumGroupExpansionWork = 100_000
+    private static let maximumGroupParameters = 1_024
+    private static let maximumTargetItemWork = 200_000
+    private static let maximumSources = 32
+    private static let maximumCatalogLookupNames = 256
+    private static let maximumCatalogMetadataBytes = 4_096
+    private static let maximumSourceMetadataBytes = 128 * 1_024
+    private static let maximumCatalogLookupMetadataBytes = 1_024 * 1_024
+
+    let read: @Sendable (String) throws -> ManifestReader.Snapshot
     let catalog: (any PackageCatalog)?
     let file: String
     var sources: [Source] = []
@@ -108,14 +443,38 @@ private struct Evaluator {
     var root = Declarations()
     var groups: [String: Group] = [:]
     var targets: [TargetNode] = []
-    var included: [String] = []
-    var expanded: [String: Expanded] = [:]
+    var included: Set<String> = []
+    var expanded: [ExpansionKey: Expanded] = [:]
+    let catalogLookups = CatalogLookupCache()
+    var files: [ManifestFile]
+    var snapshotVerifications: [ManifestReader.SnapshotVerification]
+    var bytesRead: Int
+    var groupExpansionWork = 0
+    let maximumFileBytes: Int
+    let maximumTotalBytes: Int
+    let maximumIncludeDepth: Int
+    let maximumManifestFiles: Int
+    let parserBudget: Parser.Budget
 
-    init(read: @escaping @Sendable (String) throws -> String, catalog: (any PackageCatalog)?, file: String) {
+    init(
+        read: @escaping @Sendable (String) throws -> ManifestReader.Snapshot, catalog: (any PackageCatalog)?, file: String,
+        rootIdentity: String, rootVerification: ManifestReader.SnapshotVerification?,
+        rootContents: Data, bytesRead: Int,
+        maximumFileBytes: Int, maximumTotalBytes: Int, maximumIncludeDepth: Int,
+        maximumManifestFiles: Int, parserBudget: Parser.Budget
+    ) {
         self.read = read
         self.catalog = catalog
         self.file = file
-        included = [file]
+        files = [ManifestFile(path: file, contents: rootContents)]
+        snapshotVerifications = rootVerification.map { [$0] } ?? []
+        self.bytesRead = bytesRead
+        self.maximumFileBytes = maximumFileBytes
+        self.maximumTotalBytes = maximumTotalBytes
+        self.maximumIncludeDepth = maximumIncludeDepth
+        self.maximumManifestFiles = maximumManifestFiles
+        self.parserBudget = parserBudget
+        included = [rootIdentity]
     }
 
     private static let unsupported: [String: (String, String)] = [
@@ -171,12 +530,27 @@ private struct Evaluator {
 
     mutating func readRoot(_ statements: [Statement]) throws(ManifestError) {
         // Sources come first: packages anywhere in the Podfile or its includes may be looked up in them.
+        var sourceLocations: [String: SourceLocation] = [:]
+        var sourceBytes = 0
         for statement in statements where statement.name == "source" {
-            let value = try source(statement)
-            if let previous = sources.first(where: { PackageLocation.canonical($0.url) == PackageLocation.canonical(value.url) }) {
-                throw ManifestError("Source \(value.url) is declared twice", at: statement.location, related: previous.declaredAt)
+            guard sources.count < Self.maximumSources else {
+                throw ManifestError(
+                    "A Podfile cannot declare more than \(Self.maximumSources) catalog sources", at: statement.location)
             }
+            let value = try source(statement)
+            let bytes = value.url.utf8.count
+            guard bytes <= Self.maximumSourceMetadataBytes - sourceBytes else {
+                throw ManifestError(
+                    "Catalog source URLs exceed the \(Self.maximumSourceMetadataBytes)-byte aggregate limit",
+                    at: statement.location)
+            }
+            let identity = sourceIdentity(value.url)
+            if let previous = sourceLocations[identity] {
+                throw ManifestError("Source \(value.url) is declared twice", at: statement.location, related: previous)
+            }
+            sourceLocations[identity] = value.declaredAt
             sources.append(value)
+            sourceBytes += bytes
         }
         if sources.isEmpty { sources = [Source(url: Source.publicCatalog)] }
         for statement in statements where statement.name != "source" {
@@ -186,7 +560,7 @@ private struct Evaluator {
                 let value = try project(statement)
                 if let previous = project { throw ManifestError("`project` is declared twice", at: statement.location, related: previous.1) }
                 project = (value, statement.location)
-            case "include": try include(statement, from: file)
+            case "include": try include(statement, from: file, depth: 1)
             case "group": try group(statement)
             case "target", "abstract_target": targets.append(try target(statement))
             default:
@@ -201,26 +575,62 @@ private struct Evaluator {
         platform = (value, statement.location)
     }
 
-    private mutating func include(_ statement: Statement, from including: String) throws(ManifestError) {
+    private mutating func include(_ statement: Statement, from including: String, depth: Int) throws(ManifestError) {
         let arguments = try Arguments(statement)
         try arguments.requireNoBlock()
         try arguments.finish(allowed: [])
         try arguments.positionalCount(1...1, usage: "include 'path.podfile'")
         let relative = try Convert.string(arguments.positional[0], "The included path")
+        guard PackageLocation.isSafeRelativePath(relative, allowingParentComponents: true) else {
+            throw ManifestError(
+                "An included path must be relative and cannot contain control characters, backslashes, empty components or `.` components",
+                at: statement.location)
+        }
+        guard depth <= maximumIncludeDepth else {
+            throw ManifestError("Podfile includes are nested more than \(maximumIncludeDepth) levels", at: statement.location)
+        }
         let directory = URL(fileURLWithPath: including).deletingLastPathComponent()
-        let path = URL(fileURLWithPath: relative, relativeTo: directory).standardizedFileURL.path
-        if included.contains(path) {
+        let requestedPath = standardizedManifestPath(URL(fileURLWithPath: relative, relativeTo: directory).path)
+        // Resolve once before opening so a symlink alias of a file already on the include stack is reported as the
+        // cycle it is. The descriptor-backed reader and the post-read check below still validate the actual snapshot.
+        if let preliminaryIdentity = physicalManifestPath(requestedPath), included.contains(preliminaryIdentity) {
             throw ManifestError("\(relative) is included more than once or includes itself", at: statement.location)
         }
-        included.append(path)
-        let text: String
-        do { text = try read(path) } catch {
-            throw ManifestError("Cannot read included file \(path): \(error.localizedDescription)", at: statement.location)
+        let snapshot: ManifestReader.Snapshot
+        do {
+            snapshot = try read(requestedPath)
+        } catch ManifestReader.SnapshotError.pathChanged {
+            throw ManifestError("Included path changed while it was being read", at: statement.location)
+        } catch {
+            throw ManifestError("Cannot read included file \(requestedPath): \(error.localizedDescription)", at: statement.location)
         }
-        for nested in try Parser.statements(text, file: path) {
+        let path = snapshot.path
+        guard isSafeManifestPath(path), isSafeManifestPath(snapshot.identity) else {
+            throw ManifestError(
+                "A canonical included path cannot contain control characters or backslashes", at: statement.location)
+        }
+        if included.contains(snapshot.identity) {
+            throw ManifestError("\(relative) is included more than once or includes itself", at: statement.location)
+        }
+        guard included.count < maximumManifestFiles else {
+            throw ManifestError(
+                "Podfile and its includes exceed the \(maximumManifestFiles)-file limit", at: statement.location)
+        }
+        included.insert(snapshot.identity)
+        if let verification = snapshot.verification { snapshotVerifications.append(verification) }
+        let text = snapshot.text
+        guard text.utf8.count <= maximumFileBytes else {
+            throw ManifestError("Included file \(path) exceeds the \(maximumFileBytes / 1_024 / 1_024) MiB limit", at: statement.location)
+        }
+        guard bytesRead <= maximumTotalBytes - text.utf8.count else {
+            throw ManifestError("Podfile includes exceed the \(maximumTotalBytes / 1_024 / 1_024) MiB total limit", at: statement.location)
+        }
+        bytesRead += text.utf8.count
+        files.append(ManifestFile(path: path, contents: Data(text.utf8)))
+        for nested in try Parser.statements(text, file: path, budget: parserBudget) {
             switch nested.name {
             case "platform": try declarePlatform(nested)
-            case "include": try include(nested, from: path)
+            case "include": try include(nested, from: path, depth: depth + 1)
             case "group": try group(nested)
             default:
                 var error = misplaced(nested, .included)
@@ -238,8 +648,27 @@ private struct Evaluator {
         var arguments = try Arguments(statement)
         try arguments.positionalCount(1...1, usage: "group :name, parameter: true do … end")
         let name = try Convert.nonEmpty(try Convert.name(arguments.positional[0], "A group name"), "A group name", at: statement.location)
-        let parameters = try arguments.takeAll().map { (option) throws(ManifestError) in
-            (option.key, try Convert.bool(option.node, "The default of `\(option.key)`"))
+        guard PackageLocation.isSafeMetadataText(name) else {
+            throw ManifestError("A group name cannot contain control characters or exceed 4096 bytes", at: statement.location)
+        }
+        let options = arguments.takeAll()
+        guard options.count <= Self.maximumGroupParameters else {
+            throw ManifestError(
+                "A group cannot declare more than \(Self.maximumGroupParameters) parameters", at: statement.location)
+        }
+        var parameters: [(name: String, value: Bool)] = []
+        var parameterIndices: [String: Int] = [:]
+        parameters.reserveCapacity(options.count)
+        parameterIndices.reserveCapacity(options.count)
+        for option in options {
+            guard PackageLocation.isSafeMetadataText(option.key) else {
+                throw ManifestError(
+                    "A group parameter name cannot contain control characters or exceed 4096 bytes",
+                    at: option.keyLocation)
+            }
+            parameterIndices[option.key] = parameters.count
+            parameters.append((
+                name: option.key, value: try Convert.bool(option.node, "The default of `\(option.key)`")))
         }
         guard let block = statement.block else {
             throw ManifestError("`group` needs a `do … end` block", at: statement.location)
@@ -247,11 +676,16 @@ private struct Evaluator {
         if let previous = groups[name] {
             throw ManifestError("Group `\(name)` is declared twice", at: statement.location, related: previous.location)
         }
-        let declarations = try groupDeclarations(block, group: name, parameters: parameters.map(\.0))
-        groups[name] = Group(location: statement.location, parameters: parameters, declarations: declarations)
+        let declarations = try groupDeclarations(block, group: name, parameterIndices: parameterIndices)
+        let value = Group(
+            location: statement.location, parameters: parameters, parameterIndices: parameterIndices,
+            declarations: declarations)
+        groups[name] = value
     }
 
-    private func groupDeclarations(_ block: [Statement], group: String, parameters: [String]) throws(ManifestError) -> Declarations {
+    private func groupDeclarations(
+        _ block: [Statement], group: String, parameterIndices: [String: Int]
+    ) throws(ManifestError) -> Declarations {
         var declarations = Declarations()
         for nested in block {
             if nested.name == "with" {
@@ -259,14 +693,21 @@ private struct Evaluator {
                 try arguments.finish(allowed: [])
                 try arguments.positionalCount(1...1, usage: "with :parameter do … end")
                 let parameter = try Convert.name(arguments.positional[0], "A parameter name")
-                guard parameters.contains(parameter) else {
+                guard PackageLocation.isSafeMetadataText(parameter) else {
+                    throw ManifestError(
+                        "A group parameter name cannot contain control characters or exceed 4096 bytes",
+                        at: arguments.positional[0].location)
+                }
+                guard let parameterIndex = parameterIndices[parameter] else {
                     throw ManifestError(
                         "Group `\(group)` has no parameter `\(parameter)`", at: nested.location,
                         hint: "Declare it with a default: group :\(group), \(parameter): true do … end")
                 }
                 guard let block = nested.block else { throw ManifestError("`with` needs a `do … end` block", at: nested.location) }
                 declarations.conditionals.append(.init(
-                    parameter: parameter, declarations: try groupDeclarations(block, group: group, parameters: parameters)))
+                    parameterIndex: parameterIndex,
+                    declarations: try groupDeclarations(block, group: group, parameterIndices: parameterIndices),
+                    location: nested.location))
             } else {
                 guard try declaration(nested, into: &declarations) else { throw misplaced(nested, .group) }
             }
@@ -280,6 +721,9 @@ private struct Evaluator {
         try arguments.finish(allowed: [])
         try arguments.positionalCount(1...1, usage: "\(statement.name) 'Name' do … end")
         let name = try Convert.nonEmpty(try Convert.string(arguments.positional[0], "A target name"), "A target name", at: statement.location)
+        guard PackageLocation.isSafePathText(name) else {
+            throw ManifestError("A target name cannot contain control characters or exceed 4096 bytes", at: statement.location)
+        }
         var node = TargetNode(name: name, abstract: abstract, location: statement.location)
         guard let block = statement.block else {
             if abstract { throw ManifestError("`abstract_target` needs a `do … end` block", at: statement.location) }
@@ -325,14 +769,27 @@ private struct Evaluator {
             guard !arguments.positional.isEmpty else {
                 throw ManifestError("Usage: use :group, ...", at: statement.location)
             }
-            let values = try arguments.takeAll().map { (option) throws(ManifestError) in
-                (option.key, try Convert.bool(option.node, "`\(option.key)`"), option.keyLocation)
+            let values: [(name: String, value: Bool, location: SourceLocation)] = try arguments.takeAll().map {
+                (option) throws(ManifestError) in
+                guard PackageLocation.isSafeMetadataText(option.key) else {
+                    throw ManifestError(
+                        "A group parameter name cannot contain control characters or exceed 4096 bytes",
+                        at: option.keyLocation)
+                }
+                return (
+                    name: option.key, value: try Convert.bool(option.node, "`\(option.key)`"),
+                    location: option.keyLocation)
             }
             if let first = values.first, arguments.positional.count > 1 {
                 throw ManifestError("Parameters apply to one group", at: first.2, hint: "Write one `use` per group: use :group, \(first.0): …")
             }
             for node in arguments.positional {
-                declarations.uses.append(.init(name: try Convert.name(node, "A group name"), arguments: values, location: node.location))
+                let name = try Convert.name(node, "A group name")
+                guard PackageLocation.isSafeMetadataText(name) else {
+                    throw ManifestError(
+                        "A group name cannot contain control characters or exceed 4096 bytes", at: node.location)
+                }
+                declarations.uses.append(.init(name: name, arguments: values, location: node.location))
             }
         default: return false
         }
@@ -347,27 +804,58 @@ private struct Evaluator {
         try arguments.positionalCount(1...1, usage: "source 'https://github.com/…/catalog.git'")
         let node = arguments.positional[0]
         let url = try Convert.string(node, "The source")
-        guard PackageLocation.isRemote(url) || url.hasPrefix("file://") || url.hasPrefix("/") else {
-            throw ManifestError("A source is the URL of a catalog repository", at: node.location)
+        guard PackageLocation.isSafeMetadataText(url, maximumBytes: Self.maximumCatalogMetadataBytes) else {
+            throw ManifestError(
+                "A source cannot be empty, contain control characters or exceed \(Self.maximumCatalogMetadataBytes) bytes",
+                at: node.location)
+        }
+        guard PackageLocation.isSafeCatalogSource(url) else {
+            throw ManifestError("A source must be an HTTPS/SSH repository URL, file URL or absolute local path", at: node.location)
         }
         let revision = try arguments.take("revision").map { (node) throws(ManifestError) in
-            let text = try Convert.string(node, "`revision`")
-            guard text.range(of: #"\A[0-9a-fA-F]{7,40}\z"#, options: .regularExpression) != nil else {
-                throw ManifestError("`revision` must be a commit hash", at: node.location)
-            }
-            return text.lowercased()
+            try Self.commitRevision(node)
         }
         try arguments.finish(allowed: ["revision"])
         return Source(url: url, revision: revision, declaredAt: statement.location)
     }
 
     private func catalogEntry(_ name: String, at location: SourceLocation) throws(ManifestError) -> CatalogEntry {
-        let names = sources.map(\.url).joined(separator: ", ")
+        guard PackageLocation.isSafeMetadataText(name, maximumBytes: Self.maximumCatalogMetadataBytes) else {
+            throw ManifestError(
+                "A catalog lookup name cannot be empty, contain control characters or exceed \(Self.maximumCatalogMetadataBytes) bytes",
+                at: location)
+        }
+        let key = name.precomposedStringWithCanonicalMapping.lowercased().precomposedStringWithCanonicalMapping
+        guard PackageLocation.isSafeMetadataText(key, maximumBytes: Self.maximumCatalogMetadataBytes) else {
+            throw ManifestError(
+                "A normalized catalog lookup name cannot exceed \(Self.maximumCatalogMetadataBytes) bytes", at: location)
+        }
         guard let catalog else {
             throw ManifestError(
                 "Package `\(name)` has no location", at: location,
                 hint: "Add `git: 'https://…'` or `path: 'Local/Package'`, or write the URL as the first argument")
         }
+        if let cached = catalogLookups.values[key] {
+            switch cached {
+            case .found(let entry): return entry
+            case .missing:
+                let names = sources.map(\.url).joined(separator: ", ")
+                throw ManifestError(
+                    "`\(name)` is not in \(names)", at: location,
+                    hint: "Add `git: 'https://…'` to declare it directly, or add it to the catalog")
+            }
+        }
+        guard catalogLookups.values.count < Self.maximumCatalogLookupNames else {
+            throw ManifestError(
+                "A Podfile cannot look up more than \(Self.maximumCatalogLookupNames) distinct catalog names", at: location)
+        }
+        let keyBytes = key.utf8.count
+        guard keyBytes <= Self.maximumCatalogLookupMetadataBytes - catalogLookups.nameBytes else {
+            throw ManifestError(
+                "Catalog lookup names exceed the \(Self.maximumCatalogLookupMetadataBytes)-byte aggregate limit",
+                at: location)
+        }
+        catalogLookups.nameBytes += keyBytes
         let entry: CatalogEntry?
         do {
             entry = try catalog.entry(named: name, in: sources)
@@ -377,10 +865,19 @@ private struct Evaluator {
             throw ManifestError("Cannot read the package catalog: \(error)", at: location)
         }
         guard let entry else {
+            catalogLookups.values[key] = .missing
+            let names = sources.map(\.url).joined(separator: ", ")
             throw ManifestError(
                 "`\(name)` is not in \(names)", at: location,
                 hint: "Add `git: 'https://…'` to declare it directly, or add it to the catalog")
         }
+        guard PackageLocation.isSafeMetadataText(entry.name) else {
+            throw ManifestError("The catalog returned an invalid package name", at: location)
+        }
+        guard entry.products.allSatisfy({ PackageLocation.isSafeMetadataText($0) }) else {
+            throw ManifestError("The catalog returned an invalid package product name", at: location)
+        }
+        catalogLookups.values[key] = .found(entry)
         return entry
     }
 
@@ -419,6 +916,9 @@ private struct Evaluator {
         try arguments.finish(allowed: [])
         try arguments.positionalCount(1...1, usage: "project 'Path.xcodeproj'")
         var path = try Convert.string(arguments.positional[0], "The project path")
+        guard PackageLocation.isSafeRelativePath(path) else {
+            throw ManifestError("A project path must stay inside the Podfile directory", at: statement.location)
+        }
         if !path.hasSuffix(".xcodeproj") { path += ".xcodeproj" }
         return path
     }
@@ -442,6 +942,14 @@ private struct Evaluator {
 
     private static let requirementKeys = ["exact", "from", "up_to_next_major", "up_to_next_minor", "range", "branch", "revision"]
 
+    private static func commitRevision(_ node: Node) throws(ManifestError) -> String {
+        let text = try Convert.string(node, "`revision`")
+        guard text.range(of: #"\A(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\z"#, options: .regularExpression) != nil else {
+            throw ManifestError("`revision` must be a full 40- or 64-character commit hash", at: node.location)
+        }
+        return text.lowercased()
+    }
+
     private func package(_ statement: Statement) throws(ManifestError) -> Declarations.PackageUse {
         var arguments = try Arguments(statement)
         try arguments.requireNoBlock()
@@ -463,6 +971,8 @@ private struct Evaluator {
             url = firstText
             name = PackageLocation.name(firstText)
             if let gitNode { throw ManifestError("The URL is given twice", at: gitNode.location) }
+        } else if PackageLocation.looksLikeRemote(firstText) {
+            throw ManifestError("A package repository must use a safe HTTPS or SSH URL", at: first.location)
         } else if let gitNode {
             url = try Convert.nonEmpty(try Convert.string(gitNode, "`git`"), "`git`", at: gitNode.location)
         }
@@ -478,6 +988,9 @@ private struct Evaluator {
             catalogEntry = entry
             url = packageURL
             name = entry.name
+        }
+        guard PackageLocation.isSafeMetadataText(name) else {
+            throw ManifestError("A package name cannot be empty, contain control characters or exceed 4096 bytes", at: first.location)
         }
         let packed = catalogEntry?.versionFormat == .packed
         var requirements: [Requirement] = []
@@ -512,10 +1025,16 @@ private struct Evaluator {
                 throw ManifestError("A local package takes no version requirement", at: pathNode.location)
             }
             let path = try Convert.nonEmpty(try Convert.string(pathNode, "`path`"), "`path`", at: pathNode.location)
+            guard PackageLocation.isSafeRelativePath(path, allowingParentComponents: true) else {
+                throw ManifestError("A package path must be relative and cannot contain ambiguous path components", at: pathNode.location)
+            }
             location = .local(path: path)
             identity = PackageLocation.identity(path)
         } else {
             guard let url else { preconditionFailure("set above") }
+            guard PackageLocation.isSafeRemote(url) else {
+                throw ManifestError("A package repository must use a safe HTTPS or SSH URL", at: gitNode?.location ?? first.location)
+            }
             guard requirements.count == 1 else {
                 throw ManifestError(
                     requirements.isEmpty ? "Package `\(name)` needs a version requirement" : "Package `\(name)` has more than one version requirement",
@@ -527,8 +1046,8 @@ private struct Evaluator {
         let products: [String]
         if let node = productsNode {
             products = try Convert.strings(node, "`products`")
-            guard !products.isEmpty, products.allSatisfy({ !$0.isEmpty }) else {
-                throw ManifestError("`products` must name at least one product", at: node.location)
+            guard !products.isEmpty, products.allSatisfy({ PackageLocation.isSafeMetadataText($0) }) else {
+                throw ManifestError("`products` must contain bounded names without control characters", at: node.location)
             }
         } else if let catalogEntry {
             guard !catalogEntry.products.isEmpty else {
@@ -559,13 +1078,20 @@ private struct Evaluator {
         case "exact": return .exact(try version(node))
         case "from", "up_to_next_major": return .upToNextMajor(try version(node))
         case "up_to_next_minor": return .upToNextMinor(try version(node))
-        case "branch": return .branch(try Convert.nonEmpty(try Convert.string(node, "`branch`"), "`branch`", at: node.location))
-        case "revision":
-            let text = try Convert.string(node, "`revision`")
-            guard text.range(of: #"\A[0-9a-fA-F]{7,40}\z"#, options: .regularExpression) != nil else {
-                throw ManifestError("`revision` must be a commit hash", at: node.location)
+        case "branch":
+            let branch = try Convert.nonEmpty(try Convert.string(node, "`branch`"), "`branch`", at: node.location)
+            let components = branch.split(separator: "/", omittingEmptySubsequences: false)
+            guard PackageLocation.isSafeMetadataText(branch), !branch.hasPrefix("-"), branch != "@",
+                !branch.contains(".."), !branch.contains("@{"), !branch.contains("\\"),
+                !branch.unicodeScalars.contains(where: { " ~^:?*[".unicodeScalars.contains($0) }),
+                !branch.hasSuffix("."), components.allSatisfy({
+                    !$0.isEmpty && !$0.hasPrefix(".") && !$0.hasSuffix(".lock")
+                })
+            else {
+                throw ManifestError("`branch` must be a bounded valid Git branch name", at: node.location)
             }
-            return .revision(text.lowercased())
+            return .branch(branch)
+        case "revision": return .revision(try commitRevision(node))
         default:
             guard case .array(let bounds) = node.value, bounds.count == 2 else {
                 throw ManifestError("`range` must be ['lower', 'upper']", at: node.location)
@@ -604,8 +1130,20 @@ private struct Evaluator {
             "url", "sha256", "path", "xcframeworks", "system_frameworks", "libraries", "linker_flags", "dependencies",
             "resources",
         ])
-        if let bundle = resources.first(where: { !$0.hasSuffix(".bundle") }) {
-            throw ManifestError("Resource '\(bundle)' is not a .bundle", at: statement.location, hint: "List the SDK's resource bundles")
+        for (kind, values) in [
+            ("system_frameworks", frameworks), ("libraries", libraries), ("dependencies", dependencies),
+        ] where !values.allSatisfy({ PackageLocation.isSafeMetadataText($0) }) {
+            throw ManifestError("`\(kind)` must contain bounded names without control characters", at: statement.location)
+        }
+        if let bundle = resources.first(where: { !PackageLocation.isSafeArchivePath($0, extension: "bundle") }) {
+            throw ManifestError(
+                "Resource '\(bundle)' is not a safe relative .bundle path", at: statement.location,
+                hint: "List a path inside the SDK archive without traversal, variables or control characters")
+        }
+        if let framework = xcframeworks?.first(where: { !PackageLocation.isSafeArchivePath($0, extension: "xcframework") }) {
+            throw ManifestError(
+                "XCFramework '\(framework)' is not a safe relative .xcframework path", at: statement.location,
+                hint: "List a path inside the SDK archive without traversal, variables or control characters")
         }
         if arguments.positional.count == 2 {
             // A version alone: the catalog supplies the archive and how to link it.
@@ -630,9 +1168,25 @@ private struct Evaluator {
                     "The catalog has no version \(version) of `\(entry.name)`", at: versionNode.location,
                     hint: "Versions: " + sdk.releases.map(\.version).joined(separator: ", "))
             }
+            guard PackageLocation.isSafeHTTPSDownloadURL(release.url) else {
+                throw ManifestError(
+                    "Catalog binary `\(entry.name)` has an unsafe release URL", at: versionNode.location,
+                    hint: "Catalog binary releases must use HTTPS without credentials or fragments")
+            }
+            guard sdk.systemFrameworks.allSatisfy({ PackageLocation.isSafeMetadataText($0) }),
+                sdk.libraries.allSatisfy({ PackageLocation.isSafeMetadataText($0) })
+            else {
+                throw ManifestError("Catalog framework and library names cannot contain control characters", at: statement.location)
+            }
             name = entry.name
             guard name.range(of: #"\A[A-Za-z_][A-Za-z0-9_]*\z"#, options: .regularExpression) != nil else {
                 throw ManifestError("Catalog binary '\(name)' is not a valid binary name", at: statement.location)
+            }
+            if let bundle = sdk.resources.first(where: { !PackageLocation.isSafeArchivePath($0, extension: "bundle") }) {
+                throw ManifestError("Catalog resource '\(bundle)' is not a safe relative .bundle path", at: statement.location)
+            }
+            if let framework = sdk.xcframeworks?.first(where: { !PackageLocation.isSafeArchivePath($0, extension: "xcframework") }) {
+                throw ManifestError("Catalog XCFramework '\(framework)' is not a safe relative .xcframework path", at: statement.location)
             }
             return Binary(
                 name: name, source: .remote(url: release.url, sha256: release.sha256), xcframeworks: sdk.xcframeworks,
@@ -644,7 +1198,11 @@ private struct Evaluator {
             if let other = urlNode ?? shaNode {
                 throw ManifestError("A binary has either `path` or `url` and `sha256`", at: other.location)
             }
-            source = .local(path: try Convert.nonEmpty(try Convert.string(pathNode, "`path`"), "`path`", at: pathNode.location))
+            let path = try Convert.nonEmpty(try Convert.string(pathNode, "`path`"), "`path`", at: pathNode.location)
+            guard PackageLocation.isSafeRelativePath(path) else {
+                throw ManifestError("A binary path must stay inside the Podfile directory", at: pathNode.location)
+            }
+            source = .local(path: path)
         } else {
             guard let urlNode, let shaNode else {
                 throw ManifestError(
@@ -652,8 +1210,10 @@ private struct Evaluator {
                     hint: "Compute the checksum with: shasum -a 256 Archive.zip")
             }
             let url = try Convert.string(urlNode, "`url`")
-            guard url.hasPrefix("https://") || url.hasPrefix("file://") else {
-                throw ManifestError("`url` must use https", at: urlNode.location)
+            guard PackageLocation.isSafeHTTPSDownloadURL(url) || PackageLocation.isSafeLocalFileURL(url) else {
+                throw ManifestError(
+                    "`url` must be a safe HTTPS or local file URL", at: urlNode.location,
+                    hint: "HTTPS URLs may use signed query parameters; file URLs must name an absolute local path")
             }
             let sha = try Convert.string(shaNode, "`sha256`").lowercased()
             guard sha.range(of: #"\A[0-9a-f]{64}\z"#, options: .regularExpression) != nil else {
@@ -670,6 +1230,10 @@ private struct Evaluator {
     }
 
     private func settings(_ statement: Statement) throws(ManifestError) -> [BuildSetting] {
+        func safeText(_ text: String, maximumBytes: Int = 65_536) -> Bool {
+            text.utf8.count <= maximumBytes
+                && !text.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) }
+        }
         var flattened = statement
         if statement.positional.count == 1, case .hash(let pairs) = statement.positional[0].value {
             flattened = Statement(
@@ -681,14 +1245,27 @@ private struct Evaluator {
         if let stray = arguments.positional.first {
             throw ManifestError("Usage: settings 'KEY' => 'value', configurations: ['Debug']", at: stray.location)
         }
-        let configurations = try arguments.take("configurations").map { (node) throws(ManifestError) in try Convert.strings(node, "`configurations`") }
+        let configurations = try arguments.take("configurations").map { (node) throws(ManifestError) in
+            let values = try Convert.strings(node, "`configurations`")
+            guard values.allSatisfy({
+                !$0.isEmpty && safeText($0, maximumBytes: 4_096)
+                    && !$0.contains("[") && !$0.contains("]") && !$0.contains("=") && !$0.contains("\\")
+            }) else {
+                throw ManifestError(
+                    "Configuration names cannot be empty, contain control or selector characters, or exceed 4096 bytes",
+                    at: node.location)
+            }
+            return values
+        }
         try arguments.finish(allowed: ["configurations"])
         guard !arguments.settings.isEmpty else {
             throw ManifestError("`settings` needs at least one 'KEY' => 'value'", at: statement.location)
         }
         var result: [BuildSetting] = []
         for (key, node) in arguments.settings {
-            guard key.range(of: #"\A[A-Za-z_][A-Za-z0-9_]*(\[[^\[\]=]+=[^\[\]]+\])*\z"#, options: .regularExpression) != nil else {
+            guard safeText(key, maximumBytes: 4_096), !key.contains("\\"),
+                key.range(of: #"\A[A-Za-z_][A-Za-z0-9_]*(\[[^\[\]=]+=[^\[\]]+\])*\z"#, options: .regularExpression) != nil
+            else {
                 throw ManifestError("'\(key)' is not a build setting name", at: node.location)
             }
             let value: String
@@ -698,9 +1275,21 @@ private struct Evaluator {
             case .array(let elements):
                 value = try elements.map { (element) throws(ManifestError) in
                     let text = try Convert.string(element, "Setting values")
+                    guard safeText(text) else {
+                        throw ManifestError("Setting values cannot contain control characters or exceed 65536 bytes", at: element.location)
+                    }
+                    guard !text.contains("\"") && !text.contains("\\") else {
+                        throw ManifestError(
+                            "Array setting values cannot contain quotes or backslashes",
+                            at: element.location,
+                            hint: "Use one scalar xcconfig value when explicit quoting or escaping is required")
+                    }
                     return text.contains(" ") ? "\"\(text)\"" : text
                 }.joined(separator: " ")
             default: throw ManifestError("A setting value must be a string, found \(node.kindName)", at: node.location)
+            }
+            guard safeText(value) else {
+                throw ManifestError("A setting value cannot contain control characters or exceed 65536 bytes", at: node.location)
             }
             result.append(BuildSetting(key: key, value: value, configurations: configurations, declaredAt: statement.location))
         }
@@ -712,14 +1301,28 @@ private struct Evaluator {
         try arguments.requireNoBlock()
         try arguments.positionalCount(0...0, usage: "script_phase name: '…', script: '…'")
         func list(_ key: String, _ arguments: inout Arguments) throws(ManifestError) -> [String] {
-            try arguments.take(key).map { (node) throws(ManifestError) in try Convert.strings(node, "`\(key)`") } ?? []
+            guard let node = arguments.take(key) else { return [] }
+            let values = try Convert.strings(node, "`\(key)`")
+            if values.contains(where: { !PackageLocation.isSafePathText($0) }) {
+                throw ManifestError("`\(key)` paths cannot be empty, contain control characters or exceed 4096 bytes", at: node.location)
+            }
+            return values
         }
         guard let nameNode = arguments.take("name"), let scriptNode = arguments.take("script") else {
             throw ManifestError("`script_phase` needs `name` and `script`", at: statement.location)
         }
         let name = try Convert.nonEmpty(try Convert.string(nameNode, "`name`"), "`name`", at: nameNode.location)
+        guard PackageLocation.isSafePathText(name) else {
+            throw ManifestError("A script phase name cannot contain control characters or exceed 4096 bytes", at: nameNode.location)
+        }
         let script = try Convert.string(scriptNode, "`script`")
+        guard script.utf8.count <= 256 * 1_024 else {
+            throw ManifestError("A script phase body cannot exceed 256 KiB", at: scriptNode.location)
+        }
         let shell = try arguments.take("shell_path").map { (node) throws(ManifestError) in try Convert.string(node, "`shell_path`") } ?? "/bin/sh"
+        guard PackageLocation.isSafePathText(shell) else {
+            throw ManifestError("`shell_path` cannot contain control characters or exceed 4096 bytes", at: statement.location)
+        }
         let inputs = try list("input_files", &arguments)
         let outputs = try list("output_files", &arguments)
         let inputLists = try list("input_file_lists", &arguments)
@@ -735,7 +1338,7 @@ private struct Evaluator {
             position = value
         }
         let analysis = try arguments.take("based_on_dependency_analysis").map { (node) throws(ManifestError) in try Convert.bool(node, "`based_on_dependency_analysis`") } ?? true
-        let environment = try arguments.take("show_env_vars_in_log").map { (node) throws(ManifestError) in try Convert.bool(node, "`show_env_vars_in_log`") } ?? true
+        let environment = try arguments.take("show_env_vars_in_log").map { (node) throws(ManifestError) in try Convert.bool(node, "`show_env_vars_in_log`") } ?? false
         try arguments.finish(allowed: [
             "name", "script", "shell_path", "input_files", "output_files", "input_file_lists", "output_file_lists",
             "execution_position", "based_on_dependency_analysis", "show_env_vars_in_log",
@@ -748,11 +1351,27 @@ private struct Evaluator {
 
     // MARK: Evaluation
 
+    private mutating func consumeGroupExpansion(_ amount: Int, at location: SourceLocation) throws(ManifestError) {
+        guard amount >= 0, groupExpansionWork <= Self.maximumGroupExpansionWork - amount else {
+            throw ManifestError(
+                "Group expansion exceeds the work budget of \(Self.maximumGroupExpansionWork)", at: location,
+                hint: "Reduce repeated or exponentially nested `use` declarations")
+        }
+        groupExpansionWork += amount
+    }
+
     private mutating func expand(
-        _ declarations: Declarations, values: [String: Bool] = [:], stack: [String] = []
+        _ declarations: Declarations, values: [Bool] = [], stack: [String] = [], depth: Int = 0,
+        at location: SourceLocation
     ) throws(ManifestError) -> Expanded {
+        guard depth <= Self.maximumGroupExpansionDepth else {
+            throw ManifestError(
+                "Group expansion is nested more than \(Self.maximumGroupExpansionDepth) levels", at: location)
+        }
+        try consumeGroupExpansion(1, at: location)
         var result = Expanded()
         for use in declarations.uses {
+            try consumeGroupExpansion(1, at: use.location)
             let name = use.name
             if stack.contains(name) {
                 throw ManifestError("Groups use each other in a cycle: " + (stack + [name]).joined(separator: " → "), at: use.location)
@@ -762,29 +1381,40 @@ private struct Evaluator {
                     "Unknown group `\(name)`", at: use.location,
                     hint: groups.isEmpty ? "Declare it with `group :\(name) do … end`" : "Groups: " + groups.keys.sorted().joined(separator: ", "))
             }
-            var groupValues = Dictionary(uniqueKeysWithValues: group.parameters)
+            try consumeGroupExpansion(group.parameters.count + use.arguments.count, at: use.location)
+            var groupValues = group.parameters.map(\.value)
             for argument in use.arguments {
-                guard groupValues[argument.name] != nil else {
+                guard let index = group.parameterIndices[argument.name] else {
                     throw ManifestError(
                         "Group `\(name)` has no parameter `\(argument.name)`", at: argument.location,
                         hint: group.parameters.isEmpty ? nil : "Parameters: " + group.parameters.map(\.name).joined(separator: ", "))
                 }
-                groupValues[argument.name] = argument.value
+                groupValues[index] = argument.value
             }
-            let key = ([name] + group.parameters.map { "\($0.name)=\(groupValues[$0.name]!)" }).joined(separator: " ")
+            let key = ExpansionKey(group: name, values: groupValues)
             if let cached = expanded[key] {
+                try consumeGroupExpansion(cached.itemCount, at: use.location)
                 result.append(cached)
                 continue
             }
-            let value = try expand(group.declarations, values: groupValues, stack: stack + [name])
+            let value = try expand(
+                group.declarations, values: groupValues, stack: stack + [name], depth: depth + 1, at: use.location)
             expanded[key] = value
+            try consumeGroupExpansion(value.itemCount, at: use.location)
             result.append(value)
         }
-        result.append(Expanded(
+        let direct = Expanded(
             packages: declarations.packages, binaries: declarations.binaries, settings: declarations.settings,
-            scripts: declarations.scripts))
-        for conditional in declarations.conditionals where values[conditional.parameter] == true {
-            result.append(try expand(conditional.declarations, values: values, stack: stack))
+            scripts: declarations.scripts)
+        try consumeGroupExpansion(direct.itemCount, at: location)
+        result.append(direct)
+        for conditional in declarations.conditionals
+        where conditional.parameterIndex < values.count && values[conditional.parameterIndex]
+        {
+            let value = try expand(
+                conditional.declarations, values: values, stack: stack, depth: depth + 1, at: conditional.location)
+            try consumeGroupExpansion(value.itemCount, at: conditional.location)
+            result.append(value)
         }
         return result
     }
@@ -800,15 +1430,17 @@ private struct Evaluator {
 
     mutating func manifest() throws(ManifestError) -> Manifest {
         var collector = Collector(file: file)
-        let rootExpanded = try expand(root)
+        let rootLocation = SourceLocation(file: file, line: 1, column: 1)
+        let rootExpanded = try expand(root, at: rootLocation)
         try collector.register(rootExpanded)
         let context = Context(
             project: project?.0, platform: platform?.0,
             dependencies: Expanded(packages: rootExpanded.packages, binaries: rootExpanded.binaries),
             shared: Expanded(settings: rootExpanded.settings, scripts: rootExpanded.scripts))
         for node in targets { try walk(node, context, &collector) }
+        let binaryNames = Set(collector.binaries.map(\.name))
         for binary in collector.binaries {
-            for dependency in binary.dependencies where dependency == binary.name || !collector.binaries.contains(where: { $0.name == dependency }) {
+            for dependency in binary.dependencies where dependency == binary.name || !binaryNames.contains(dependency) {
                 throw ManifestError(
                     dependency == binary.name ? "Binary `\(binary.name)` depends on itself" : "Binary `\(binary.name)` depends on undeclared binary `\(dependency)`",
                     at: binary.declaredAt)
@@ -818,13 +1450,27 @@ private struct Evaluator {
             throw ManifestError("The Podfile declares no targets", at: SourceLocation(file: file, line: 1, column: 1),
                 hint: "Add `target 'MyApp' do … end`")
         }
+        // Every file read was individually stable, but the graph must also describe one filesystem generation.
+        // Retained descriptors make an A -> B -> A directory swap observable after all includes are evaluated.
+        do {
+            for verification in snapshotVerifications { try verification.verify() }
+            for verification in snapshotVerifications.reversed() { try verification.verify() }
+        } catch {
+            throw ManifestError(
+                "Podfile or an included path changed while the manifest graph was being read", at: nil)
+        }
+        let verifications = snapshotVerifications
         return Manifest(
-            file: file, includes: Array(included.dropFirst()), sources: sources, packages: collector.packages, binaries: collector.binaries,
-            targets: collector.targets)
+            file: file, files: files, includes: files.dropFirst().map(\.path), sources: sources, packages: collector.packages,
+            binaries: collector.binaries, targets: collector.targets,
+            verifyFileSnapshots: {
+                for verification in verifications { try verification.verify() }
+                for verification in verifications.reversed() { try verification.verify() }
+            })
     }
 
     private mutating func walk(_ node: TargetNode, _ parent: Context, _ collector: inout Collector) throws(ManifestError) {
-        let own = try expand(node.declarations)
+        let own = try expand(node.declarations, at: node.location)
         try collector.register(own)
         var context = parent
         context.project = node.project ?? parent.project
@@ -847,11 +1493,39 @@ private struct Evaluator {
 
     /// Distinct packages, binaries and targets, with conflicts reported at both declarations.
     private struct Collector {
+        private struct ProductKey: Hashable {
+            let package: String
+            let product: String
+        }
+
+        private struct TargetKey: Hashable {
+            let name: String
+            let project: String?
+        }
+
+        private struct SettingLookup {
+            var first: Int?
+            var unrestricted: Int?
+            var configurations: [String: Int] = [:]
+        }
+
         let file: String
         var packages: [Package] = []
         var binaries: [Binary] = []
         var targets: [Target] = []
-        var canonical: [String: String] = [:]
+        private var packageIndices: [String: Int] = [:]
+        private var binaryIndices: [String: Int] = [:]
+        private var targetLocations: [TargetKey: SourceLocation] = [:]
+        private var targetItemWork = 0
+
+        private mutating func consumeTargetItems(_ amount: Int, at location: SourceLocation) throws(ManifestError) {
+            guard amount >= 0, targetItemWork <= Evaluator.maximumTargetItemWork - amount else {
+                throw ManifestError(
+                    "Expanded targets exceed the item budget of \(Evaluator.maximumTargetItemWork)", at: location,
+                    hint: "Reduce inherited products, binaries, settings or script paths across targets")
+            }
+            targetItemWork += amount
+        }
 
         mutating func register(_ expanded: Expanded) throws(ManifestError) {
             for use in expanded.packages { try register(use.package) }
@@ -860,7 +1534,7 @@ private struct Evaluator {
 
         private func canonicalLocation(_ package: Package) -> String {
             switch package.location {
-            case .remote(let url): PackageLocation.canonical(url)
+            case .remote(let url): PackageLocation.fetchIdentity(url)
             case .local(let path):
                 URL(fileURLWithPath: path, relativeTo: URL(fileURLWithPath: file).deletingLastPathComponent())
                     .standardizedFileURL.path
@@ -868,7 +1542,8 @@ private struct Evaluator {
         }
 
         private mutating func register(_ package: Package) throws(ManifestError) {
-            guard let index = packages.firstIndex(where: { $0.identity == package.identity }) else {
+            guard let index = packageIndices[package.identity] else {
+                packageIndices[package.identity] = packages.count
                 packages.append(package)
                 return
             }
@@ -888,10 +1563,12 @@ private struct Evaluator {
         }
 
         private mutating func register(_ binary: Binary) throws(ManifestError) {
-            guard let existing = binaries.first(where: { $0.name == binary.name }) else {
+            guard let index = binaryIndices[binary.name] else {
+                binaryIndices[binary.name] = binaries.count
                 binaries.append(binary)
                 return
             }
+            let existing = binaries[index]
             var comparable = binary
             comparable.declaredAt = existing.declaredAt
             guard comparable == existing else {
@@ -904,41 +1581,96 @@ private struct Evaluator {
         mutating func addTarget(
             _ node: TargetNode, context: (project: String?, platform: Platform?), dependencies: Expanded, shared: Expanded
         ) throws(ManifestError) {
-            if let existing = targets.first(where: { $0.name == node.name && $0.project == context.project }) {
-                throw ManifestError("Target `\(node.name)` is declared twice", at: node.location, related: existing.declaredAt)
+            guard targets.count < 2_048 else {
+                throw ManifestError("A Podfile cannot declare more than 2048 concrete targets", at: node.location)
             }
+            let targetKey = TargetKey(name: node.name, project: context.project)
+            if let existing = targetLocations[targetKey] {
+                throw ManifestError("Target `\(node.name)` is declared twice", at: node.location, related: existing)
+            }
+            targetLocations[targetKey] = node.location
+            try consumeTargetItems(dependencies.packages.count, at: node.location)
+            try consumeTargetItems(dependencies.binaries.count, at: node.location)
+            try consumeTargetItems(shared.settings.count, at: node.location)
+            try consumeTargetItems(shared.scripts.count, at: node.location)
             var products: [ProductUse] = []
+            var productIndices: [ProductKey: Int] = [:]
             for use in dependencies.packages {
+                try consumeTargetItems(use.products.count, at: node.location)
                 for product in use.products {
                     let value = ProductUse(package: use.package.identity, product: product, link: use.link)
-                    if let index = products.firstIndex(where: { $0.package == value.package && $0.product == value.product }) {
+                    let key = ProductKey(package: value.package, product: value.product)
+                    if let index = productIndices[key] {
                         products[index].link = products[index].link || value.link
                     } else {
+                        productIndices[key] = products.count
                         products.append(value)
                     }
                 }
             }
             var names: [String] = []
-            for binary in dependencies.binaries where !names.contains(binary.name) { names.append(binary.name) }
+            var binaryNameSet: Set<String> = []
+            for binary in dependencies.binaries where binaryNameSet.insert(binary.name).inserted {
+                try consumeTargetItems(binary.xcframeworks?.count ?? 0, at: node.location)
+                try consumeTargetItems(binary.systemFrameworks.count, at: node.location)
+                try consumeTargetItems(binary.libraries.count, at: node.location)
+                try consumeTargetItems(binary.linkerFlags.count, at: node.location)
+                try consumeTargetItems(binary.dependencies.count, at: node.location)
+                try consumeTargetItems(binary.resources.count, at: node.location)
+                names.append(binary.name)
+            }
 
             var settings: [BuildSetting] = []
+            var settingLookup: [String: SettingLookup] = [:]
             for setting in shared.settings {
-                if let other = settings.first(where: { $0.key == setting.key && Self.overlap($0.configurations, setting.configurations) }) {
+                try consumeTargetItems(setting.configurations?.count ?? 0, at: node.location)
+                var lookup = settingLookup[setting.key] ?? SettingLookup()
+                let overlapping: Int?
+                if let configurations = setting.configurations {
+                    var candidate = lookup.unrestricted
+                    for configuration in configurations {
+                        if let index = lookup.configurations[configuration], candidate.map({ index < $0 }) ?? true {
+                            candidate = index
+                        }
+                    }
+                    overlapping = candidate
+                } else {
+                    overlapping = lookup.first
+                }
+                if let index = overlapping {
+                    let other = settings[index]
                     if other.value == setting.value && other.configurations == setting.configurations { continue }
                     throw ManifestError(
                         "Target `\(node.name)` sets \(setting.key) twice", at: setting.declaredAt,
                         hint: "Keep one declaration, or restrict them to different configurations", related: other.declaredAt)
                 }
+                let index = settings.count
                 settings.append(setting)
+                if lookup.first == nil { lookup.first = index }
+                if let configurations = setting.configurations {
+                    for configuration in configurations where lookup.configurations[configuration] == nil {
+                        lookup.configurations[configuration] = index
+                    }
+                } else if lookup.unrestricted == nil {
+                    lookup.unrestricted = index
+                }
+                settingLookup[setting.key] = lookup
             }
             var scripts: [ScriptPhase] = []
+            var scriptIndices: [String: Int] = [:]
             for script in shared.scripts {
-                if let other = scripts.first(where: { $0.name == script.name }) {
+                try consumeTargetItems(script.inputFiles.count, at: node.location)
+                try consumeTargetItems(script.outputFiles.count, at: node.location)
+                try consumeTargetItems(script.inputFileLists.count, at: node.location)
+                try consumeTargetItems(script.outputFileLists.count, at: node.location)
+                if let index = scriptIndices[script.name] {
+                    let other = scripts[index]
                     if other == script { continue }
                     throw ManifestError(
                         "Target `\(node.name)` has two script phases named '\(script.name)'", at: script.declaredAt,
                         related: other.declaredAt)
                 }
+                scriptIndices[script.name] = scripts.count
                 scripts.append(script)
             }
             targets.append(Target(
@@ -946,9 +1678,5 @@ private struct Evaluator {
                 binaries: names, settings: settings, scriptPhases: scripts, declaredAt: node.location))
         }
 
-        private static func overlap(_ left: [String]?, _ right: [String]?) -> Bool {
-            guard let left, let right else { return true }
-            return !Set(left).isDisjoint(with: right)
-        }
     }
 }

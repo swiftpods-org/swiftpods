@@ -17,10 +17,14 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      checks: read
+      actions: read
     outputs:
       version: ${{ steps.resolve.outputs.version }}
       commit: ${{ steps.resolve.outputs.commit }}
+      source-tag-object: ${{ steps.resolve.outputs.tag-object }}
+      build-run-id: ${{ steps.build-gate.outputs.run-id }}
+      published: ${{ steps.publication.outputs.published }}
+      manifest-sha256: ${{ steps.publication.outputs.manifest-sha256 }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -37,7 +41,11 @@ jobs:
           version = os.environ['GITHUB_REF_NAME'][1:] if pushed else os.environ['REQUESTED_VERSION']
           if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?', version):
               raise RuntimeError('Invalid release version')
-          commit = subprocess.check_output(['git', 'rev-parse', '--verify', 'refs/tags/v' + version + '^{commit}'], text=True).strip()
+          tag = 'refs/tags/v' + version
+          if subprocess.check_output(['git', 'cat-file', '-t', tag], text=True).strip() != 'tag':
+              raise RuntimeError('Release tags must be annotated tags')
+          tag_object = subprocess.check_output(['git', 'rev-parse', '--verify', tag], text=True).strip()
+          commit = subprocess.check_output(['git', 'rev-parse', '--verify', tag + '^{commit}'], text=True).strip()
           # The version line of the command line is the only version source.
           source = subprocess.check_output(['git', 'show', commit + ':Sources/swiftpods/main.swift'], text=True)
           if 'let version = "' + version + '"' not in source.splitlines():
@@ -46,34 +54,69 @@ jobs:
           if subprocess.run(['git', 'merge-base', '--is-ancestor', commit, 'origin/main']).returncode != 0:
               raise RuntimeError('Release tags must point to a commit on main')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
-              output.write('version=' + version + '\ncommit=' + commit + '\n')
+              output.write(
+                  'version=' + version + '\ncommit=' + commit + '\ntag-object=' + tag_object + '\n'
+              )
           PY
-      - name: Require a successful build of the tagged commit
+      - id: build-gate
+        name: Select the tested artifacts of the tagged commit
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_COMMIT: ${{ steps.resolve.outputs.commit }}
         run: |
-          conclusions=$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_COMMIT/check-runs?per_page=100" \
-            --jq '[.check_runs[] | select(.name | startswith("build")) | .conclusion] | join(" ")')
-          if [[ -z "$conclusions" ]]; then
-            echo "No Build SwiftPods run for $RELEASE_COMMIT" >&2
+          run_id=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/build.yml/runs" \
+            -f "head_sha=$RELEASE_COMMIT" -f status=success -f per_page=100 \
+            --jq '[.workflow_runs[] | select(.head_sha == "'"$RELEASE_COMMIT"'" and .event == "push" and .head_branch == "main" and .path == ".github/workflows/build.yml" and .conclusion == "success" and .head_repository.full_name == "'"$GITHUB_REPOSITORY"'")] | sort_by(.run_number) | last | .id // empty')
+          if [[ -z "$run_id" ]]; then
+            echo "No trusted successful .github/workflows/build.yml run for exact commit $RELEASE_COMMIT" >&2
             exit 1
           fi
-          for conclusion in $conclusions; do
-            if [[ "$conclusion" != 'success' ]]; then
-              echo "Build SwiftPods did not pass for $RELEASE_COMMIT: $conclusions" >&2
-              exit 1
-            fi
-          done
-      - name: Refuse to replace a published version
+          echo "run-id=$run_id" >> "$GITHUB_OUTPUT"
+      - id: publication
+        name: Accept only a missing or byte-for-byte verified publication
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ steps.resolve.outputs.version }}
+          RELEASE_COMMIT: ${{ steps.resolve.outputs.commit }}
+          RELEASE_TAG_OBJECT: ${{ steps.resolve.outputs.tag-object }}
         run: |
+          set -euo pipefail
+          echo "published=false" >> "$GITHUB_OUTPUT"
           lookup="$RUNNER_TEMP/release-lookup.log"
-          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/v$RELEASE_VERSION" > /dev/null 2> "$lookup"; then
-            echo "v$RELEASE_VERSION is already published; release a new version" >&2
-            exit 1
+          release_record="$RUNNER_TEMP/swiftpods-release-record.json"
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/v$RELEASE_VERSION" > "$release_record" 2> "$lookup"; then
+            draft="$(python3 - "$release_record" <<'PY'
+          import json, sys
+          value = json.load(open(sys.argv[1])).get("draft")
+          if not isinstance(value, bool):
+              raise RuntimeError("GitHub release has invalid draft metadata")
+          print("true" if value else "false")
+          PY
+            )"
+            if [[ "$draft" == 'true' ]]; then
+              echo "A hidden draft exists; the signed payload will be rebuilt and reconciled"
+              exit 0
+            fi
+            release_root="$(mktemp -d "$RUNNER_TEMP/swiftpods-existing-release.XXXXXX")"
+            cleanup() {
+              parent="$(cd -- "$(dirname -- "$release_root")" && pwd -P)"
+              runner_temp="$(cd -- "$RUNNER_TEMP" && pwd -P)"
+              name="$(basename -- "$release_root")"
+              if [[ "$parent" != "$runner_temp" || ! "$name" =~ ^swiftpods-existing-release\.[A-Za-z0-9]{6}$ || -L "$release_root" ]]; then
+                echo "Refusing unsafe existing-release cleanup: $release_root" >&2
+                return 1
+              fi
+              rm -rf -- "$release_root"
+            }
+            trap cleanup EXIT
+            gh release download "v$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" --dir "$release_root" \
+              --pattern release.json --pattern SHA256SUMS --pattern install.py \
+              --pattern 'swiftpods-*.zip'
+            python3 -m scripts.publish_release "$release_root" \
+              --version "$RELEASE_VERSION" --commit "$RELEASE_COMMIT" \
+              --tag-object "$RELEASE_TAG_OBJECT" --verify-published
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           if ! grep -q 'HTTP 404' "$lookup"; then
             cat "$lookup" >&2
@@ -81,12 +124,17 @@ jobs:
           fi
   build:
     needs: metadata
+    if: needs.metadata.outputs.published != 'true'
     strategy:
       fail-fast: false
       matrix:
         runner: [macos-15, macos-15-intel]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
+    environment: release-signing
+    permissions:
+      actions: read
+      contents: read
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -99,39 +147,217 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.13.16'
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          repository: ${{ github.repository }}
+          run-id: ${{ needs.metadata.outputs.build-run-id }}
+          github-token: ${{ github.token }}
+          name: swiftpods-${{ matrix.runner }}
+          path: ${{ env.SWIFTPODS_BUILD_ROOT }}/tested
+      - name: Restore the exact tested distribution
+        env:
+          TESTED_ARTIFACTS: ${{ env.SWIFTPODS_BUILD_ROOT }}/tested
+          EXPECTED_COMMIT: ${{ needs.metadata.outputs.commit }}
+          EXPECTED_RUNNER: ${{ matrix.runner }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, tempfile
+          from pathlib import Path
+          from scripts.install import extract_archive
+
+          artifacts = Path(os.environ["TESTED_ARTIFACTS"])
+          archive = artifacts / "SwiftPods.zip"
+          checksum_file = artifacts / "SwiftPods.zip.sha256"
+          fields = checksum_file.read_text().split()
+          if len(fields) != 2 or fields[1] != "SwiftPods.zip":
+              raise RuntimeError("Tested artifact has an invalid checksum file")
+          data = archive.read_bytes()
+          if hashlib.sha256(data).hexdigest() != fields[0]:
+              raise RuntimeError("Tested distribution differs from its build artifact checksum")
+          provenance = json.loads((artifacts / "SwiftPods.provenance.json").read_text())
+          expected_provenance = {
+              "archive_sha256": fields[0],
+              "event": "push",
+              "ref": "refs/heads/main",
+              "runner": os.environ["EXPECTED_RUNNER"],
+              "schema": 1,
+              "source_revision": os.environ["EXPECTED_COMMIT"],
+          }
+          if provenance != expected_provenance:
+              raise RuntimeError("Tested artifact provenance does not match the release commit")
+          destination = artifacts.parent / "SwiftPods"
+          if destination.exists() or destination.is_symlink():
+              raise RuntimeError("Tested distribution destination already exists")
+          with tempfile.TemporaryDirectory(prefix=".tested-", dir=artifacts.parent) as temporary:
+              root = extract_archive(data, Path(temporary))
+              root.rename(destination)
+          PY
       - name: Import explicitly configured release credentials
         env:
           SWIFTPODS_SIGNING_P12: ${{ secrets.SWIFTPODS_SIGNING_P12 }}
           SWIFTPODS_SIGNING_PASSWORD: ${{ secrets.SWIFTPODS_SIGNING_PASSWORD }}
           SWIFTPODS_SIGNING_IDENTITY: ${{ secrets.SWIFTPODS_SIGNING_IDENTITY }}
+          SWIFTPODS_SIGNING_TEAM_ID: ${{ secrets.SWIFTPODS_SIGNING_TEAM_ID }}
           SWIFTPODS_NOTARY_KEY: ${{ secrets.SWIFTPODS_NOTARY_KEY }}
           SWIFTPODS_NOTARY_KEY_ID: ${{ secrets.SWIFTPODS_NOTARY_KEY_ID }}
           SWIFTPODS_NOTARY_ISSUER: ${{ secrets.SWIFTPODS_NOTARY_ISSUER }}
         run: python3 -m scripts.ci_signing setup
-      - name: Build the signed and notarized distribution
+      - name: Sign and notarize the exact tested distribution
         run: |
-          python3 -m scripts.package --destination "$SWIFTPODS_BUILD_ROOT/SwiftPods"
           python3 -m scripts.sign_release "$SWIFTPODS_BUILD_ROOT/SwiftPods" \
             --identity "$SWIFTPODS_SIGNING_IDENTITY" \
+            --team-id "$SWIFTPODS_SIGNING_TEAM_ID" \
             --notarize --keychain-profile "$SWIFTPODS_NOTARY_PROFILE" \
             --keychain "$SWIFTPODS_NOTARY_KEYCHAIN"
+      - name: Remove temporary signing credentials
+        if: always()
+        run: python3 -m scripts.ci_signing cleanup
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: release-${{ matrix.runner }}
           path: |
             ${{ env.SWIFTPODS_BUILD_ROOT }}/SwiftPods.zip
+            ${{ env.SWIFTPODS_BUILD_ROOT }}/SwiftPods.zip.sha256
             ${{ env.SWIFTPODS_BUILD_ROOT }}/SwiftPods.zip.notary.json
-      - name: Remove temporary signing credentials
-        if: always()
-        run: python3 -m scripts.ci_signing cleanup
+          if-no-files-found: error
       - name: Remove temporary build files
         if: always()
         run: |
           if [[ -n "${SWIFTPODS_BUILD_ROOT:-}" ]]; then
+            parent="$(cd -- "$(dirname -- "$SWIFTPODS_BUILD_ROOT")" && pwd -P)"
+            runner_temp="$(cd -- "$RUNNER_TEMP" && pwd -P)"
+            name="$(basename -- "$SWIFTPODS_BUILD_ROOT")"
+            if [[ "$parent" != "$runner_temp" || ! "$name" =~ ^swiftpods-release-build\.[A-Za-z0-9]{6}$ || -L "$SWIFTPODS_BUILD_ROOT" ]]; then
+              echo "Refusing unsafe build cleanup: $SWIFTPODS_BUILD_ROOT" >&2
+              exit 1
+            fi
             rm -rf -- "$SWIFTPODS_BUILD_ROOT"
           fi
-  assemble:
+  verify-notarization:
     needs: [metadata, build]
+    if: needs.metadata.outputs.published != 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    environment: release-notarization-verification
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.metadata.outputs.commit }}
+          persist-credentials: false
+      - name: Create temporary notarization-verification directory
+        run: |
+          verify_root="$(mktemp -d "$RUNNER_TEMP/swiftpods-release-notary.XXXXXX")"
+          echo "SWIFTPODS_VERIFY_ROOT=$verify_root" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13.16'
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: release-${{ matrix.runner }}
+          path: ${{ env.SWIFTPODS_VERIFY_ROOT }}/signed
+      - name: Query Apple for independent archive-bound notarization evidence
+        env:
+          SWIFTPODS_NOTARY_VERIFY_KEY: ${{ secrets.SWIFTPODS_NOTARY_VERIFY_KEY }}
+          SWIFTPODS_NOTARY_VERIFY_KEY_ID: ${{ secrets.SWIFTPODS_NOTARY_VERIFY_KEY_ID }}
+          SWIFTPODS_NOTARY_VERIFY_ISSUER: ${{ secrets.SWIFTPODS_NOTARY_VERIFY_ISSUER }}
+        run: >-
+          python3 -m scripts.verify_notarization
+          "$SWIFTPODS_VERIFY_ROOT/signed/SwiftPods.zip"
+          "$SWIFTPODS_VERIFY_ROOT/signed/SwiftPods.zip.notary.json"
+          --key-environment SWIFTPODS_NOTARY_VERIFY_KEY
+          --key-id "$SWIFTPODS_NOTARY_VERIFY_KEY_ID"
+          --issuer "$SWIFTPODS_NOTARY_VERIFY_ISSUER"
+      - name: Remove temporary notarization-verification files
+        if: always()
+        run: |
+          if [[ -n "${SWIFTPODS_VERIFY_ROOT:-}" ]]; then
+            parent="$(cd -- "$(dirname -- "$SWIFTPODS_VERIFY_ROOT")" && pwd -P)"
+            runner_temp="$(cd -- "$RUNNER_TEMP" && pwd -P)"
+            name="$(basename -- "$SWIFTPODS_VERIFY_ROOT")"
+            if [[ "$parent" != "$runner_temp" || ! "$name" =~ ^swiftpods-release-notary\.[A-Za-z0-9]{6}$ || -L "$SWIFTPODS_VERIFY_ROOT" ]]; then
+              echo "Refusing unsafe notarization-verification cleanup: $SWIFTPODS_VERIFY_ROOT" >&2
+              exit 1
+            fi
+            rm -rf -- "$SWIFTPODS_VERIFY_ROOT"
+          fi
+
+  verify-signed:
+    needs: [metadata, build]
+    if: needs.metadata.outputs.published != 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.metadata.outputs.commit }}
+          persist-credentials: false
+      - name: Create temporary smoke-test directory
+        run: |
+          smoke_root="$(mktemp -d "$RUNNER_TEMP/swiftpods-release-smoke.XXXXXX")"
+          echo "SWIFTPODS_SMOKE_ROOT=$smoke_root" >> "$GITHUB_ENV"
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13.16'
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: release-${{ matrix.runner }}
+          path: ${{ env.SWIFTPODS_SMOKE_ROOT }}/signed
+      - name: Verify and smoke-test the signed distribution without credentials
+        env:
+          SIGNED_ARTIFACTS: ${{ env.SWIFTPODS_SMOKE_ROOT }}/signed
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, tempfile
+          from pathlib import Path
+          from scripts.install import extract_archive
+
+          artifacts = Path(os.environ["SIGNED_ARTIFACTS"])
+          archive = artifacts / "SwiftPods.zip"
+          fields = (artifacts / "SwiftPods.zip.sha256").read_text().split()
+          if len(fields) != 2 or fields[1] != "SwiftPods.zip":
+              raise RuntimeError("Signed artifact has an invalid checksum file")
+          data = archive.read_bytes()
+          digest = hashlib.sha256(data).hexdigest()
+          if digest != fields[0]:
+              raise RuntimeError("Signed artifact differs from its checksum")
+          notarization = json.loads((artifacts / "SwiftPods.zip.notary.json").read_text())
+          if notarization.get("status") != "Accepted" or notarization.get("archive_sha256") != digest:
+              raise RuntimeError("Notarization receipt does not bind the signed artifact")
+          destination = artifacts.parent / "SwiftPods"
+          with tempfile.TemporaryDirectory(prefix=".signed-", dir=artifacts.parent) as temporary:
+              root = extract_archive(data, Path(temporary))
+              root.rename(destination)
+          PY
+          python3 -m scripts.smoke_release "$SWIFTPODS_SMOKE_ROOT/SwiftPods"
+      - name: Remove temporary smoke-test files
+        if: always()
+        run: |
+          if [[ -n "${SWIFTPODS_SMOKE_ROOT:-}" ]]; then
+            parent="$(cd -- "$(dirname -- "$SWIFTPODS_SMOKE_ROOT")" && pwd -P)"
+            runner_temp="$(cd -- "$RUNNER_TEMP" && pwd -P)"
+            name="$(basename -- "$SWIFTPODS_SMOKE_ROOT")"
+            if [[ "$parent" != "$runner_temp" || ! "$name" =~ ^swiftpods-release-smoke\.[A-Za-z0-9]{6}$ || -L "$SWIFTPODS_SMOKE_ROOT" ]]; then
+              echo "Refusing unsafe smoke cleanup: $SWIFTPODS_SMOKE_ROOT" >&2
+              exit 1
+            fi
+            rm -rf -- "$SWIFTPODS_SMOKE_ROOT"
+          fi
+
+  assemble:
+    needs: [metadata, build, verify-notarization, verify-signed]
+    if: needs.metadata.outputs.published != 'true'
     runs-on: macos-15
     outputs:
       manifest-sha256: ${{ steps.validate.outputs.manifest-sha256 }}
@@ -154,8 +380,9 @@ jobs:
       - name: Assemble release archives, checksums and installer
         env:
           RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+          RELEASE_TAG_OBJECT: ${{ needs.metadata.outputs.source-tag-object }}
         run: |
-          python3 -m scripts.release --version "$RELEASE_VERSION" \
+          python3 -m scripts.release --version "$RELEASE_VERSION" --tag-object "$RELEASE_TAG_OBJECT" \
             --archive "$SWIFTPODS_BUILD_ROOT/release-inputs/release-macos-15/SwiftPods.zip" \
             --archive "$SWIFTPODS_BUILD_ROOT/release-inputs/release-macos-15-intel/SwiftPods.zip" \
             --notarization "$SWIFTPODS_BUILD_ROOT/release-inputs/release-macos-15/SwiftPods.zip.notary.json" \
@@ -166,7 +393,11 @@ jobs:
         env:
           RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
           RELEASE_COMMIT: ${{ needs.metadata.outputs.commit }}
-        run: python3 -m scripts.publish_release "$SWIFTPODS_BUILD_ROOT/release" --version "$RELEASE_VERSION" --commit "$RELEASE_COMMIT"
+          RELEASE_TAG_OBJECT: ${{ needs.metadata.outputs.source-tag-object }}
+        run: >-
+          python3 -m scripts.publish_release "$SWIFTPODS_BUILD_ROOT/release"
+          --version "$RELEASE_VERSION" --commit "$RELEASE_COMMIT"
+          --tag-object "$RELEASE_TAG_OBJECT"
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: swiftpods-assets
@@ -175,13 +406,24 @@ jobs:
         if: always()
         run: |
           if [[ -n "${SWIFTPODS_BUILD_ROOT:-}" ]]; then
+            parent="$(cd -- "$(dirname -- "$SWIFTPODS_BUILD_ROOT")" && pwd -P)"
+            runner_temp="$(cd -- "$RUNNER_TEMP" && pwd -P)"
+            name="$(basename -- "$SWIFTPODS_BUILD_ROOT")"
+            if [[ "$parent" != "$runner_temp" || ! "$name" =~ ^swiftpods-release-assets\.[A-Za-z0-9]{6}$ || -L "$SWIFTPODS_BUILD_ROOT" ]]; then
+              echo "Refusing unsafe asset cleanup: $SWIFTPODS_BUILD_ROOT" >&2
+              exit 1
+            fi
             rm -rf -- "$SWIFTPODS_BUILD_ROOT"
           fi
   publish:
     needs: [metadata, assemble]
+    if: needs.metadata.outputs.published != 'true'
     runs-on: ubuntu-latest
+    environment: release-publish
     permissions:
       contents: write
+    outputs:
+      manifest-sha256: ${{ steps.publish.outputs.manifest-sha256 }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -195,61 +437,369 @@ jobs:
         with:
           name: swiftpods-assets
           path: ${{ env.SWIFTPODS_BUILD_ROOT }}/release
-      - name: Publish the signed archives and installer
+      - id: publish
+        name: Publish the signed archives and installer
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
           RELEASE_COMMIT: ${{ needs.metadata.outputs.commit }}
-        run: python3 -m scripts.publish_release "$SWIFTPODS_BUILD_ROOT/release" --version "$RELEASE_VERSION" --commit "$RELEASE_COMMIT" --publish
+          RELEASE_TAG_OBJECT: ${{ needs.metadata.outputs.source-tag-object }}
+        run: >-
+          python3 -m scripts.publish_release "$SWIFTPODS_BUILD_ROOT/release"
+          --version "$RELEASE_VERSION" --commit "$RELEASE_COMMIT"
+          --tag-object "$RELEASE_TAG_OBJECT" --publish
       - name: Remove temporary build files
         if: always()
         run: |
           if [[ -n "${SWIFTPODS_BUILD_ROOT:-}" ]]; then
+            parent="$(cd -- "$(dirname -- "$SWIFTPODS_BUILD_ROOT")" && pwd -P)"
+            runner_temp="$(cd -- "$RUNNER_TEMP" && pwd -P)"
+            name="$(basename -- "$SWIFTPODS_BUILD_ROOT")"
+            if [[ "$parent" != "$runner_temp" || ! "$name" =~ ^swiftpods-release-publish\.[A-Za-z0-9]{6}$ || -L "$SWIFTPODS_BUILD_ROOT" ]]; then
+              echo "Refusing unsafe publish cleanup: $SWIFTPODS_BUILD_ROOT" >&2
+              exit 1
+            fi
             rm -rf -- "$SWIFTPODS_BUILD_ROOT"
           fi
   update-integrations:
     needs: [metadata, publish]
+    if: >-
+      always() &&
+      needs.metadata.result == 'success' &&
+      (needs.publish.result == 'success' ||
+       (needs.publish.result == 'skipped' && needs.metadata.outputs.published == 'true'))
     runs-on: ubuntu-latest
+    environment: release-publish
+    # Build SwiftPods can legitimately use 45 minutes for tests followed by
+    # 30 minutes for packaging, before runner queueing and integration setup.
+    # Both 15-minute Fastlane checks are dispatched up front and run in parallel.
+    timeout-minutes: 100
     permissions:
       contents: write
+      actions: write
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: main
+          # Derive the expected pins with the exact source revision that
+          # produced the release, then apply those bytes to one captured main.
+          ref: ${{ needs.metadata.outputs.commit }}
+          fetch-depth: 0
       - name: Create temporary build directory
         run: |
           build_root="$(mktemp -d "$RUNNER_TEMP/swiftpods-release-integrations.XXXXXX")"
           echo "SWIFTPODS_BUILD_ROOT=$build_root" >> "$GITHUB_ENV"
-      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
-        with:
-          name: swiftpods-assets
-          path: ${{ env.SWIFTPODS_BUILD_ROOT }}/release-assets
-      - name: Pin the release in Homebrew and the Fastlane plugin
+      - name: Download the exact public release payload
         env:
+          GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
         run: |
+          gh release download "v$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" \
+            --dir "$SWIFTPODS_BUILD_ROOT/release-assets" \
+            --pattern release.json --pattern SHA256SUMS --pattern install.py \
+            --pattern 'swiftpods-*.zip'
+      - id: release-assets
+        name: Reverify the public payload before changing integration pins
+        env:
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.metadata.outputs.commit }}
+          RELEASE_TAG_OBJECT: ${{ needs.metadata.outputs.source-tag-object }}
+          WAS_PUBLISHED: ${{ needs.metadata.outputs.published }}
+          EXISTING_MANIFEST_SHA256: ${{ needs.metadata.outputs.manifest-sha256 }}
+          NEW_MANIFEST_SHA256: ${{ needs.publish.outputs.manifest-sha256 }}
+        run: |
+          set -euo pipefail
+          if [[ "$WAS_PUBLISHED" == 'true' ]]; then
+            expected="$EXISTING_MANIFEST_SHA256"
+          else
+            expected="$NEW_MANIFEST_SHA256"
+          fi
+          python3 -m scripts.publish_release "$SWIFTPODS_BUILD_ROOT/release-assets" \
+            --version "$RELEASE_VERSION" --commit "$RELEASE_COMMIT" \
+            --tag-object "$RELEASE_TAG_OBJECT" \
+            --verify-published --expected-manifest-sha256 "$expected"
+      - id: pin
+        name: Pin the release in Homebrew and the Fastlane plugin
+        env:
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.metadata.outputs.commit }}
+        run: |
+          set -euo pipefail
+          echo "publish=false" >> "$GITHUB_OUTPUT"
           # Pre-releases never reach Homebrew or Fastlane users, and pins only
-          # follow the version currently on main.
+          # follow the version currently at the exact release commit.
           if [[ "$RELEASE_VERSION" == *-* || "$(python3 -m scripts.support.version)" != "$RELEASE_VERSION" ]]; then
             echo "The Homebrew formula and Fastlane plugin stay unchanged for $RELEASE_VERSION"
             exit 0
           fi
-          plugin_tag="fastlane-v$RELEASE_VERSION"
-          if [[ -n "$(git ls-remote --tags origin "refs/tags/$plugin_tag")" ]]; then
-            echo "$plugin_tag already exists; release a new version" >&2
+          expected_root="$SWIFTPODS_BUILD_ROOT/expected-integrations"
+          mkdir -m 700 "$expected_root" "$expected_root/Formula" "$expected_root/plugin"
+          python3 -m scripts.prepare_integrations "$SWIFTPODS_BUILD_ROOT/release-assets/release.json"
+          /bin/cp Formula/swiftpods.rb "$expected_root/Formula/swiftpods.rb"
+          /bin/cp lib/fastlane/plugin/swiftpods/release.json "$expected_root/plugin/release.json"
+          git restore --worktree -- Formula/swiftpods.rb lib/fastlane/plugin/swiftpods/release.json
+          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+          main_commit="$(git rev-parse --verify refs/remotes/origin/main)"
+          if [[ "$(git rev-parse --verify HEAD)" != "$RELEASE_COMMIT" ]] || \
+              ! git merge-base --is-ancestor "$RELEASE_COMMIT" "$main_commit"; then
+            echo "Refusing integration pins outside the reviewed release history" >&2
             exit 1
           fi
-          python3 -m scripts.prepare_integrations "$SWIFTPODS_BUILD_ROOT/release-assets/release.json"
+          plugin_tag="fastlane-v$RELEASE_VERSION"
+          # The Fastlane tag has its own candidate: the exact release tree with
+          # only its authenticated release pin changed. It never inherits code
+          # that reached main after the source release was tagged.
+          git checkout --detach "$RELEASE_COMMIT"
+          /bin/cp "$expected_root/plugin/release.json" lib/fastlane/plugin/swiftpods/release.json
+          git add lib/fastlane/plugin/swiftpods/release.json
+          expected_plugin_tree="$(git write-tree)"
+          plugin_pin_changed=false
+          if ! git diff --cached --quiet; then
+            plugin_pin_changed=true
+            git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit -m "Pin SwiftPods $RELEASE_VERSION in the Fastlane plugin tag"
+          fi
+          plugin_commit="$(git rev-parse --verify HEAD)"
+          tag_existed=false
+          tag_object=''
+          if [[ -n "$(git ls-remote --tags origin "refs/tags/$plugin_tag")" ]]; then
+            tag_ref="refs/swiftpods-existing-tags/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            git fetch --no-tags origin "refs/tags/$plugin_tag:$tag_ref"
+            if [[ "$(git cat-file -t "$tag_ref")" != 'tag' ]]; then
+              echo "$plugin_tag must be an annotated integration tag" >&2
+              exit 1
+            fi
+            TAG_REF="$tag_ref" EXPECTED_TAG="$plugin_tag" EXPECTED_VERSION="$RELEASE_VERSION" python3 - <<'PY'
+          import os, re, subprocess
+
+          payload = subprocess.check_output(
+              ["git", "cat-file", "tag", os.environ["TAG_REF"]], text=True
+          )
+          header, message = payload.split("\n\n", 1)
+          objects = [line[7:] for line in header.splitlines() if line.startswith("object ")]
+          types = [line[5:] for line in header.splitlines() if line.startswith("type ")]
+          embedded = [line[4:] for line in header.splitlines() if line.startswith("tag ")]
+          expected_message = "SwiftPods Fastlane plugin " + os.environ["EXPECTED_VERSION"] + "\n"
+          if (
+              len(objects) != 1
+              or re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", objects[0]) is None
+              or types != ["commit"]
+              or embedded != [os.environ["EXPECTED_TAG"]]
+              or message != expected_message
+          ):
+              raise RuntimeError("Fastlane tag object has unexpected identity metadata")
+          PY
+            tag_object="$(git rev-parse --verify "$tag_ref")"
+            tag_commit="$(git rev-parse --verify "$tag_ref^{commit}")"
+            if [[ "$(git rev-parse --verify "$tag_commit^{tree}")" != "$expected_plugin_tree" ]]; then
+              echo "$plugin_tag does not contain the exact release plugin tree" >&2
+              exit 1
+            fi
+            if [[ "$plugin_pin_changed" == 'true' ]]; then
+              read -r tagged parent extra <<< "$(git rev-list --parents -n 1 "$tag_commit")"
+              if [[ "$tagged" != "$tag_commit" || "$parent" != "$RELEASE_COMMIT" || -n "${extra:-}" ]]; then
+                echo "$plugin_tag must be a single pin-only child of the release commit" >&2
+                exit 1
+              fi
+            elif [[ "$tag_commit" != "$RELEASE_COMMIT" ]]; then
+              echo "$plugin_tag must point directly to the already-pinned release commit" >&2
+              exit 1
+            fi
+            plugin_commit="$tag_commit"
+            tag_existed=true
+          fi
+
+          git checkout --detach "$main_commit"
+          pin_action="$(RELEASE_VERSION="$RELEASE_VERSION" python3 - <<'PY'
+          import json, os, re
+          from pathlib import Path
+
+          requested = tuple(map(int, os.environ["RELEASE_VERSION"].split(".")))
+          pin = Path("lib/fastlane/plugin/swiftpods/release.json")
+          formula = Path("Formula/swiftpods.rb")
+          match = re.search(r'^\s*version\s+"([0-9]+\.[0-9]+\.[0-9]+)"\s*$', formula.read_text(), re.M)
+          versions = [json.loads(pin.read_text()).get("version"), match.group(1) if match else None]
+          for version in versions:
+              if not isinstance(version, str) or re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version) is None:
+                  raise RuntimeError("Current integration pin has an invalid stable version")
+          if versions[0] != versions[1]:
+              raise RuntimeError("Current Homebrew and Fastlane pins disagree")
+          print("keep" if tuple(map(int, versions[0].split("."))) > requested else "update")
+          PY
+          )"
+          if [[ "$pin_action" == 'update' ]]; then
+            /bin/cp "$expected_root/Formula/swiftpods.rb" Formula/swiftpods.rb
+            /bin/cp "$expected_root/plugin/release.json" lib/fastlane/plugin/swiftpods/release.json
+          else
+            echo "Current main already pins a newer stable release; it will not be downgraded"
+          fi
           git add Formula/swiftpods.rb lib/fastlane/plugin/swiftpods/release.json
           if ! git diff --cached --quiet; then
             git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m "Pin SwiftPods $RELEASE_VERSION in Homebrew and Fastlane"
-            git push origin HEAD:main
           fi
-          git tag "$plugin_tag"
-          git push origin "refs/tags/$plugin_tag"
+          integration_commit="$(git rev-parse --verify HEAD)"
+          if [[ "$tag_existed" == 'true' && "$integration_commit" == "$main_commit" ]]; then
+            echo "$plugin_tag and current main already contain monotonic verified pins"
+            exit 0
+          fi
+          integration_check_branch="swiftpods-integration-check-$RELEASE_VERSION-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          plugin_check_branch="swiftpods-plugin-check-$RELEASE_VERSION-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          # Pushes made with GITHUB_TOKEN deliberately do not trigger other workflows. A unique temporary ref lets
+          # workflow_dispatch test both immutable candidates even if main moves immediately afterwards.
+          git push --atomic origin \
+            "$integration_commit:refs/heads/$integration_check_branch" \
+            "$plugin_commit:refs/heads/$plugin_check_branch"
+          {
+            echo "publish=true"
+            echo "integration-commit=$integration_commit"
+            echo "plugin-commit=$plugin_commit"
+            echo "plugin-tree=$expected_plugin_tree"
+            echo "base-commit=$main_commit"
+            echo "tag=$plugin_tag"
+            echo "tag-existed=$tag_existed"
+            echo "tag-object=$tag_object"
+            echo "integration-check-branch=$integration_check_branch"
+            echo "plugin-check-branch=$plugin_check_branch"
+          } >> "$GITHUB_OUTPUT"
+      - name: Require successful checks of both exact integration candidates
+        if: steps.pin.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INTEGRATION_COMMIT: ${{ steps.pin.outputs.integration-commit }}
+          PLUGIN_COMMIT: ${{ steps.pin.outputs.plugin-commit }}
+          INTEGRATION_CHECK_BRANCH: ${{ steps.pin.outputs.integration-check-branch }}
+          PLUGIN_CHECK_BRANCH: ${{ steps.pin.outputs.plugin-check-branch }}
+        run: |
+          set -euo pipefail
+          gh workflow run build.yml --ref "$INTEGRATION_CHECK_BRANCH"
+          gh workflow run fastlane-plugin.yml --ref "$INTEGRATION_CHECK_BRANCH"
+          gh workflow run fastlane-plugin.yml --ref "$PLUGIN_CHECK_BRANCH"
+          wait_for_workflow() {
+            local workflow="$1"
+            local label="$2"
+            local commit="$3"
+            local branch="$4"
+            local attempt successes failures
+            for attempt in {1..270}; do
+              successes="$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs" \
+                -f "head_sha=$commit" -f "branch=$branch" -f event=workflow_dispatch -f per_page=100 \
+                --jq '[.workflow_runs[] | select(.head_sha == "'"$commit"'" and .head_branch == "'"$branch"'" and .event == "workflow_dispatch" and .conclusion == "success")] | length')"
+              if [[ "$successes" -ge 1 ]]; then
+                echo "$label passed for $commit"
+                return 0
+              fi
+              failures="$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/$workflow/runs" \
+                -f "head_sha=$commit" -f "branch=$branch" -f event=workflow_dispatch -f per_page=100 \
+                --jq '[.workflow_runs[] | select(.head_sha == "'"$commit"'" and .head_branch == "'"$branch"'" and .event == "workflow_dispatch" and .status == "completed" and .conclusion != "success")] | length')"
+              if [[ "$failures" -ge 1 ]]; then
+                echo "$label failed for exact commit $commit" >&2
+                return 1
+              fi
+              sleep 20
+            done
+            echo "Timed out waiting for $label on exact commit $commit" >&2
+            return 1
+          }
+          wait_for_workflow build.yml 'Build SwiftPods' "$INTEGRATION_COMMIT" "$INTEGRATION_CHECK_BRANCH"
+          wait_for_workflow fastlane-plugin.yml 'Fastlane plugin on current main' "$INTEGRATION_COMMIT" "$INTEGRATION_CHECK_BRANCH"
+          wait_for_workflow fastlane-plugin.yml 'Fastlane plugin release tag' "$PLUGIN_COMMIT" "$PLUGIN_CHECK_BRANCH"
+      - name: Atomically publish the validated integration commit and tag
+        if: steps.pin.outputs.publish == 'true'
+        env:
+          RELEASE_COMMIT: ${{ needs.metadata.outputs.commit }}
+          BASE_COMMIT: ${{ steps.pin.outputs.base-commit }}
+          INTEGRATION_COMMIT: ${{ steps.pin.outputs.integration-commit }}
+          PLUGIN_COMMIT: ${{ steps.pin.outputs.plugin-commit }}
+          PLUGIN_TREE: ${{ steps.pin.outputs.plugin-tree }}
+          PLUGIN_TAG: ${{ steps.pin.outputs.tag }}
+          TAG_EXISTED: ${{ steps.pin.outputs.tag-existed }}
+          TAG_OBJECT: ${{ steps.pin.outputs.tag-object }}
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin '+refs/heads/main:refs/remotes/origin/main'
+          main_commit="$(git rev-parse --verify refs/remotes/origin/main)"
+          if [[ "$main_commit" != "$BASE_COMMIT" ]]; then
+            echo "Refusing to update main after it moved: expected $BASE_COMMIT, found $main_commit" >&2
+            exit 1
+          fi
+          if [[ "$(git rev-parse --verify "$PLUGIN_COMMIT^{tree}")" != "$PLUGIN_TREE" ]] || \
+              ! git show "$PLUGIN_COMMIT:Sources/swiftpods/main.swift" | grep -Fqx "let version = \"$RELEASE_VERSION\""; then
+            echo "Fastlane tag candidate no longer matches the exact release tree and version" >&2
+            exit 1
+          fi
+          remote_tag_object="$(git ls-remote --tags origin "refs/tags/$PLUGIN_TAG" | awk '{print $1}')"
+          tag_lease=()
+          if [[ "$TAG_EXISTED" == 'true' ]]; then
+            if [[ "$remote_tag_object" != "$TAG_OBJECT" ]]; then
+              echo "$PLUGIN_TAG changed after validation" >&2
+              exit 1
+            fi
+            tag_source="refs/swiftpods-existing-tags/$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            if [[ "$(git rev-parse --verify "$tag_source")" != "$TAG_OBJECT" ]]; then
+              echo "Validated local object for $PLUGIN_TAG changed or disappeared" >&2
+              exit 1
+            fi
+            tag_lease=(--force-with-lease="refs/tags/$PLUGIN_TAG:$TAG_OBJECT")
+          else
+            if [[ -n "$remote_tag_object" ]]; then
+              echo "$PLUGIN_TAG was created concurrently; release a new version" >&2
+              exit 1
+            fi
+            if git show-ref --verify --quiet "refs/tags/$PLUGIN_TAG"; then
+              git tag -d "$PLUGIN_TAG"
+            fi
+            git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              tag -a "$PLUGIN_TAG" "$PLUGIN_COMMIT" -m "SwiftPods Fastlane plugin $RELEASE_VERSION"
+            tag_source="refs/tags/$PLUGIN_TAG"
+          fi
+          TAG_REF="$tag_source" EXPECTED_TAG="$PLUGIN_TAG" EXPECTED_VERSION="$RELEASE_VERSION" python3 - <<'PY'
+          import os, re, subprocess
+
+          payload = subprocess.check_output(
+              ["git", "cat-file", "tag", os.environ["TAG_REF"]], text=True
+          )
+          header, message = payload.split("\n\n", 1)
+          objects = [line[7:] for line in header.splitlines() if line.startswith("object ")]
+          types = [line[5:] for line in header.splitlines() if line.startswith("type ")]
+          embedded = [line[4:] for line in header.splitlines() if line.startswith("tag ")]
+          expected_message = "SwiftPods Fastlane plugin " + os.environ["EXPECTED_VERSION"] + "\n"
+          if (
+              len(objects) != 1
+              or re.fullmatch(r"[0-9a-f]{40}(?:[0-9a-f]{24})?", objects[0]) is None
+              or types != ["commit"]
+              or embedded != [os.environ["EXPECTED_TAG"]]
+              or message != expected_message
+          ):
+              raise RuntimeError("Fastlane tag object has unexpected identity metadata")
+          PY
+          # Main remains non-force; an existing tag is pinned by its exact object lease. Both refs land or neither does,
+          # and any concurrent main/tag update rejects the complete atomic push.
+          git push --atomic "${tag_lease[@]}" origin \
+            "$INTEGRATION_COMMIT:refs/heads/main" "$tag_source:refs/tags/$PLUGIN_TAG"
+      - name: Remove the temporary integration check branches
+        if: always() && steps.pin.outputs.integration-check-branch != ''
+        env:
+          INTEGRATION_CHECK_BRANCH: ${{ steps.pin.outputs.integration-check-branch }}
+          PLUGIN_CHECK_BRANCH: ${{ steps.pin.outputs.plugin-check-branch }}
+          INTEGRATION_COMMIT: ${{ steps.pin.outputs.integration-commit }}
+          PLUGIN_COMMIT: ${{ steps.pin.outputs.plugin-commit }}
+        run: |
+          failed=0
+          git push --force-with-lease="refs/heads/$INTEGRATION_CHECK_BRANCH:$INTEGRATION_COMMIT" \
+            origin ":refs/heads/$INTEGRATION_CHECK_BRANCH" || failed=1
+          git push --force-with-lease="refs/heads/$PLUGIN_CHECK_BRANCH:$PLUGIN_COMMIT" \
+            origin ":refs/heads/$PLUGIN_CHECK_BRANCH" || failed=1
+          exit "$failed"
       - name: Remove temporary build files
         if: always()
         run: |
           if [[ -n "${SWIFTPODS_BUILD_ROOT:-}" ]]; then
+            parent="$(cd -- "$(dirname -- "$SWIFTPODS_BUILD_ROOT")" && pwd -P)"
+            runner_temp="$(cd -- "$RUNNER_TEMP" && pwd -P)"
+            name="$(basename -- "$SWIFTPODS_BUILD_ROOT")"
+            if [[ "$parent" != "$runner_temp" || ! "$name" =~ ^swiftpods-release-integrations\.[A-Za-z0-9]{6}$ || -L "$SWIFTPODS_BUILD_ROOT" ]]; then
+              echo "Refusing unsafe integration cleanup: $SWIFTPODS_BUILD_ROOT" >&2
+              exit 1
+            fi
             rm -rf -- "$SWIFTPODS_BUILD_ROOT"
           fi

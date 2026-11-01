@@ -31,6 +31,29 @@ private struct FakeCatalog: PackageCatalog {
     }
 }
 
+private final class RecordingCatalog: PackageCatalog, @unchecked Sendable {
+    private let lock = NSLock()
+    private let resolver: @Sendable (String) -> CatalogEntry?
+    private var recordedNames: [String] = []
+
+    init(resolver: @escaping @Sendable (String) -> CatalogEntry?) {
+        self.resolver = resolver
+    }
+
+    var requestedNames: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return recordedNames
+    }
+
+    func entry(named name: String, in _: [Source]) throws -> CatalogEntry? {
+        lock.lock()
+        recordedNames.append(name)
+        lock.unlock()
+        return resolver(name)
+    }
+}
+
 final class CatalogTests: XCTestCase {
     private let catalog = FakeCatalog(entries: [
         Source.publicCatalog: [
@@ -102,6 +125,56 @@ final class CatalogTests: XCTestCase {
         XCTAssertNil(manifest.packages[0].catalog)
     }
 
+    func testRepeatedCatalogNamesUseOneNormalizedLookup() throws {
+        let entry = CatalogEntry(
+            name: "Datadog", url: "https://github.com/DataDog/dd-sdk-ios.git", products: ["DatadogCore"],
+            source: Source.publicCatalog)
+        let recording = RecordingCatalog { _ in entry }
+        let podfile = """
+            target 'One' do
+              spm 'Datadog', exact: '3.15.0'
+            end
+            target 'Two' do
+              spm 'DATADOG', exact: '3.15.0'
+            end
+            """
+
+        let manifest = try ManifestReader(read: { _ in podfile }, catalog: recording).load("/project/Podfile")
+
+        XCTAssertEqual(recording.requestedNames, ["Datadog"])
+        XCTAssertEqual(manifest.targets.count, 2)
+        XCTAssertEqual(manifest.packages.map(\.name), ["Datadog"])
+    }
+
+    func testCatalogSourceAndDistinctLookupCapsApplyBeforeMoreIO() throws {
+        let generated = RecordingCatalog { name in
+            CatalogEntry(
+                name: name, url: "https://example.com/\(name).git", products: [name], source: Source.publicCatalog)
+        }
+        let declarations = (0...256).map { "  spm 'Kit\($0)', exact: '1.0.0'" }.joined(separator: "\n")
+        let lookupPodfile = "target 'App' do\n\(declarations)\nend\n"
+        XCTAssertThrowsError(
+            try ManifestReader(read: { _ in lookupPodfile }, catalog: generated).load("/project/Podfile")
+        ) { error in
+            XCTAssertTrue(
+                (error as? ManifestError)?.message.contains("more than 256 distinct catalog names") == true,
+                "\(error)")
+        }
+        XCTAssertEqual(generated.requestedNames.count, 256)
+
+        let sourceRecording = RecordingCatalog { _ in nil }
+        let sources = (0...32).map { "source 'https://example.com/catalog-\($0).git'" }.joined(separator: "\n")
+        let sourcePodfile = sources + "\ntarget 'App' do\n  spm 'Kit', exact: '1.0.0'\nend\n"
+        XCTAssertThrowsError(
+            try ManifestReader(read: { _ in sourcePodfile }, catalog: sourceRecording).load("/project/Podfile")
+        ) { error in
+            XCTAssertTrue(
+                (error as? ManifestError)?.message.contains("more than 32 catalog sources") == true,
+                "\(error)")
+        }
+        XCTAssertTrue(sourceRecording.requestedNames.isEmpty)
+    }
+
     func testBinariesComeFromTheCatalogByVersion() throws {
         let manifest = try read("target 'App' do\n  binary 'hyprmx', '6.4.2'\nend\n")
         let binary = try XCTUnwrap(manifest.binaries.first)
@@ -156,6 +229,16 @@ final class CatalogTests: XCTestCase {
         XCTAssertEqual(both.url, "https://github.com/a/Kit.git")
         XCTAssertEqual(both.binary?.libraries, ["z"])
         XCTAssertEqual(both.binary?.releases, [.init(version: "1.0.0.0", url: "https://example.com/Kit-1.0.0.0.zip", sha256: String(repeating: "a", count: 64))])
+        let safeFlags = try CatalogEntry.parse(
+            "binary 'Kit', linker_flags: ['-ObjC', '-all_load'] do\n  version '1', url: 'https://x/a.zip', sha256: '\(String(repeating: "a", count: 64))'\nend\n",
+            file: "Kit.podfile", source: "s")
+        XCTAssertEqual(safeFlags.binary?.linkerFlags, ["-ObjC", "-all_load"])
+        for flag in ["-Xlinker", "-Wl,-map,/tmp/map", "@/tmp/options", "-force_load"] {
+            XCTAssertThrowsError(
+                try CatalogEntry.parse(
+                    "binary 'Kit', linker_flags: ['\(flag)'] do\n  version '1', url: 'https://x/a.zip', sha256: '\(String(repeating: "a", count: 64))'\nend\n",
+                    file: "Kit.podfile", source: "s"))
+        }
         XCTAssertThrowsError(try CatalogEntry.parse("binary 'Kit' do\nend\n", file: "Kit.podfile", source: "s"))
         XCTAssertThrowsError(try CatalogEntry.parse("binary 'Kit' do\n  version '1', url: 'http://x/a.zip', sha256: '\(String(repeating: "a", count: 64))'\nend\n", file: "Kit.podfile", source: "s"))
         XCTAssertThrowsError(try CatalogEntry.parse("package 'Kit', git: 'https://x/Kit.git'\nbinary 'Other' do\n  version '1', url: 'https://x/a.zip', sha256: '\(String(repeating: "a", count: 64))'\nend\n", file: "Kit.podfile", source: "s"))

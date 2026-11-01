@@ -44,7 +44,9 @@ class PackageStorageTests(unittest.TestCase):
         self.builder = self.enterContext(patch.object(package, "run_checked", side_effect=self.build))
 
     def build(self, arguments, **options):
-        if arguments[:2] != ["swift", "build"]:
+        if arguments == ["/usr/bin/xcrun", "--find", "swift"]:
+            return subprocess.CompletedProcess(arguments, 0, "/usr/bin/swift\n")
+        if arguments[:2] != ["/usr/bin/swift", "build"]:
             return self.original_run(arguments, **options)
         if "--show-bin-path" in arguments:
             scratch = Path(arguments[arguments.index("--scratch-path") + 1])
@@ -57,6 +59,16 @@ class PackageStorageTests(unittest.TestCase):
         self.assertTrue(scratch.is_relative_to(self.temporary))
         build_temporary = Path(options['env']['TMPDIR'])
         self.assertTrue(build_temporary.is_relative_to(self.temporary))
+        self.assertEqual(
+            options['env'],
+            {
+                'HOME': str(build_temporary.parent / 'home'),
+                'LANG': 'C',
+                'LC_ALL': 'C',
+                'PATH': '/usr/bin:/bin:/usr/sbin:/sbin',
+                'TMPDIR': str(build_temporary),
+            },
+        )
         (build_temporary / 'compiler-temporary-file').write_text('temporary\n')
         for option in ('--cache-path', '--config-path', '--security-path'):
             directory = Path(arguments[arguments.index(option) + 1])
@@ -67,9 +79,23 @@ class PackageStorageTests(unittest.TestCase):
         binary.parent.mkdir(parents=True)
         # The built tool can leave its own temporary files behind.
         binary.write_text(
-            f"#!{sys.executable}\nimport json, os, tempfile\n"
+            f"#!{sys.executable}\nimport json, os, sys, tempfile\n"
             "tempfile.mkstemp(dir=os.environ['TMPDIR'])\n"
-            f"print(json.dumps({{'version': {self.version!r}}}))\n"
+            "arguments = sys.argv[1:]\n"
+            f"if arguments == ['version', '--json']:\n    print(json.dumps({{'version': {self.version!r}}}))\n"
+            "elif arguments == ['help']:\n    print('Usage: swiftpods <command> [options]')\n"
+            "elif len(arguments) == 8 and arguments[:3] == "
+            "['--swiftpods-internal-archive-worker-v1', '1', 'inspect']:\n"
+            "    print(json.dumps({'protocolVersion': 1, 'nonce': arguments[7], "
+            "'inspection': {'format': 'tar', 'bytes': len(b'worker-smoke')}}))\n"
+            "elif len(arguments) == 4 and arguments[:2] == "
+            "['--swiftpods-internal-archive-parent-probe-v1', '1']:\n"
+            "    print(json.dumps({'protocolVersion': 1, 'bytes': len(b'worker-smoke')}))\n"
+            "elif arguments[:3] == ['check', '--offline', '--json']:\n"
+            "    project = arguments[arguments.index('--project-directory') + 1]\n"
+            "    print(json.dumps({'file': os.path.join(project, 'Podfile'), "
+            "'packages': [{'name': 'Smoke'}], 'targets': [{'name': 'App'}]}))\n"
+            "else:\n    raise SystemExit(64)\n"
         )
         binary.chmod(0o700)
         if self.build_error:
@@ -150,9 +176,10 @@ class PackageCancellationTests(unittest.TestCase):
                 "import json, os, signal, time; "
                 "signal.signal(signal.SIGINT, signal.SIG_IGN); "
                 "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
-                "open(os.environ['COMPILER_STATE'] + '.pending', 'w').write(json.dumps("
+                f"state = {str(state)!r}; "
+                "open(state + '.pending', 'w').write(json.dumps("
                 "{'pid': os.getpid(), 'temporary': os.environ['TMPDIR']})); "
-                "os.replace(os.environ['COMPILER_STATE'] + '.pending', os.environ['COMPILER_STATE']); "
+                "os.replace(state + '.pending', state); "
                 "time.sleep(60)"
             )
             compiler.write_text(
@@ -160,12 +187,16 @@ class PackageCancellationTests(unittest.TestCase):
                 f"subprocess.Popen([sys.executable, '-c', {child!r}]).wait()\n"
             )
             compiler.chmod(0o700)
-            env = dict(os.environ, PATH=str(tools) + os.pathsep + os.environ['PATH'],
-                       COMPILER_STATE=str(state), PYTHONDONTWRITEBYTECODE='1')
+            env = dict(os.environ, PYTHONDONTWRITEBYTECODE='1')
+            driver = (
+                "from scripts import package; "
+                f"package.swift_executable = lambda environment: {str(compiler)!r}; "
+                "package.main()"
+            )
             descendant = None
             with (root / "package.log").open("wb") as log:
                 process = subprocess.Popen(
-                    [sys.executable, "-m", "scripts.package"], cwd=package.ROOT,
+                    [sys.executable, "-c", driver], cwd=package.ROOT,
                     env=env, stdout=log, stderr=log, start_new_session=True,
                 )
                 try:

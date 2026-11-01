@@ -37,7 +37,20 @@ struct DependencyPackage {
 
     func manifest() -> String {
         func quoted(_ text: String) -> String {
-            "\"" + text.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"") + "\""
+            var result = "\""
+            for scalar in text.unicodeScalars {
+                switch scalar.value {
+                case 0x22: result += "\\\""
+                case 0x5C: result += "\\\\"
+                case 0x0A: result += "\\n"
+                case 0x0D: result += "\\r"
+                case 0x09: result += "\\t"
+                case 0x00..<0x20, 0x7F, 0x2028, 0x2029:
+                    result += "\\u{\(String(scalar.value, radix: 16))}"
+                default: result += String(scalar)
+                }
+            }
+            return result + "\""
         }
         func requirement(_ requirement: Requirement) -> String {
             switch requirement {

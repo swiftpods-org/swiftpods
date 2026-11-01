@@ -96,11 +96,32 @@ See the [Podfile reference](docs/Podfile.md) for target inheritance,
 swiftpods check                 # read the Podfile and show what each target gets
 swiftpods search Datadog        # find a package in the catalog
 swiftpods install               # write it into the Xcode projects
-swiftpods install --deployment  # CI: require a Package.resolved that satisfies the Podfile
+swiftpods install --deployment  # CI: verify dependency lock and any used catalog lock
 swiftpods install --project ../Build/App.xcodeproj  # the project of targets that name none
 swiftpods deintegrate           # remove everything SwiftPods added
 swiftpods deintegrate --cocoapods  # also remove a CocoaPods or SwiftPods 0.1 integration
 ```
+
+When a declaration is resolved through a catalog, `swiftpods install` writes
+`SwiftPods.lock` with the catalog's complete Git commit ID and the SHA-256 of
+the raw entry. Later installs and `swiftpods check` reuse that commit;
+`--update-sources` is the explicit operation that resolves newer catalog metadata
+without using the current lock. `check --update-sources` leaves the lock unchanged,
+while `install --update-sources` updates it. Version-controlling
+`SwiftPods.lock` together with `Package.resolved` is optional; do it when clean
+checkouts must reproduce the same metadata. Without it, every clean checkout
+resolves the catalog again and can select different dependency metadata.
+`--deployment` verifies `Package.resolved` and, when catalog entries are used,
+`SwiftPods.lock`; it asks Xcode to validate the complete package graph using
+only `Package.resolved`, with automatic resolution and package updates disabled.
+It requires a matching `SwiftPods.lock` to be present when
+catalog entries are used, but does not require that file to be committed. It fails if Xcode
+changes `Package.resolved`. A Podfile made only of
+explicit `git`, `path` and binary `url` declarations neither creates nor
+requires `SwiftPods.lock`.
+
+`deintegrate` removes only SwiftPods' generated packages, settings, scripts and
+ownership marker. Unknown files or directories inside `SwiftPods/` are preserved.
 
 `--json` gives machine-readable output. In Fastlane lanes, use the
 [SwiftPods plugin](docs/Fastlane.md); in Unity, the [SwiftPods package](docs/Unity.md).

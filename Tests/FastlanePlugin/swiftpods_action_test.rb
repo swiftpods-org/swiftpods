@@ -1,4 +1,5 @@
 require_relative 'test_helper'
+require 'minitest/mock'
 
 class SwiftpodsActionTest < Minitest::Test
   def setup
@@ -46,9 +47,45 @@ class SwiftpodsActionTest < Minitest::Test
   end
 
   def test_forwards_options_as_flags
-    arguments = run_action(podfile: @project, deployment: true, resolve: true, adopt: true, offline: true, update_sources: true)
-    assert_equal ['install', '--project-directory', @project, '--deployment', '--resolve', '--adopt', '--offline', '--update-sources'],
+    arguments = run_action(
+      podfile: @project, deployment: true, resolve: true, adopt: true, offline: true, update_sources: true,
+      allow_external_file_lists: true
+    )
+    assert_equal ['install', '--project-directory', @project, '--deployment', '--resolve', '--adopt', '--offline',
+                  '--update-sources', '--allow-external-file-lists'],
                  arguments
+  end
+
+  def test_bundled_cli_is_run_through_the_installer_supervisor
+    calls = []
+    status = Struct.new(:exitstatus) do
+      def success?
+        exitstatus.zero?
+      end
+    end.new(0)
+    runner = Object.new
+    runner.define_singleton_method(:run) do |arguments, offline:|
+      calls << [arguments, offline]
+      output = if arguments.first == 'check'
+                 JSON.generate(packages: [{ name: 'AppLovinSDK' }], binaries: [], targets: [])
+               else
+                 "installed\n"
+               end
+      [output, '', status]
+    end
+    configuration = FastlaneCore::Configuration.create(
+      Fastlane::Actions::SwiftpodsAction.available_options, podfile: @podfile, offline: true
+    )
+
+    Fastlane::Swiftpods::Executable.stub(:new, runner) do
+      @result = Fastlane::Actions::SwiftpodsAction.run(configuration)
+    end
+
+    assert_equal [
+      [['install', '--project-directory', @project, '--offline'], true],
+      [['check', '--project-directory', @project, '--offline', '--json'], true]
+    ], calls
+    assert @result.include?('AppLovinSDK')
   end
 
   def test_rejects_a_missing_podfile

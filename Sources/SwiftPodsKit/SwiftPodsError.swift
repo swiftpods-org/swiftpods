@@ -6,11 +6,20 @@ public struct SwiftPodsError: Error, Sendable, CustomStringConvertible {
     public let message: String
     public let file: String?
     public let hint: String?
+    let commandFailure: CommandExecutionFailure?
 
     public init(_ message: String, file: String? = nil, hint: String? = nil) {
         self.message = message
         self.file = file
         self.hint = hint
+        commandFailure = nil
+    }
+
+    init(_ message: String, commandFailure: CommandExecutionFailure) {
+        self.message = message
+        file = nil
+        hint = nil
+        self.commandFailure = commandFailure
     }
 
     public var description: String {

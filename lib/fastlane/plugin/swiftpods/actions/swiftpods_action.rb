@@ -9,7 +9,7 @@ module Fastlane
     class SwiftpodsAction < Action
       FLAGS = {
         deployment: '--deployment', resolve: '--resolve', adopt: '--adopt', offline: '--offline',
-        update_sources: '--update-sources'
+        update_sources: '--update-sources', allow_external_file_lists: '--allow-external-file-lists'
       }.freeze
 
       def self.run(params)
@@ -18,20 +18,43 @@ module Fastlane
         UI.user_error!("Podfile not found: #{podfile}") unless File.file?(podfile)
         UI.user_error!('SwiftPods requires a file named Podfile') unless File.basename(podfile) == 'Podfile'
 
-        executable = params[:executable]
-        executable ||= Fastlane::Swiftpods::Executable.new.resolve(offline: params[:offline])
-        executable = File.expand_path(executable) if executable.include?(File::SEPARATOR)
-        command = [executable, 'install', '--project-directory', File.dirname(podfile)]
-        FLAGS.each { |key, flag| command << flag if params[key] }
-        sh(*command)
-        dependencies(executable, File.dirname(podfile))
+        directory = File.dirname(podfile)
+        arguments = ['install', '--project-directory', directory]
+        FLAGS.each { |key, flag| arguments << flag if params[key] }
+
+        if params[:executable]
+          executable = params[:executable]
+          executable = File.expand_path(executable) if executable.include?(File::SEPARATOR)
+          sh(executable, *arguments)
+          dependencies(executable, directory)
+        else
+          executable = Fastlane::Swiftpods::Executable.new
+          run_pinned(executable, arguments, offline: params[:offline], emit_stdout: true)
+          dependencies(executable, directory)
+        end
       end
 
       # Reads the Podfile from the catalogs the install just cached.
       def self.dependencies(executable, directory)
-        output, errors, status = Open3.capture3(executable, 'check', '--project-directory', directory, '--offline', '--json')
-        UI.user_error!("swiftpods check failed: #{errors.strip}") unless status.success?
+        arguments = ['check', '--project-directory', directory, '--offline', '--json']
+        if executable.is_a?(String)
+          output, errors, status = Open3.capture3(executable, *arguments)
+          UI.user_error!("swiftpods check failed (#{status.exitstatus}): #{errors.strip}") unless status.success?
+        else
+          output = run_pinned(executable, arguments, offline: true, emit_stdout: false)
+        end
         Fastlane::Swiftpods::Dependencies.new(JSON.parse(output))
+      end
+
+      def self.run_pinned(executable, arguments, offline:, emit_stdout:)
+        output, errors, status = executable.run(arguments, offline: offline)
+        UI.message(output.rstrip) if emit_stdout && !output.empty?
+        UI.important(errors.rstrip) unless errors.empty?
+        unless status.success?
+          detail = errors.empty? ? output : errors
+          UI.user_error!("swiftpods #{arguments.first} failed (#{status.exitstatus}): #{detail.strip}")
+        end
+        output
       end
 
       def self.available_options
@@ -42,13 +65,15 @@ module Fastlane
           ),
           FastlaneCore::ConfigItem.new(
             key: :executable, env_name: 'SWIFTPODS_EXECUTABLE',
-            description: 'SwiftPods executable to use instead of the pinned release', type: String, optional: true
+            description: 'Explicitly trusted SwiftPods executable to use instead of the pinned release',
+            type: String, optional: true
           ),
-          option(:deployment, 'Require a committed Package.resolved that satisfies the Podfile'),
+          option(:deployment, 'Require Package.resolved and any catalog-backed SwiftPods.lock to satisfy the Podfile'),
           option(:resolve, 'Resolve packages with Xcode afterwards and check the result'),
           option(:adopt, 'Manage package references that were added without SwiftPods'),
-          option(:offline, 'Use cached binary archives and catalogs only'),
-          option(:update_sources, 'Fetch the latest catalogs first')
+          option(:offline, 'Use verified cached binary archives, catalogs and pinned CLI only'),
+          option(:update_sources, 'Fetch the latest catalogs first (deployment remains frozen)'),
+          option(:allow_external_file_lists, 'Trust script file lists outside the Podfile directory')
         ]
       end
 

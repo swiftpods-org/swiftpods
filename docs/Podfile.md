@@ -46,7 +46,7 @@ Variables, `def`, `if`, `require` and string interpolation are rejected. Use
 | Statement | Meaning |
 | --- | --- |
 | `platform :ios, '15.0'` | Default platform and deployment target. Platforms: `ios`, `macos` (`osx`), `tvos`, `watchos`, `visionos`. |
-| `project 'Path.xcodeproj'` | Default project. Without it, the only `.xcodeproj` next to the Podfile. |
+| `project 'Path.xcodeproj'` | Default project, as a relative path inside the Podfile directory. Without it, the only `.xcodeproj` next to the Podfile. |
 | `source 'https://…/catalog.git'` | A catalog that resolves package names (see below). Without any, the public catalog. |
 | `include 'path.podfile'` | Reads `platform`, `group` and `include` statements from another file, relative to the including file. |
 | `group :name do … end` | Named declarations a target can `use`; it may take parameters (see below). |
@@ -70,6 +70,13 @@ Variables, `def`, `if`, `require` and string interpolation are rejected. Use
 A nested target inherits its parent's declarations: with `:complete` it links
 them, with `:none` it ignores them. `:search_paths` (compile against the
 parent's packages without linking them) is reserved and currently rejected.
+
+Build-setting values become generated `.xcconfig` lines. Scalar values retain
+explicit xcconfig quoting and escaping. Array elements are joined with spaces
+and elements containing spaces are quoted; use a scalar value instead when an
+element itself needs a quote or backslash. Control characters are rejected in
+values and configuration names, as are selector characters in configuration
+names.
 
 ### Group parameters
 
@@ -120,9 +127,26 @@ or `'~> 13.9.0.0'`; SwiftPods translates it.
 
 The public catalog is [swiftpods-org/swiftpods-catalog](https://github.com/swiftpods-org/swiftpods-catalog).
 `source` lines replace it with your own catalogs, searched in order; list it too
-to keep using it. Catalogs are cached: `install --update-sources` fetches the
-latest, and `source 'url', revision: 'a1b2c3d'` pins a commit. `swiftpods search
+to keep using it. `install` reuses catalog commits already recorded in
+`SwiftPods.lock`; `install --update-sources` explicitly fetches the latest and
+updates that lock. `source 'url', revision: '0123456789abcdef0123456789abcdef01234567'`
+pins a commit independently of the lock. `swiftpods search
 NAME` finds entries.
+
+Remote package and catalog repositories use HTTPS or SSH URLs. Local catalogs
+may use an absolute path or `file://` URL. A `revision` pin is the complete
+40-character SHA-1 or 64-character SHA-256 object ID; abbreviated hashes are not
+integrity pins and are rejected.
+
+Remote catalog fetches accept only hosts whose complete DNS result contains
+public IP addresses. SwiftPods pins that validated address snapshot for the
+connection, disables HTTP redirects and proxies, requires TLS verification,
+and does not load ambient system/global Git or SSH configuration. HTTPS
+authentication uses the macOS Keychain Git credential helper; SSH may use the
+standard keys and `SSH_AUTH_SOCK`, and requires an existing `known_hosts` key.
+For a catalog on an internal, loopback, link-local or private-network Git
+server, create a trusted local mirror and use its absolute path or `file://`
+URL instead.
 
 A remote package needs exactly one requirement:
 
@@ -132,7 +156,7 @@ A remote package needs exactly one requirement:
 | `'~> 1.2'`, `'~> 1'`, `from: '1.2.0'`, `up_to_next_major: '1.2.0'` | Up to next major from 1.2.0 |
 | `'~> 1.2.3'`, `up_to_next_minor: '1.2.3'` | Up to next minor from 1.2.3 |
 | `'>= 1.2', '< 2.0'`, `range: ['1.2', '2.0']` | Range 1.2.0 ..< 2.0.0 |
-| `branch: 'main'`, `revision: 'a1b2c3…'` | Branch or commit |
+| `branch: 'main'`, `revision: '<full commit object ID>'` | Branch or commit |
 
 Versions must have at most three numeric components. A lower bound without an
 upper bound is rejected. `link: false` adds the package without linking any
@@ -152,6 +176,12 @@ binary 'HyprMXAdapter',
        linker_flags: ['-ObjC']
 binary 'Analytics', path: 'Vendor/Analytics.xcframework'
 ```
+
+Remote binary archives use HTTPS; signed query parameters are supported, while
+credentials and URL fragments are rejected. An absolute local `file:///…` URL
+is available for development and tests. A binary `path` stays inside the
+Podfile directory. Archive `xcframeworks` and `resources` paths may contain
+spaces but must be relative, without traversal or variable expansion.
 
 SwiftPods downloads the archive (`.zip`, `.tar.gz`, `.tgz`, `.tar.xz`), checks
 its SHA-256, and exposes every `.xcframework` inside it as one product named
@@ -174,12 +204,20 @@ is missing. `swiftpods install` prints a note for each repair.
 `execution_position` (`:before_compile`, `:after_compile`, `:any`),
 `based_on_dependency_analysis`, `show_env_vars_in_log`.
 
+`show_env_vars_in_log` defaults to `false`. When explicitly enabled it prints
+only a small, non-secret build-diagnostics allowlist (`ACTION`, `CONFIGURATION`,
+`PLATFORM_NAME`, `SDK_NAME`, `ARCHS`), never the complete process environment.
+
 Scripts do not become phases of their own, so editing them leaves the project
 alone. `[SwiftPods] Prepare`, before compiling, runs `:before_compile` scripts;
 `[SwiftPods] Finish`, after the target's other phases, runs `:after_compile` and
 `:any` scripts. Both run on every build, in declaration order. Input and output
 files declare what the scripts read and write, for Xcode's script sandbox and
 build order; input and output file lists are read when installing.
+By default SwiftPods reads those lists only from regular, non-symlink files
+inside the Podfile directory. For a deliberately shared list outside that
+directory, pass `swiftpods install --allow-external-file-lists`; this is an
+explicit trust decision for every external list declared by that Podfile.
 
 ## Frameworks embedded in an app
 

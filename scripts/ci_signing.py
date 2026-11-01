@@ -5,11 +5,14 @@ import argparse
 import base64
 import json
 import os
+import re
 import secrets
 import shlex
 import subprocess
 import tempfile
 from pathlib import Path
+
+from scripts.apple_signing import apple_tool_environment, trusted_xcode_tool
 
 
 def run(*arguments):
@@ -18,6 +21,8 @@ def run(*arguments):
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        env=apple_tool_environment(),
+        stdin=subprocess.DEVNULL,
     )
     if result.returncode:
         raise RuntimeError(
@@ -53,6 +58,7 @@ def main():
         "SWIFTPODS_SIGNING_P12",
         "SWIFTPODS_SIGNING_PASSWORD",
         "SWIFTPODS_SIGNING_IDENTITY",
+        "SWIFTPODS_SIGNING_TEAM_ID",
         "SWIFTPODS_NOTARY_KEY",
         "SWIFTPODS_NOTARY_KEY_ID",
         "SWIFTPODS_NOTARY_ISSUER",
@@ -61,8 +67,12 @@ def main():
     if missing:
         raise RuntimeError("Configure explicit release secrets: " + ", ".join(missing))
     identity = os.environ["SWIFTPODS_SIGNING_IDENTITY"]
-    if "\n" in identity or "\r" in identity:
-        raise RuntimeError("Invalid signing identity")
+    team_id = os.environ["SWIFTPODS_SIGNING_TEAM_ID"]
+    if not re.fullmatch(r"[0-9A-Fa-f]{40}", identity):
+        raise RuntimeError("Signing identity must be an exact certificate SHA-1 fingerprint")
+    if not re.fullmatch(r"[A-Z0-9]{10}", team_id):
+        raise RuntimeError("Signing Team ID must be exactly 10 uppercase letters or digits")
+    identity = identity.upper()
     if state.exists():
         raise RuntimeError("Signing state already exists; run cleanup first")
     keychain = parent / ("swiftpods-" + secrets.token_hex(8) + ".keychain-db")
@@ -121,8 +131,7 @@ def main():
             )
             profile = "swiftpods-release-" + keychain.stem
             run(
-                "/usr/bin/xcrun",
-                "notarytool",
+                trusted_xcode_tool("notarytool"),
                 "store-credentials",
                 profile,
                 "--keychain",
@@ -138,6 +147,8 @@ def main():
             output.write(
                 "SWIFTPODS_SIGNING_IDENTITY="
                 + identity
+                + "\nSWIFTPODS_SIGNING_TEAM_ID="
+                + team_id
                 + "\nSWIFTPODS_NOTARY_PROFILE="
                 + profile
                 + "\nSWIFTPODS_NOTARY_KEYCHAIN="

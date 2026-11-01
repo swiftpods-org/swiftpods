@@ -31,6 +31,24 @@ final class ManifestReaderTests: XCTestCase {
         if let line { XCTAssertEqual(error.location?.line, line, error.description, file: file, line: sourceLine) }
     }
 
+    func testFilesystemManifestRetainsSnapshotsForLaterTrustBoundaries() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "swiftpods-manifest-snapshot-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let podfile = directory.appendingPathComponent("Podfile")
+        let include = directory.appendingPathComponent("Shared.podfile")
+        try "include 'Shared.podfile'\ntarget 'App' do\nend\n".write(
+            to: podfile, atomically: false, encoding: .utf8)
+        try "platform :ios, '15.0'\n".write(to: include, atomically: false, encoding: .utf8)
+
+        let manifest = try ManifestReader().load(podfile.path)
+        XCTAssertNoThrow(try manifest.verifyFileSnapshots())
+        try "platform :ios, '16.0'\n".write(to: include, atomically: true, encoding: .utf8)
+
+        XCTAssertThrowsError(try manifest.verifyFileSnapshots())
+    }
+
     func testSharedGroupsFromIncludedFiles() throws {
         let manifest = try read(
             """
@@ -188,7 +206,7 @@ final class ManifestReaderTests: XCTestCase {
             ("up_to_next_minor: '1.4.0'", .upToNextMinor(Version(1, 4, 0))),
             ("range: ['1.0', '2.0']", .range(Version(1, 0, 0), Version(2, 0, 0))),
             ("branch: 'main'", .branch("main")),
-            ("revision: 'ABCDEF1'", .revision("abcdef1")),
+            ("revision: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'", .revision("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")),
         ]
         for (text, expected) in cases {
             let manifest = try read("target 'App' do\n  spm 'https://example.com/a/Kit.git', \(text)\nend")
@@ -251,7 +269,9 @@ final class ManifestReaderTests: XCTestCase {
         assertError("target 'App' do\n  spm 'https://x/Kit.git', exact: '1.0.0', product: ['Kit']\nend", "has no option `product`")
         assertError("target 'App' do\nend\ntarget 'App' do\nend", "declared twice", line: 3)
         assertError("target 'App' do\n  binary 'Bad-Name', path: 'x'\nend", "not a valid binary name")
-        assertError("target 'App' do\n  binary 'Kit', url: 'http://x/a.zip', sha256: '\(String(repeating: "0", count: 64))'\nend", "must use https")
+        assertError(
+            "target 'App' do\n  binary 'Kit', url: 'http://x/a.zip', sha256: '\(String(repeating: "0", count: 64))'\nend",
+            "must be a safe HTTPS or local file URL")
         assertError("target 'App' do\n  binary 'Kit', url: 'https://x/a.zip'\nend", "needs `url` and `sha256`")
         assertError("target 'App' do\n  binary 'Kit', path: 'Kit.xcframework', dependencies: ['Other']\nend", "undeclared binary `Other`")
         assertError("target 'App' do\n  spm 'Kit', git: 'https://x/Kit.git'\n", "Missing `end`")

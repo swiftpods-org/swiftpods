@@ -22,9 +22,19 @@ runs:
       run: |
         set -euo pipefail
         install_prefix="$RUNNER_TEMP/swiftpods/$SWIFTPODS_VERSION"
-        python3 "$GITHUB_ACTION_PATH/scripts/install.py" \
+        runtime_directory="$(/usr/bin/mktemp -d "$RUNNER_TEMP/swiftpods-runtime.XXXXXX")"
+        /bin/chmod 700 "$runtime_directory"
+        runtime_directory="$(cd -- "$runtime_directory" && /bin/pwd -P)"
+        runtime_executable="$(/usr/bin/env -i \
+          PATH=/usr/bin:/bin:/usr/sbin:/sbin LANG=C LC_ALL=C \
+          /usr/bin/python3 "$GITHUB_ACTION_PATH/scripts/install.py" \
           --version "$SWIFTPODS_VERSION" \
           --manifest-sha256 "$SWIFTPODS_MANIFEST_SHA256" \
-          --prefix "$install_prefix"
-        echo "$install_prefix/bin" >> "$GITHUB_PATH"
-        echo "bin-directory=$install_prefix/bin" >> "$GITHUB_OUTPUT"
+          --prefix "$install_prefix" \
+          --runtime-directory "$runtime_directory")"
+        if [[ "$runtime_executable" != "$runtime_directory/swiftpods" || ! -x "$runtime_executable" ]]; then
+          echo "Installer did not return the authenticated runtime executable" >&2
+          exit 1
+        fi
+        echo "$runtime_directory" >> "$GITHUB_PATH"
+        echo "bin-directory=$runtime_directory" >> "$GITHUB_OUTPUT"

@@ -38,7 +38,37 @@ struct Statement {
 
 /// Builds statements from tokens. Anything that would need evaluation is an error.
 struct Parser {
+    private static let maximumNestingDepth = 128
+    private static let maximumTokenUnits = 200_000
+    private static let maximumSyntaxNodes = 50_000
+
+    final class Budget {
+        fileprivate var tokenUnits = 0
+        fileprivate var syntaxNodes = 0
+
+        func consumeTokenUnits(_ count: Int, at location: SourceLocation) throws(ManifestError) {
+            try requireTokenCapacity(count, at: location)
+            tokenUnits += count
+        }
+
+        func requireTokenCapacity(_ count: Int, at location: SourceLocation) throws(ManifestError) {
+            guard count >= 0, tokenUnits <= Parser.maximumTokenUnits - count else {
+                throw ManifestError(
+                    "Podfile exceeds the parser token budget of \(Parser.maximumTokenUnits)", at: location)
+            }
+        }
+
+        fileprivate func consumeSyntaxNodes(_ count: Int, at location: SourceLocation) throws(ManifestError) {
+            guard count >= 0, syntaxNodes <= Parser.maximumSyntaxNodes - count else {
+                throw ManifestError(
+                    "Podfile exceeds the syntax node budget of \(Parser.maximumSyntaxNodes)", at: location)
+            }
+            syntaxNodes += count
+        }
+    }
+
     private let tokens: [Token]
+    private let budget: Budget
     private var index = 0
 
     private static let unsupported: [String: (String, String)] = [
@@ -58,11 +88,18 @@ struct Parser {
     /// Their blocks hold Ruby code, so they are rejected before it is parsed.
     private static let hooks: Set = ["pre_install", "post_install", "pre_integrate", "post_integrate"]
 
-    init(_ tokens: [Token]) { self.tokens = tokens }
+    init(_ tokens: [Token], budget: Budget) {
+        self.tokens = tokens
+        self.budget = budget
+    }
 
     static func statements(_ text: String, file: String) throws(ManifestError) -> [Statement] {
-        var parser = Parser(try Lexer.tokens(text, file: file))
-        return try parser.statements(untilEnd: false)
+        try statements(text, file: file, budget: Budget())
+    }
+
+    static func statements(_ text: String, file: String, budget: Budget) throws(ManifestError) -> [Statement] {
+        var parser = Parser(try Lexer.tokens(text, file: file, budget: budget), budget: budget)
+        return try parser.statements(untilEnd: false, depth: 0)
     }
 
     private var token: Token { tokens[index] }
@@ -76,6 +113,22 @@ struct Parser {
 
     private func error(_ message: String, hint: String? = nil) -> ManifestError {
         ManifestError(message, at: token.location, hint: hint)
+    }
+
+    private func checkNesting(_ depth: Int, at location: SourceLocation) throws(ManifestError) {
+        guard depth <= Self.maximumNestingDepth else {
+            throw ManifestError(
+                "Podfile syntax is nested more than \(Self.maximumNestingDepth) levels", at: location)
+        }
+    }
+
+    private mutating func consumeNodes(_ count: Int = 1, at location: SourceLocation) throws(ManifestError) {
+        try budget.consumeSyntaxNodes(count, at: location)
+    }
+
+    private mutating func node(_ value: Node.Value, at location: SourceLocation, cost: Int = 1) throws(ManifestError) -> Node {
+        try consumeNodes(cost, at: location)
+        return Node(value: value, location: location)
     }
 
     private func describe(_ kind: TokenKind) -> String {
@@ -103,7 +156,8 @@ struct Parser {
         }
     }
 
-    private mutating func statements(untilEnd: Bool) throws(ManifestError) -> [Statement] {
+    private mutating func statements(untilEnd: Bool, depth: Int) throws(ManifestError) -> [Statement] {
+        try checkNesting(depth, at: token.location)
         var result: [Statement] = []
         while true {
             skipNewlines()
@@ -116,15 +170,16 @@ struct Parser {
                 advance()
                 return result
             case .identifier(let name):
-                result.append(try statement(name))
+                result.append(try statement(name, depth: depth))
             default:
                 throw error("Expected a declaration, found \(describe(kind))")
             }
         }
     }
 
-    private mutating func statement(_ name: String) throws(ManifestError) -> Statement {
+    private mutating func statement(_ name: String, depth: Int) throws(ManifestError) -> Statement {
         let location = token.location
+        try consumeNodes(at: location)
         if let (message, hint) = Self.unsupported[name] {
             throw ManifestError(message, at: location, hint: "Podfiles are read as data, not executed. " + hint)
         }
@@ -147,19 +202,21 @@ struct Parser {
         var options: [(key: Node, value: Node)] = []
         let parenthesized = kind == .leftParen
         if parenthesized {
+            try checkNesting(depth + 1, at: token.location)
             advance()
-            try arguments(&positional, &options, closing: .rightParen)
+            try arguments(&positional, &options, closing: .rightParen, depth: depth + 1)
             advance()
         } else if startsArgument {
-            try arguments(&positional, &options, closing: nil)
+            try arguments(&positional, &options, closing: nil, depth: depth)
         }
         var block: [Statement]?
         if kind == .identifier("do") {
+            try checkNesting(depth + 1, at: token.location)
             advance()
             if kind == .pipe {
                 throw error("Block parameters are not supported", hint: "Podfiles are read as data, not executed")
             }
-            block = try statements(untilEnd: true)
+            block = try statements(untilEnd: true, depth: depth + 1)
         } else if kind == .leftBrace {
             throw error("Use `do … end` for blocks")
         }
@@ -180,22 +237,22 @@ struct Parser {
     }
 
     private mutating func arguments(
-        _ positional: inout [Node], _ options: inout [(key: Node, value: Node)], closing: TokenKind?
+        _ positional: inout [Node], _ options: inout [(key: Node, value: Node)], closing: TokenKind?, depth: Int
     ) throws(ManifestError) {
         if closing != nil { skipNewlines() }
         if let closing, kind == closing { return }
         while true {
             if case .label(let name) = kind {
-                let key = Node(value: .symbol(name), location: token.location)
+                let key = try node(.symbol(name), at: token.location)
                 advance()
                 skipNewlines()
-                options.append((key, try value()))
+                options.append((key, try value(depth: depth)))
             } else {
-                let value = try value()
+                let value = try value(depth: depth)
                 if kind == .arrow {
                     advance()
                     skipNewlines()
-                    options.append((value, try self.value()))
+                    options.append((value, try self.value(depth: depth)))
                 } else {
                     if !options.isEmpty {
                         throw ManifestError("Positional arguments must come before options", at: value.location)
@@ -212,42 +269,43 @@ struct Parser {
         if let closing, kind != closing { throw error("Expected \(describe(closing)), found \(describe(kind))") }
     }
 
-    private mutating func value() throws(ManifestError) -> Node {
+    private mutating func value(depth: Int) throws(ManifestError) -> Node {
         let location = token.location
         switch kind {
         case .string(let text):
             advance()
-            return Node(value: .string(text), location: location)
+            return try node(.string(text), at: location)
         case .symbol(let name):
             advance()
-            return Node(value: .symbol(name), location: location)
+            return try node(.symbol(name), at: location)
         case .number(let text):
             advance()
-            return Node(value: .number(text), location: location)
+            return try node(.number(text), at: location)
         case .words(let words, let symbols):
+            try consumeNodes(1 + words.count, at: location)
             advance()
-            return Node(
-                value: .array(words.map { Node(value: symbols ? .symbol($0) : .string($0), location: location) }),
-                location: location)
+            let elements = words.map { Node(value: symbols ? .symbol($0) : .string($0), location: location) }
+            return Node(value: .array(elements), location: location)
         case .identifier("true"):
             advance()
-            return Node(value: .bool(true), location: location)
+            return try node(.bool(true), at: location)
         case .identifier("false"):
             advance()
-            return Node(value: .bool(false), location: location)
+            return try node(.bool(false), at: location)
         case .identifier("nil"):
             advance()
-            return Node(value: .null, location: location)
+            return try node(.null, at: location)
         case .identifier(let name):
             throw ManifestError(
                 "'\(name)' is not a value", at: location,
                 hint: "Podfiles are read as data: constants, variables and method calls are not supported. Write the value itself")
         case .leftBracket:
+            try checkNesting(depth + 1, at: location)
             advance()
             var elements: [Node] = []
             skipNewlines()
             while kind != .rightBracket {
-                elements.append(try value())
+                elements.append(try value(depth: depth + 1))
                 skipNewlines()
                 if kind == .comma {
                     advance()
@@ -257,15 +315,16 @@ struct Parser {
                 }
             }
             advance()
-            return Node(value: .array(elements), location: location)
+            return try node(.array(elements), at: location)
         case .leftBrace:
+            try checkNesting(depth + 1, at: location)
             advance()
             var positional: [Node] = []
             var pairs: [(key: Node, value: Node)] = []
-            try arguments(&positional, &pairs, closing: .rightBrace)
+            try arguments(&positional, &pairs, closing: .rightBrace, depth: depth + 1)
             if let stray = positional.first { throw ManifestError("Expected `key => value` in a hash", at: stray.location) }
             advance()
-            return Node(value: .hash(pairs), location: location)
+            return try node(.hash(pairs), at: location)
         default:
             throw error("Expected a value, found \(describe(kind))")
         }

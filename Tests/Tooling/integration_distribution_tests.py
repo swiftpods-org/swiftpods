@@ -17,16 +17,23 @@ class IntegrationDistributionTests(unittest.TestCase):
         source.write_text('let version = "0.2.0"\n')
         self.path = self.root / "release.json"
         self.manifest = {
-            "schema_version": 2,
+            "schema_version": 3,
             "version": "0.2.0",
             "publishable": True,
             "development": False,
+            "publisher": {
+                "authority": "Developer ID Application: Fixture (TEAMID1234)",
+                "team_id": "TEAMID1234",
+                "certificate_sha1": "A" * 40,
+                "certificate_sha256": "b" * 64,
+            },
             "assets": [
                 {
                     "architecture": architecture,
                     "minimum_macos": "13.0",
                     "url": f"https://example.org/{architecture}.zip",
                     "sha256": architecture[0] * 64,
+                    "content_sha256": ("c" if architecture == "arm64" else "d") * 64,
                     "notarization": {"status": "Accepted"},
                 }
                 for architecture in ("arm64", "x86_64")
@@ -67,6 +74,7 @@ class IntegrationDistributionTests(unittest.TestCase):
             ("schema_version", 1),
             ("publishable", False),
             ("development", True),
+            ("publisher", None),
             ("assets", self.manifest["assets"][:1]),
             ("assets", unnotarized),
         ]:
@@ -82,7 +90,6 @@ class IntegrationDistributionTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "current source version"):
             self.generate()
         self.assertFalse((self.root / "Formula").exists())
-
 
 if __name__ == "__main__":
     unittest.main()

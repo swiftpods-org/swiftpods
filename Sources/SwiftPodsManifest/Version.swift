@@ -14,23 +14,30 @@ public struct Version: Sendable, Hashable, Comparable, Codable, CustomStringConv
         self.build = build
     }
 
-    /// Accepts `1`, `1.2` and `1.2.3`, each with optional `-prerelease` and `+build`.
+    /// Accepts `1`, `1.2` and `1.2.3`, each with optional SemVer `-prerelease` and `+build` identifiers.
     public init?(_ text: String) {
+        func isIdentifier(_ identifier: Substring) -> Bool {
+            !identifier.isEmpty && identifier.utf8.allSatisfy { byte in
+                byte == 45 || (byte >= 48 && byte <= 57) || (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122)
+            }
+        }
         var rest = Substring(text)
         var build: String?
         if let plus = rest.firstIndex(of: "+") {
-            build = String(rest[rest.index(after: plus)...])
+            let metadata = rest[rest.index(after: plus)...]
             rest = rest[..<plus]
-            guard build?.isEmpty == false else { return nil }
+            let identifiers = metadata.split(separator: ".", omittingEmptySubsequences: false)
+            guard !identifiers.isEmpty, identifiers.allSatisfy(isIdentifier) else { return nil }
+            build = String(metadata)
         }
         var prerelease: [String] = []
         if let dash = rest.firstIndex(of: "-") {
-            prerelease = rest[rest.index(after: dash)...].split(separator: ".", omittingEmptySubsequences: false)
-                .map(String.init)
+            let identifiers = rest[rest.index(after: dash)...].split(separator: ".", omittingEmptySubsequences: false)
             rest = rest[..<dash]
-            guard !prerelease.isEmpty, prerelease.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isASCII) }) else {
+            guard !identifiers.isEmpty, identifiers.allSatisfy(isIdentifier) else {
                 return nil
             }
+            prerelease = identifiers.map(String.init)
         }
         let numbers = rest.split(separator: ".", omittingEmptySubsequences: false)
         guard (1...3).contains(numbers.count) else { return nil }
@@ -61,25 +68,43 @@ public struct Version: Sendable, Hashable, Comparable, Codable, CustomStringConv
         case (false, false): break
         }
         for (left, right) in zip(lhs.prerelease, rhs.prerelease) where left != right {
-            switch (Int(left), Int(right)) {
-            case let (l?, r?): return l < r
-            case (.some, nil): return true
-            case (nil, .some): return false
-            case (nil, nil): return left < right
+            let leftIsNumeric = left.utf8.allSatisfy { $0 >= 48 && $0 <= 57 }
+            let rightIsNumeric = right.utf8.allSatisfy { $0 >= 48 && $0 <= 57 }
+            switch (leftIsNumeric, rightIsNumeric) {
+            case (true, true):
+                let normalizedLeft = left.drop(while: { $0 == "0" })
+                let normalizedRight = right.drop(while: { $0 == "0" })
+                if normalizedLeft.count != normalizedRight.count { return normalizedLeft.count < normalizedRight.count }
+                if normalizedLeft != normalizedRight { return normalizedLeft < normalizedRight }
+                // SwiftPM accepts leading zeroes and treats numerically equal identifiers as equivalent for precedence.
+                continue
+            case (true, false): return true
+            case (false, true): return false
+            case (false, false): return left < right
             }
         }
         return lhs.prerelease.count < rhs.prerelease.count
     }
 
     public static func == (lhs: Version, rhs: Version) -> Bool {
-        (lhs.major, lhs.minor, lhs.patch) == (rhs.major, rhs.minor, rhs.patch) && lhs.prerelease == rhs.prerelease
+        !(lhs < rhs) && !(rhs < lhs)
     }
 
     public func hash(into hasher: inout Hasher) {
         hasher.combine(major)
         hasher.combine(minor)
         hasher.combine(patch)
-        hasher.combine(prerelease)
+        hasher.combine(prerelease.count)
+        for identifier in prerelease {
+            let numeric = identifier.utf8.allSatisfy { $0 >= 48 && $0 <= 57 }
+            hasher.combine(numeric)
+            if numeric {
+                let normalized = identifier.drop(while: { $0 == "0" })
+                hasher.combine(normalized.isEmpty ? "0" : String(normalized))
+            } else {
+                hasher.combine(identifier)
+            }
+        }
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -122,9 +147,11 @@ public enum Requirement: Sendable, Hashable, Codable, CustomStringConvertible {
         switch self {
         case .exact(let required): return version == required
         case .upToNextMajor(let lower):
-            return version >= lower && version < Version(lower.major + 1, 0, 0)
+            let (upperMajor, overflow) = lower.major.addingReportingOverflow(1)
+            return version >= lower && (overflow || version < Version(upperMajor, 0, 0))
         case .upToNextMinor(let lower):
-            return version >= lower && version < Version(lower.major, lower.minor + 1, 0)
+            let (upperMinor, overflow) = lower.minor.addingReportingOverflow(1)
+            return version >= lower && (overflow ? version.major == lower.major : version < Version(lower.major, upperMinor, 0))
         case .range(let lower, let upper): return version >= lower && version < upper
         case .branch, .revision: return false
         }
@@ -159,9 +186,13 @@ public enum Requirement: Sendable, Hashable, Codable, CustomStringConvertible {
                 let (value, components) = try version(rest, at: location)
                 return components == 3 ? .upToNextMinor(value) : .upToNextMajor(value)
             case ">=":
+                let lower = try version(rest, at: location).0
+                let (nextMajor, overflow) = lower.major.addingReportingOverflow(1)
                 throw ManifestError(
                     "'\(text)' has no upper bound", at: location,
-                    hint: "Add one, for example '\(text)', '< \(try version(rest, at: location).0.major + 1).0'")
+                    hint: overflow
+                        ? "Use an exact version at this upper boundary"
+                        : "Add one, for example '\(text)', '< \(nextMajor).0'")
             default:
                 throw ManifestError(
                     "'\(text)' cannot be expressed as a Swift package requirement", at: location,
@@ -201,8 +232,22 @@ extension Requirement {
             }
             return values
         }
-        func pack(_ values: [Int]) -> Version {
-            Version(Int(String(values[0]) + values.dropFirst().map { $0 < 10 ? "0\($0)" : "\($0)" }.joined())!, 0, 0)
+        func pack(_ values: [Int], at location: SourceLocation) throws(ManifestError) -> Version {
+            guard let first = values.first else {
+                throw ManifestError("A packed version needs at least one component", at: location)
+            }
+            let text = String(first) + values.dropFirst().map { $0 < 10 ? "0\($0)" : "\($0)" }.joined()
+            guard let packed = Int(text) else {
+                throw ManifestError("The packed version is too large to represent", at: location)
+            }
+            return Version(packed, 0, 0)
+        }
+        func increment(_ value: Int, at location: SourceLocation) throws(ManifestError) -> Int {
+            let (incremented, overflow) = value.addingReportingOverflow(1)
+            guard !overflow else {
+                throw ManifestError("The packed version's upper bound is too large to represent", at: location)
+            }
+            return incremented
         }
         func split(_ text: String) -> (String, Substring) {
             let trimmed = Substring(text.trimmingCharacters(in: " "))
@@ -216,20 +261,24 @@ extension Requirement {
             let (op, rest) = split(text)
             let values = try components(rest, at: location)
             switch op {
-            case "", "=": return .exact(pack(values))
+            case "", "=": return .exact(try pack(values, at: location))
             case "~>":
                 // As in CocoaPods: the last written component may grow, the one before it may not.
                 var upper = Array(values.dropLast())
-                if upper.isEmpty { upper = [values[0] + 1] } else { upper[upper.count - 1] += 1 }
+                if upper.isEmpty {
+                    upper = [try increment(values[0], at: location)]
+                } else {
+                    upper[upper.count - 1] = try increment(upper[upper.count - 1], at: location)
+                }
                 upper += Array(repeating: 0, count: values.count - upper.count)
-                return .range(pack(values), pack(upper))
+                return .range(try pack(values, at: location), try pack(upper, at: location))
             default: break
             }
         } else if texts.count == 2 {
             let parts = texts.map { (split($0.0), $0.1) }
             if let lower = parts.first(where: { $0.0.0 == ">=" }), let upper = parts.first(where: { $0.0.0 == "<" }) {
-                let low = pack(try components(lower.0.1, at: lower.1))
-                let high = pack(try components(upper.0.1, at: upper.1))
+                let low = try pack(try components(lower.0.1, at: lower.1), at: lower.1)
+                let high = try pack(try components(upper.0.1, at: upper.1), at: upper.1)
                 guard low < high else { throw ManifestError("The lower bound must be below the upper bound", at: lower.1) }
                 return .range(low, high)
             }

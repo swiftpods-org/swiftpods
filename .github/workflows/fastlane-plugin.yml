@@ -6,6 +6,8 @@ on:
       - 'lib/**'
       - 'Tests/FastlanePlugin/**'
       - 'fastlane-plugin-swiftpods.gemspec'
+      - 'Gemfile'
+      - 'Gemfile.lock'
       - 'scripts/install.py'
       - '.github/workflows/fastlane-plugin.yml'
   pull_request:
@@ -13,36 +15,49 @@ on:
       - 'lib/**'
       - 'Tests/FastlanePlugin/**'
       - 'fastlane-plugin-swiftpods.gemspec'
+      - 'Gemfile'
+      - 'Gemfile.lock'
       - 'scripts/install.py'
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, macos-15]
+        ruby: ['3.0.7', '4.0.9']
+    env:
+      BUNDLE_FROZEN: 'true'
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
-      - name: Install fastlane
-        run: |
-          gem_home="$RUNNER_TEMP/gems"
-          # Keep the system gems visible: installation reuses those that satisfy fastlane's dependencies.
-          gem_path="$gem_home:$(ruby -e 'print Gem.default_path.join(":")')"
-          echo "GEM_HOME=$gem_home" >> "$GITHUB_ENV"
-          echo "GEM_PATH=$gem_path" >> "$GITHUB_ENV"
-          GEM_HOME="$gem_home" GEM_PATH="$gem_path" gem install --no-document fastlane minitest
+      - uses: ruby/setup-ruby@de492cf36cbab201753d720ce4f4e336cd688c94 # v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler: '2.5.23'
+          bundler-cache: true
       - name: Run plugin tests
         run: |
           set -o pipefail
           log="$RUNNER_TEMP/plugin-tests.log"
-          if ! ruby Tests/FastlanePlugin/run.rb 2>&1 | tee "$log"; then
+          if ! bundle exec ruby Tests/FastlanePlugin/run.rb 2>&1 | tee "$log"; then
             # Annotations are public, so a failure is readable without access to the job log.
             message="$(grep -v '^Ignoring ' "$log" | tail -30)"
             message="${message//'%'/%25}"
+            message="${message//$'\r'/%0D}"
             printf '::error title=Plugin tests::%s\n' "${message//$'\n'/%0A}"
             exit 1
           fi
       - name: Build the gem
-        run: gem build fastlane-plugin-swiftpods.gemspec --strict --output "$RUNNER_TEMP/plugin.gem"
+        run: |
+          bundle exec gem build fastlane-plugin-swiftpods.gemspec --strict --output "$RUNNER_TEMP/plugin.gem"
+          ruby -rrubygems/package -e '
+            expected = File.read("Sources/swiftpods/main.swift")[/^let version = "([^"]+)"/, 1]
+            actual = Gem::Package.new(ARGV.fetch(0)).spec.version.to_s
+            abort "Built gem version #{actual} differs from source version #{expected}" unless actual == expected
+          ' "$RUNNER_TEMP/plugin.gem"

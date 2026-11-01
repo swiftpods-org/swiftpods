@@ -89,10 +89,20 @@ enum PBXFormatting {
     }
 
     static func quote(_ value: String) -> String {
-        "\""
-            + value.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-            .replacingOccurrences(of: "\n", with: "\\n").replacingOccurrences(of: "\r", with: "\\r")
-            .replacingOccurrences(of: "\t", with: "\\t") + "\""
+        var result = "\""
+        for scalar in value.unicodeScalars {
+            switch scalar.value {
+            case 0x22: result += "\\\""
+            case 0x5C: result += "\\\\"
+            case 0x0A: result += "\\n"
+            case 0x0D: result += "\\r"
+            case 0x09: result += "\\t"
+            case 0x00..<0x20, 0x7F, 0x2028, 0x2029:
+                result += String(format: "\\U%04X", scalar.value)
+            default: result.unicodeScalars.append(scalar)
+            }
+        }
+        return result + "\""
     }
 
     static func value(_ value: PBXValue, indent: String = "") -> String {

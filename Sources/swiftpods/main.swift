@@ -11,16 +11,19 @@ let help = """
 
     Commands:
       install       Write the Podfile's declarations into the Xcode projects
-        --deployment  Require a committed Package.resolved that satisfies the Podfile
-        --resolve     Resolve packages with Xcode afterwards and check the result
+        --deployment  Require Package.resolved and any used SwiftPods.lock; never update either lock
+        --resolve     Resolve packages with Xcode afterwards (deployment remains frozen)
         --adopt       Manage package references that were added without SwiftPods
         --offline     Use cached binary archives and catalogs only
-        --update-sources  Fetch the latest catalogs first
+        --update-sources  Refresh unpinned catalogs and update SwiftPods.lock (non-deployment only)
+        --allow-external-file-lists  Trust script .xcfilelist paths outside the Podfile directory
       deintegrate   Remove everything SwiftPods added
         --cocoapods   Also remove a CocoaPods or SwiftPods 0.1 integration
       check         Read the Podfile and show what each target gets
         --offline     Use cached catalogs only
+        --update-sources  Refresh unpinned catalogs without writing SwiftPods.lock
       search TEXT   Find packages in a catalog (the public one, or --source URL)
+        --update-sources  Refresh the catalog without reading or writing SwiftPods.lock
       catalog lint [DIR]  Check a catalog repository (default: current directory)
       version       Print the version
 
@@ -96,7 +99,11 @@ func run(_ arguments: [String]) throws {
         case "--json": json = true
         case "--source":
             guard !arguments.isEmpty else { throw Usage(description: "--source needs a catalog URL") }
-            source = arguments.removeFirst()
+            let value = arguments.removeFirst()
+            guard PackageLocation.isSafeCatalogSource(value) else {
+                throw Usage(description: "--source must be an HTTPS/SSH repository URL, file URL or absolute local path")
+            }
+            source = value
         case "-h", "--help", "help": command = command ?? "help"
         case "--version": command = command ?? "version"
         default:
@@ -110,7 +117,7 @@ func run(_ arguments: [String]) throws {
         }
     }
     let allowed: [String: Set<String>] = [
-        "install": ["--deployment", "--resolve", "--adopt", "--offline", "--update-sources"], "deintegrate": ["--cocoapods"],
+        "install": ["--deployment", "--resolve", "--adopt", "--offline", "--update-sources", "--allow-external-file-lists"], "deintegrate": ["--cocoapods"],
         "check": ["--update-sources", "--offline"], "search": ["--update-sources"], "catalog": [], "version": [], "help": [],
     ]
     let operandCounts: [String: ClosedRange<Int>] = ["search": 1...1, "catalog": 1...2]
@@ -136,6 +143,7 @@ func run(_ arguments: [String]) throws {
         options.adopt = flags.contains("--adopt")
         options.offline = flags.contains("--offline")
         options.updateSources = flags.contains("--update-sources")
+        options.allowExternalFileLists = flags.contains("--allow-external-file-lists")
         let report = try installer.install(options)
         if json { try output(report) } else { printReport(report) }
     case "deintegrate":
@@ -178,9 +186,44 @@ func run(_ arguments: [String]) throws {
     }
 }
 
+ProcessRunner.installTerminationSignalHandlers()
+let commandLineArguments = Array(CommandLine.arguments.dropFirst())
+
+func dispatchCommandLine(_ arguments: [String]) throws {
+    if arguments.first == SwiftPodsArchiveWorker.command {
+        let output = try SwiftPodsArchiveWorker.run(arguments: Array(arguments.dropFirst()))
+        try FileHandle.standardOutput.write(contentsOf: output)
+    } else if arguments.first == SwiftPodsArchiveWorker.parentProbeCommand {
+        let output = try SwiftPodsArchiveWorker.runParentProbe(arguments: Array(arguments.dropFirst()))
+        try FileHandle.standardOutput.write(contentsOf: output)
+    } else {
+        try run(arguments)
+    }
+}
+
 do {
-    try run(Array(CommandLine.arguments.dropFirst()))
+    #if DEBUG
+    if commandLineArguments.first == "--swiftpods-internal-process-signal-probe-v1" {
+        guard commandLineArguments.count == 3 else {
+            throw Usage(description: "Internal process signal probe requires marker and ready paths")
+        }
+        let script = """
+            trap '/usr/bin/touch "$1"; exit 0' TERM INT
+            /usr/bin/touch "$2"
+            while :; do /bin/sleep 1; done
+            """
+        _ = try ProcessRunner().run(
+            "/bin/sh",
+            ["-c", script, "swiftpods-signal-probe", commandLineArguments[1], commandLineArguments[2]], in: nil)
+    } else {
+        try dispatchCommandLine(commandLineArguments)
+    }
+    #else
+    try dispatchCommandLine(commandLineArguments)
+    #endif
+    ProcessRunner.terminateIfSignalWasReceived()
 } catch {
+    ProcessRunner.terminateIfSignalWasReceived()
     FileHandle.standardError.write(Data("\(error)\n".utf8))
     exit(1)
 }

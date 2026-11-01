@@ -25,10 +25,16 @@ struct PBXDocument: Sendable {
     private let bytes: [UInt8]
     private let root: Node
     let value: PBXValue
-    private var newline: String { bytes.contains(13) ? "\r\n" : "\n" }
+    private let newline: String
 
     init(_ source: String) throws(XcodeError) {
         bytes = Array(source.utf8)
+        newline = bytes.contains(13) ? "\r\n" : "\n"
+        // Validate the bounded OpenStep structure before asking Foundation to recursively decode it.
+        // This keeps adversarial nesting and object counts from reaching PropertyListSerialization.
+        var parser = Parser(bytes: bytes)
+        root = try parser.node()
+        try parser.finish()
         let list: Any
         do {
             list = try PropertyListSerialization.propertyList(from: Data(bytes), format: nil)
@@ -37,8 +43,32 @@ struct PBXDocument: Sendable {
         }
         value = try PBXValue(propertyList: list)
         guard value.dictionary != nil else { throw XcodeError("A project file must contain a dictionary") }
-        var parser = Parser(bytes: bytes)
-        root = try parser.node()
+        try Self.validate(root, value: value)
+    }
+
+    /// Every concrete entry must map one-to-one to Foundation's decoded value. This rejects duplicate keys and
+    /// uncommon escaped spellings that the minimal-diff parser cannot safely associate with the decoded dictionary.
+    private static func validate(_ node: Node, value: PBXValue) throws(XcodeError) {
+        switch node.contents {
+        case .dictionary(let entries):
+            guard let dictionary = value.dictionary, entries.count == dictionary.count,
+                Set(entries.map(\.key)).count == entries.count,
+                Set(entries.map(\.key)) == Set(dictionary.keys)
+            else { throw XcodeError("Project dictionary keys do not map uniquely to their decoded values") }
+            for entry in entries {
+                guard let child = dictionary[entry.key] else {
+                    throw XcodeError("Project dictionary key cannot be decoded safely")
+                }
+                try validate(entry.value, value: child)
+            }
+        case .array(let nodes, _):
+            guard let values = value.array, nodes.count == values.count else {
+                throw XcodeError("Project array syntax does not match its decoded values")
+            }
+            for (child, value) in zip(nodes, values) { try validate(child, value: value) }
+        case .scalar:
+            break
+        }
     }
 
     /// The source text with only the records that differ from `value` rewritten.
@@ -98,14 +128,20 @@ struct PBXDocument: Sendable {
                 let multiline = bytes[node.range].contains(10)
                 let indent =
                     entries.first.map { indentation(at: $0.start) } ?? (indentation(at: node.range.lowerBound) + "\t")
+                // Reuse the last surviving record of each class as the insertion point. Looking it up independently for
+                // every addition made a large object table with a new class quadratic; moved records stay excluded just
+                // as they were from the previous backwards search because their original ranges are removed below.
+                var lastEntryByISA: [String: Entry] = [:]
+                lastEntryByISA.reserveCapacity(entries.count)
+                for entry in entries where !moved.contains(entry.key) {
+                    if let isa = old[entry.key]?.dictionary?.isa { lastEntryByISA[isa] = entry }
+                }
                 var insertions: [Int: [String]] = [:]
                 var sections: [String: [String]] = [:]
                 for key in additions {
                     // Put new project objects next to the existing section of the same class.
                     let isa = new[key]?.dictionary?.isa
-                    let matching = isa.flatMap { kind in
-                        entries.last { !moved.contains($0.key) && old[$0.key]?.dictionary?.isa == kind }
-                    }
+                    let matching = isa.flatMap { lastEntryByISA[$0] }
                     let position = matching.map { insertionAfter($0.end) } ?? closingPosition(node)
                     let separator = multiline ? indent : " "
                     let entry =
@@ -136,11 +172,21 @@ struct PBXDocument: Sendable {
             let indent =
                 elements.first.map { indentation(at: $0.range.lowerBound) }
                 ?? (indentation(at: node.range.lowerBound) + "\t")
-            var available = Array(old.indices)
+            // Keep the original spelling for each surviving value, including duplicates, without repeatedly scanning
+            // and compacting the complete old array. A project-controlled array may contain hundreds of thousands of
+            // values, so the previous `first(where:)` + `removeAll` loop was quadratic.
+            var available: [PBXValue: [Int]] = [:]
+            available.reserveCapacity(old.count)
+            for (index, value) in old.enumerated() { available[value, default: []].append(index) }
+            var consumed: [PBXValue: Int] = [:]
+            consumed.reserveCapacity(available.count)
             var parts: [String] = []
+            parts.reserveCapacity(new.count)
             for value in new {
-                if let index = available.first(where: { old[$0] == value }) {
-                    available.removeAll { $0 == index }
+                let offset = consumed[value, default: 0]
+                if let indices = available[value], offset < indices.count {
+                    let index = indices[offset]
+                    consumed[value] = offset + 1
                     let start = index == 0 ? node.range.lowerBound + 1 : ends[index - 1]
                     var original = text(start..<ends[index])
                     if bytes[ends[index] - 1] != 44 { original += "," }
@@ -188,10 +234,21 @@ struct PBXDocument: Sendable {
     }
 
     private struct Parser {
+        private static let maximumDepth = 128
+        private static let maximumNodes = 250_000
+
         let bytes: [UInt8]
         var cursor = 0
+        var nodes = 0
 
-        mutating func node() throws(XcodeError) -> Node {
+        mutating func node(depth: Int = 0) throws(XcodeError) -> Node {
+            guard depth <= Self.maximumDepth else {
+                throw XcodeError("OpenStep project nesting exceeds the \(Self.maximumDepth)-level limit")
+            }
+            nodes += 1
+            guard nodes <= Self.maximumNodes else {
+                throw XcodeError("OpenStep project contains more than \(Self.maximumNodes) values")
+            }
             try trivia()
             let start = cursor
             guard cursor < bytes.count else { throw invalid() }
@@ -203,7 +260,7 @@ struct PBXDocument: Sendable {
                     let keyStart = cursor
                     let key = try scalar()
                     try consume(61)
-                    let value = try node()
+                    let value = try node(depth: depth + 1)
                     try consume(59)
                     entries.append(Entry(key: key, start: keyStart, value: value, end: cursor))
                     try trivia()
@@ -217,7 +274,7 @@ struct PBXDocument: Sendable {
                 var ends: [Int] = []
                 try trivia()
                 while cursor < bytes.count && bytes[cursor] != 41 {
-                    elements.append(try node())
+                    elements.append(try node(depth: depth + 1))
                     try trivia()
                     if cursor < bytes.count && bytes[cursor] == 44 { cursor += 1 }
                     ends.append(cursor)
@@ -228,6 +285,11 @@ struct PBXDocument: Sendable {
             }
             _ = try scalar()
             return Node(range: start..<cursor, contents: .scalar)
+        }
+
+        mutating func finish() throws(XcodeError) {
+            try trivia()
+            guard cursor == bytes.count else { throw invalid() }
         }
 
         mutating func scalar() throws(XcodeError) -> String {

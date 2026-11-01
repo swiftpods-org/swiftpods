@@ -10,18 +10,23 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from scripts.install import extract_archive
+from scripts.apple_signing import inspect_signature, validate_publisher
+from scripts.install import MAX_DOWNLOAD_BYTES, distribution_digest, extract_archive
 from scripts.support.version import ROOT, source_version
 
 CONTENTS = {"LICENSE", "README.md", "bin/swiftpods"}
+OBJECT_ID_PATTERN = r"[0-9a-f]{40}(?:[0-9a-f]{24})?"
 
 
 def inspect_archive(archive):
     """Read the platform and signature of the archived executable itself."""
+    archive = Path(archive)
+    if archive.stat().st_size > MAX_DOWNLOAD_BYTES:
+        raise RuntimeError("Release archive exceeds the size limit")
     with tempfile.TemporaryDirectory(
         prefix="swiftpods-release-inventory-"
     ) as temporary:
-        root = extract_archive(Path(archive).read_bytes(), Path(temporary))
+        root = extract_archive(archive.read_bytes(), Path(temporary))
         files = {
             path.relative_to(root).as_posix()
             for path in root.rglob("*")
@@ -49,29 +54,25 @@ def inspect_archive(archive):
             or len(minimums) != 1
         ):
             raise RuntimeError("Release executable must target one macOS architecture")
-        verified = not subprocess.run(
-            ["/usr/bin/codesign", "--verify", "--strict", executable],
-            capture_output=True,
-        ).returncode
-        authority = re.search(
-            r"^Authority=(.+)$",
-            subprocess.run(
-                ["/usr/bin/codesign", "--display", "--verbose=2", executable],
-                capture_output=True,
-                text=True,
-            ).stderr,
-            re.M,
-        )
         return {
             "architecture": architectures[0],
             "minimum_macos": minimums[0],
-            "signed_by": authority.group(1) if verified and authority else None,
+            "publisher": inspect_signature(executable),
+            "content_sha256": distribution_digest(root),
         }
 
 
 def prepare(args, destination):
     if args.version != source_version(ROOT):
         raise RuntimeError("Release version differs from the source version")
+    tag_object = getattr(args, "tag_object", None)
+    if tag_object is not None and (
+        not isinstance(tag_object, str)
+        or re.fullmatch(OBJECT_ID_PATTERN, tag_object) is None
+    ):
+        raise RuntimeError("Release requires a valid annotated tag object")
+    if not args.development and tag_object is None:
+        raise RuntimeError("Production release requires an annotated tag object")
     if (
         not args.development
         and subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT).strip()
@@ -115,7 +116,7 @@ def prepare(args, destination):
                 "Invalid or duplicate notarization receipt: " + str(path)
             )
         notarizations[checksum] = receipt
-    assets, seen = [], set()
+    assets, publishers, seen = [], [], set()
     for archive in archives:
         executable = inspect_archive(archive)
         architecture = executable["architecture"]
@@ -140,15 +141,14 @@ def prepare(args, destination):
             shutil.copy2(archive, target)
         sha256 = hashlib.sha256(target.read_bytes()).hexdigest()
         notarization = notarizations.pop(sha256, None)
-        if not args.development and (
-            notarization is None
-            or not (executable["signed_by"] or "").startswith(
-                "Developer ID Application: "
-            )
-        ):
+        publisher = executable.get("publisher")
+        if publisher is not None and not validate_publisher(publisher):
+            raise RuntimeError("Release archive has invalid publisher identity")
+        if not args.development and (notarization is None or publisher is None):
             raise RuntimeError(
-                "Each release archive requires Developer ID signing and matching accepted notarization"
+                "Each release archive requires an exact Developer ID publisher and matching accepted notarization"
             )
+        publishers.append(publisher)
         assets.append(
             {
                 "os": "macos",
@@ -156,6 +156,7 @@ def prepare(args, destination):
                 "minimum_macos": minimum,
                 "filename": filename,
                 "sha256": sha256,
+                "content_sha256": executable["content_sha256"],
                 "url": "https://github.com/swiftpods-org/swiftpods/releases/download/v"
                 + args.version
                 + "/"
@@ -172,13 +173,25 @@ def prepare(args, destination):
         raise RuntimeError(
             "A notarization receipt does not match a supplied release archive"
         )
+    publisher = (
+        publishers[0]
+        if publishers and all(value == publishers[0] for value in publishers)
+        else None
+    )
+    if not args.development and publisher is None:
+        raise RuntimeError("All release architectures must use the same exact Developer ID publisher")
     shutil.copy2(ROOT / "scripts/install.py", destination / "install.py")
+    source_revision = {"commit": commit}
+    if tag_object is not None:
+        source_revision["tag_object"] = tag_object
     release = {
-        "schema_version": 2,
+        "schema_version": 3,
         "development": args.development,
         "publishable": not args.development
+        and publisher is not None
         and all(asset["notarization"] is not None for asset in assets),
-        "source_revision": {"commit": commit},
+        "publisher": publisher,
+        "source_revision": source_revision,
         "version": args.version,
         "assets": assets,
         "installer_sha256": hashlib.sha256(
@@ -204,6 +217,10 @@ def prepare(args, destination):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--version", required=True)
+    parser.add_argument(
+        "--tag-object",
+        help="Exact annotated source tag object ID (required for production)",
+    )
     parser.add_argument("--bundle", type=Path, action="append", default=[])
     parser.add_argument("--archive", type=Path, action="append", default=[])
     parser.add_argument(
@@ -222,6 +239,12 @@ def main():
     args = parser.parse_args()
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?", args.version):
         parser.error("Explicit release version required, without a leading v")
+    if args.tag_object is not None and re.fullmatch(
+        OBJECT_ID_PATTERN, args.tag_object
+    ) is None:
+        parser.error("--tag-object must be a complete hexadecimal Git object ID")
+    if not args.development and args.tag_object is None:
+        parser.error("Production release preparation requires --tag-object")
     if not args.bundle and not args.archive:
         parser.error("At least one --bundle or --archive is required")
     if not args.development and not args.notarization:
