@@ -605,11 +605,12 @@ enum SecureFileTree {
             at: root, includingPropertiesForKeys: nil, options: [],
             errorHandler: { _, error in enumerationError = error; return false })
         else { throw SwiftPodsError("Cannot enumerate \(root.path)") }
+        // FileManager's directory enumerator does not follow symbolic links. Calling skipDescendants() for a symlink
+        // can instead discard the remaining physical siblings in the current directory (notably the Versions directory
+        // after a framework alias), so symlinks require no special traversal action here.
         for case let url as URL in enumerator {
             guard contains(url, in: root) else { throw SwiftPodsError("Binary member escapes its root: \(url.path)") }
-            let status = try statusNoFollow(url)
             urls.append(url)
-            if isSymbolicLink(status) { enumerator.skipDescendants() }
         }
         if let enumerationError { throw enumerationError }
 
@@ -792,7 +793,6 @@ enum SecureFileTree {
                     try normalizeCreatedNode(destinationURL, mode: 0o700, expectingDirectory: true)
                     directoryModes.append((destinationURL, safeCopiedMode(status.st_mode)))
                 } else if isSymbolicLink(status) {
-                    enumerator.skipDescendants()
                     let link = try fileManager.destinationOfSymbolicLink(atPath: sourceURL.path)
                     let lexical = link.hasPrefix("/")
                         ? URL(fileURLWithPath: link)
@@ -1022,10 +1022,11 @@ enum SecureFileTree {
             guard contains(url, in: root) else { throw SwiftPodsError("Archive member escapes its root: \(url.path)") }
             let standardizedPath = url.standardizedFileURL.path
             let relative = String(standardizedPath.dropFirst(rootPath.count + 1))
+            let status = try statusNoFollow(url)
             if let first = relative.split(separator: "/", omittingEmptySubsequences: false).first,
                 skippingTopLevelNames.contains(String(first))
             {
-                enumerator.skipDescendants()
+                if isDirectory(status) { enumerator.skipDescendants() }
                 continue
             }
             let parent = (relative as NSString).deletingLastPathComponent
@@ -1037,12 +1038,10 @@ enum SecureFileTree {
             namesByDirectory[parent, default: [:]][key] = name
             let depth = relative.split(separator: "/", omittingEmptySubsequences: false).count
             guard depth <= limits.depth else { throw SwiftPodsError("Archive path is nested too deeply: \(relative)") }
-            let status = try statusNoFollow(url)
             nodes.append(Node(url: url, relative: relative, status: status))
             guard nodes.count <= limits.entries else { throw SwiftPodsError("Archive contains too many entries") }
 
             if isSymbolicLink(status) {
-                enumerator.skipDescendants()
                 let destination = try fileManager.destinationOfSymbolicLink(atPath: url.path)
                 let lexical = destination.hasPrefix("/")
                     ? URL(fileURLWithPath: destination)
@@ -2444,13 +2443,12 @@ struct BinaryStore {
                 guard relative.split(separator: "/", omittingEmptySubsequences: false).count
                     <= SecureFileTree.Limits.local.depth
                 else { throw SwiftPodsError("Binary path is nested too deeply: \(relative)") }
+                let status = try SecureFileTree.statusNoFollow(url)
                 if url.lastPathComponent == "__MACOSX" {
-                    enumerator.skipDescendants()
+                    if SecureFileTree.isDirectory(status) { enumerator.skipDescendants() }
                     continue
                 }
-                let status = try SecureFileTree.statusNoFollow(url)
                 if SecureFileTree.isSymbolicLink(status) {
-                    enumerator.skipDescendants()
                     continue
                 }
                 for pathExtension in supported {
@@ -2630,9 +2628,11 @@ struct BinaryStore {
                 <= SecureFileTree.Limits.local.depth
             else { throw SwiftPodsError("Binary path is nested too deeply: \(relative)") }
             if url.lastPathComponent == "__MACOSX" {
-                enumerator.skipDescendants()
+                if let status = try? SecureFileTree.statusNoFollow(url), SecureFileTree.isDirectory(status) {
+                    enumerator.skipDescendants()
+                }
             } else if let status = try? SecureFileTree.statusNoFollow(url), SecureFileTree.isSymbolicLink(status) {
-                enumerator.skipDescendants()
+                continue
             } else if url.pathExtension == pathExtension,
                 let status = try? SecureFileTree.statusNoFollow(url), SecureFileTree.isDirectory(status),
                 let resolved = try? SecureFileTree.realURL(url), SecureFileTree.contains(resolved, in: resolvedRoot)
@@ -3556,7 +3556,6 @@ struct BinaryStore {
             let status = try SecureFileTree.statusNoFollow(url)
             let objectBytes = try cacheObjectBytes(status)
             if SecureFileTree.isSymbolicLink(status) {
-                enumerator.skipDescendants()
                 guard bytes <= Int64.max - objectBytes else {
                     throw SwiftPodsError("Binary cache contains an oversized symbolic link")
                 }
@@ -3944,7 +3943,8 @@ struct BinaryStore {
             archive, expectedSHA256: expectedSHA256, binary: binary
         ) { descriptor in
             let inspected = try isolatedArchiveProcess(descriptor: descriptor, extractionRoot: nil)
-            try workBudget.reserve(entries: inspected.entries, bytes: inspected.bytes, binary: binary)
+            try workBudget.reserve(
+                entries: inspected.processedEntries, bytes: inspected.processedBytes, binary: binary)
             try ensureFreeSpace(
                 at: directory.deletingLastPathComponent(), additionalBytes: inspected.requiredDiskBytes)
             let root = try Self.createArchiveExtractionRoot(at: directory)
@@ -4183,6 +4183,9 @@ struct BinaryStore {
         let entries: Int
         let headers: Int
         let bytes: Int64
+        /// Includes authenticated AppleDouble metadata that is parsed and bounded but deliberately not materialized.
+        let processedEntries: Int
+        let processedBytes: Int64
         let requiredDiskBytes: Int64
     }
 
@@ -4609,7 +4612,10 @@ struct BinaryStore {
         declaredEntries: Int, declaredBytes: Int64, actualEntries: Int, actualBytes: Int64
     ) throws {
         guard actualEntries == declaredEntries, actualBytes == declaredBytes else {
-            throw SwiftPodsError("Extracted archive tree does not match its authenticated entry and byte counts")
+            throw SwiftPodsError(
+                "Extracted archive tree does not match its authenticated counts "
+                    + "(archive: \(declaredEntries) entries / \(declaredBytes) bytes; "
+                    + "filesystem: \(actualEntries) entries / \(actualBytes) bytes)")
         }
     }
 
@@ -4668,6 +4674,7 @@ struct BinaryStore {
     private struct ArchiveHardLink {
         let path: [String]
         let target: [String]
+        let materialized: Bool
     }
 
     private static func processArchive(
@@ -4685,7 +4692,9 @@ struct BinaryStore {
             var detectedFormat: Format?
             var headers = 0
             var bytes: Int64 = 0
-            var nodes: [String: ArchiveNodeKind] = [:]
+            var processedBytes: Int64 = 0
+            var accountedNodes: [String: ArchiveNodeKind] = [:]
+            var materializedPaths: Set<String> = []
             var fileSystemPaths: [String: String] = [:]
             var fileSizes: [String: Int64] = [:]
             var hardLinks: [ArchiveHardLink] = []
@@ -4766,9 +4775,14 @@ struct BinaryStore {
                     guard kind == .directory else { throw SwiftPodsError("Archive contains an empty pathname") }
                 } else {
                     try insertArchivePath(
-                        pathComponents, kind: kind, nodes: &nodes, fileSystemPaths: &fileSystemPaths,
+                        pathComponents, kind: kind, nodes: &accountedNodes, fileSystemPaths: &fileSystemPaths,
                         maximumEntries: entryLimit, metadata: &metadata)
+                    if !isIgnorableAppleDoublePath(pathComponents) {
+                        try insertMaterializedArchivePath(
+                            pathComponents, paths: &materializedPaths, maximumEntries: entryLimit)
+                    }
                 }
+                let materialized = !isIgnorableAppleDoublePath(pathComponents)
 
                 let declaredSize: Int64?
                 if archive_entry_size_is_set(entry) != 0 {
@@ -4807,22 +4821,28 @@ struct BinaryStore {
                         try metadata.consume(
                             bytes: pathBytes + targetBytes, copies: 2,
                             objects: pathComponents.count + target.count + 2)
-                        hardLinks.append(ArchiveHardLink(path: pathComponents, target: target))
+                        hardLinks.append(ArchiveHardLink(
+                            path: pathComponents, target: target, materialized: materialized))
                     } else {
                         if let declaredSize {
-                            guard declaredSize <= limits.bytes - bytes else {
+                            guard declaredSize <= limits.bytes - processedBytes else {
                                 throw SwiftPodsError("Expanded archive is larger than \(limits.bytes) bytes")
                             }
                         }
-                        let output = try extractionRoot.map {
-                            try createArchiveFile(root: $0, path: pathComponents)
+                        let output: Int32?
+                        if materialized {
+                            output = try extractionRoot.map {
+                                try createArchiveFile(root: $0, path: pathComponents)
+                            }
+                        } else {
+                            output = nil
                         }
                         defer { if let output { close(output) } }
                         let observed = try readArchiveData(
                             reader, url: url, deadline: deadline, declaredSize: declaredSize,
-                            maximumLogicalBytes: limits.bytes - bytes, outputDescriptor: output)
+                            maximumLogicalBytes: limits.bytes - processedBytes, outputDescriptor: output)
                         let size = declaredSize ?? observed
-                        guard size <= limits.bytes - bytes else {
+                        guard size <= limits.bytes - processedBytes else {
                             throw SwiftPodsError("Expanded archive is larger than \(limits.bytes) bytes")
                         }
                         if let output {
@@ -4831,7 +4851,8 @@ struct BinaryStore {
                                 fchflags(output, 0) == 0
                             else { throw SwiftPodsError("Cannot finalize an extracted archive file") }
                         }
-                        bytes += size
+                        processedBytes += size
+                        if materialized { bytes += size }
                         let filePath = pathComponents.joined(separator: "/")
                         try metadata.consume(filePath, copies: 2, objects: 2)
                         fileSizes[filePath] = size
@@ -4844,7 +4865,7 @@ struct BinaryStore {
                         reader, url: url, deadline: deadline, declaredSize: declaredSize,
                         maximumLogicalBytes: 0, outputDescriptor: nil)
                     guard observed == 0 else { throw SwiftPodsError("Archive directory contains file data") }
-                    if let extractionRoot, !pathComponents.isEmpty {
+                    if materialized, let extractionRoot, !pathComponents.isEmpty {
                         try createArchiveDirectory(
                             root: extractionRoot, path: pathComponents, permissions: permissions)
                     }
@@ -4858,7 +4879,7 @@ struct BinaryStore {
                         reader, url: url, deadline: deadline, declaredSize: declaredSize,
                         maximumLogicalBytes: 0, outputDescriptor: nil)
                     guard observed == 0 else { throw SwiftPodsError("Archive symbolic link contains file data") }
-                    if let extractionRoot {
+                    if materialized, let extractionRoot {
                         try createArchiveSymbolicLink(root: extractionRoot, path: pathComponents, target: symlink)
                     }
                 case .implicitDirectory:
@@ -4878,23 +4899,30 @@ struct BinaryStore {
                 let path = link.path.joined(separator: "/")
                 let target = link.target.joined(separator: "/")
                 try metadata.consume(bytes: path.utf8.count + target.utf8.count, objects: 2)
-                guard !hardLinkPaths.contains(target), nodes[target] == .file,
-                    let size = fileSizes[target], size <= limits.bytes - bytes
+                guard !hardLinkPaths.contains(target), accountedNodes[target] == .file,
+                    let size = fileSizes[target], size <= limits.bytes - processedBytes
                 else {
                     throw SwiftPodsError("Archive hard link escapes its root or refers to a non-file: \(path)")
                 }
-                bytes += size
+                processedBytes += size
                 fileSizes[path] = size
-                if let extractionRoot {
+                if link.materialized {
+                    guard materializedPaths.contains(target), size <= limits.bytes - bytes else {
+                        throw SwiftPodsError("Archive hard link refers to discarded metadata: \(path)")
+                    }
+                    bytes += size
+                }
+                if link.materialized, let extractionRoot {
                     try createArchiveHardLink(root: extractionRoot, path: link.path, target: link.target)
                 }
             }
-            let diskMetadata = Int64(nodes.count).multipliedReportingOverflow(by: 4 * 1_024)
+            let diskMetadata = Int64(materializedPaths.count).multipliedReportingOverflow(by: 4 * 1_024)
             guard !diskMetadata.overflow else { throw SwiftPodsError("Archive contains too many filesystem objects") }
             let required = bytes.addingReportingOverflow(diskMetadata.partialValue)
             guard !required.overflow else { throw SwiftPodsError("Expanded archive is too large") }
             return ArchiveInspection(
-                format: detectedFormat, entries: nodes.count, headers: headers, bytes: bytes,
+                format: detectedFormat, entries: materializedPaths.count, headers: headers, bytes: bytes,
+                processedEntries: accountedNodes.count, processedBytes: processedBytes,
                 requiredDiskBytes: required.partialValue)
         }
     }
@@ -5388,6 +5416,29 @@ struct BinaryStore {
     private static func normalizedArchivePathByteCount(_ components: [String]) -> Int {
         guard !components.isEmpty else { return 0 }
         return components.reduce(components.count - 1) { $0 + $1.utf8.count }
+    }
+
+    /// Finder's ZIP writer stores resource-fork metadata as ordinary `._*` files below `__MACOSX`. Foundation hides
+    /// those names even when directory enumeration does not request hidden-file filtering, so retaining them would make
+    /// an independently authenticated filesystem walk incomplete. Parse and budget every byte, but do not materialize
+    /// metadata that neither SwiftPM nor Xcode consumes.
+    private static func isIgnorableAppleDoublePath(_ components: [String]) -> Bool {
+        guard let first = components.first, let last = components.last else { return false }
+        return first == "__MACOSX" || last.hasPrefix("._")
+    }
+
+    /// The full accounting dictionary already validated duplicates, type conflicts and macOS-equivalent names. This
+    /// second set records only paths that will exist on disk, including their implicit parents, without charging the
+    /// metadata budget twice for the same archive strings.
+    private static func insertMaterializedArchivePath(
+        _ components: [String], paths: inout Set<String>, maximumEntries: Int
+    ) throws {
+        for index in components.indices {
+            paths.insert(components[...index].joined(separator: "/"))
+            guard paths.count <= maximumEntries else {
+                throw SwiftPodsError("Archive contains too many materialized entries including implicit directories")
+            }
+        }
     }
 
     private static func insertArchivePath(

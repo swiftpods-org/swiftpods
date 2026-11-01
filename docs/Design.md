@@ -158,7 +158,13 @@ which a build-time script finds without knowing the packages in advance.
 **Binary packaging.** SDK archives are used as published, except that
 SwiftPods normalizes, in its own copy, the iOS framework slices Xcode would embed
 incorrectly (versioned bundles, single-architecture universal static libraries,
-missing `Info.plist`), and reports each repair.
+missing `Info.plist`), and reports each repair. Finder AppleDouble entries
+(`__MACOSX` and `._*`) are still parsed, authenticated and charged to archive
+work limits, but are not materialized because Foundation hides them from normal
+filesystem enumeration and neither SwiftPM nor Xcode consumes them. Physical
+tree walks never call `skipDescendants()` for a symbolic link: Foundation does
+not follow links, and skipping one can hide later siblings such as a framework's
+`Versions` directory.
 
 **Transactions.** Generated files are rendered into a staging directory and
 swapped into place; the project file is written once, atomically, after

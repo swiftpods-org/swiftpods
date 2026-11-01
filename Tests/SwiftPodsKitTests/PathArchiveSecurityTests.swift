@@ -1997,6 +1997,105 @@ final class PathArchiveSecurityTests: XCTestCase {
         }
     }
 
+    func testAppleDoubleMetadataIsAuthenticatedAndBudgetedButNotMaterialized() throws {
+        let directory = try fixture()
+        let archive = directory.appendingPathComponent("AppleDouble.tar")
+        let plist = "plist"
+        let fork = "metadata"
+        let rootFork = "root-metadata"
+        try tar([
+            .file("Kit.xcframework/Info.plist", plist),
+            .file("__MACOSX/Kit.xcframework/._Info.plist", fork),
+            .file("._README", rootFork),
+        ]).write(to: archive)
+
+        let inspection = try BinaryStore.inspectArchive(at: archive, url: archive.absoluteString)
+        XCTAssertEqual(inspection.headers, 3)
+        XCTAssertEqual(inspection.entries, 2)
+        XCTAssertEqual(inspection.bytes, Int64(plist.utf8.count))
+        XCTAssertEqual(inspection.processedEntries, 6)
+        XCTAssertEqual(
+            inspection.processedBytes, Int64(plist.utf8.count + fork.utf8.count + rootFork.utf8.count))
+        XCTAssertThrowsError(try BinaryStore.inspectArchive(
+            at: archive, url: archive.absoluteString,
+            limits: .init(
+                entries: inspection.processedEntries, bytes: inspection.processedBytes - 1, depth: 8,
+                internalHardlinksOnly: true)
+        )) { error in
+            XCTAssertTrue("\(error)".contains("larger than"), "\(error)")
+        }
+
+        let digest = try BinaryStore.sha256(of: archive)
+        try "target 'App' do\n  binary 'Kit', url: '\(archive.absoluteString)', sha256: '\(digest)'\nend\n"
+            .write(to: directory.appendingPathComponent("Podfile"), atomically: true, encoding: .utf8)
+        let binary = try Installer(directory: directory).manifest().binaries[0]
+        let cache = directory.appendingPathComponent("cache", isDirectory: true)
+        let contents = try BinaryStore(
+            cache: cache, runner: ProcessRunner(), offline: false, minimumFreeSpaceReserveBytes: 0
+        ).contents(binary, podfileDirectory: directory)
+
+        XCTAssertEqual(contents.xcframeworks.map(\.lastPathComponent), ["Kit.xcframework"])
+        let stored = BinaryStore.versionedCacheRoot(for: cache)
+            .appendingPathComponent(digest).appendingPathComponent("content")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stored.appendingPathComponent("__MACOSX").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: stored.appendingPathComponent("._README").path))
+    }
+
+    func testFileTreeWalkDoesNotDropVersionedFrameworkContentsAfterSymlinkAliases() throws {
+        let directory = try fixture()
+        let source = directory.appendingPathComponent("Source", isDirectory: true)
+        let framework = source.appendingPathComponent("Kit.framework", isDirectory: true)
+        try FileManager.default.createDirectory(at: framework, withIntermediateDirectories: true)
+        // Create aliases before their physical targets, matching ordinary versioned framework archive ordering.
+        try FileManager.default.createSymbolicLink(
+            atPath: framework.appendingPathComponent("Kit").path,
+            withDestinationPath: "Versions/Current/Kit")
+        try FileManager.default.createSymbolicLink(
+            atPath: framework.appendingPathComponent("Headers").path,
+            withDestinationPath: "Versions/Current/Headers")
+        let versions = framework.appendingPathComponent("Versions", isDirectory: true)
+        try FileManager.default.createDirectory(at: versions, withIntermediateDirectories: false)
+        try FileManager.default.createSymbolicLink(
+            atPath: versions.appendingPathComponent("Current").path, withDestinationPath: "A")
+        let physicalHeaders = versions.appendingPathComponent("A/Headers", isDirectory: true)
+        try FileManager.default.createDirectory(at: physicalHeaders, withIntermediateDirectories: true)
+        try Data("binary".utf8).write(to: versions.appendingPathComponent("A/Kit"))
+        try Data("header".utf8).write(to: physicalHeaders.appendingPathComponent("Kit.h"))
+
+        let before = try SecureFileTree.validate(
+            source, allowRootSymlink: false, limits: .archive, hashingContents: false)
+        XCTAssertEqual(before.entries, 9)
+        XCTAssertEqual(before.bytes, 12)
+
+        try SecureFileTree.normalizePermissions(in: source)
+        let normalized = try SecureFileTree.validate(
+            source, allowRootSymlink: false, limits: .archive, hashingContents: false)
+        XCTAssertEqual(normalized.entries, before.entries)
+        XCTAssertEqual(normalized.bytes, before.bytes)
+
+        let copied = directory.appendingPathComponent("Copied", isDirectory: true)
+        try SecureFileTree.copySanitizedTree(from: source, to: copied, limits: .archive)
+        let copiedInspection = try SecureFileTree.validate(
+            copied, allowRootSymlink: false, limits: .archive, hashingContents: false)
+        XCTAssertEqual(copiedInspection.entries, before.entries)
+        XCTAssertEqual(copiedInspection.bytes, before.bytes)
+        XCTAssertEqual(
+            try String(contentsOf: copied.appendingPathComponent("Kit.framework/Versions/A/Kit"), encoding: .utf8),
+            "binary")
+    }
+
+    func testArtifactSearchDoesNotDropPhysicalSiblingAfterSymlink() throws {
+        let directory = try fixture()
+        let root = directory.appendingPathComponent("Artifacts", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        try FileManager.default.createSymbolicLink(
+            atPath: root.appendingPathComponent("Alias").path, withDestinationPath: "Kit.xcframework")
+        let framework = root.appendingPathComponent("Kit.xcframework", isDirectory: true)
+        try FileManager.default.createDirectory(at: framework, withIntermediateDirectories: false)
+
+        XCTAssertEqual(try BinaryStore.find(root, extension: "xcframework"), [framework])
+    }
+
     func testArchivePreflightCountsImplicitParentDirectoriesBeforeExtraction() throws {
         let directory = try fixture()
         let one = directory.appendingPathComponent("one.tar")

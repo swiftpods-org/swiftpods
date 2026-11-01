@@ -800,7 +800,6 @@ final class GitCatalog: PackageCatalog, @unchecked Sendable {
             let status = try statusNoFollow(item)
             let type = status.st_mode & S_IFMT
             guard type == S_IFDIR || type == S_IFREG else {
-                enumerator.skipDescendants()
                 throw SwiftPodsError("Catalog cache contains a symbolic link or special file")
             }
             let addition = bytes.addingReportingOverflow(try allocatedBytes(status))
