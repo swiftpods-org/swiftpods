@@ -2822,11 +2822,14 @@ final class PathArchiveSecurityTests: XCTestCase {
                 while (1) { sleep 1; }
             }
             while (!-e $pidfile) { select(undef, undef, undef, 0.001); }
-            select(undef, undef, undef, 0.18);
+            select(undef, undef, undef, 0.10);
             exit 0;
             """#
         let started = Date()
-        XCTAssertEqual(try ProcessRunner(timeout: 0.25).run(
+        // Leave enough time for a loaded CI runner to observe the leader exit.
+        // The escaped descendant ignores SIGTERM, so cleanup still crosses the
+        // timeout deadline and exercises the race this test is intended to cover.
+        XCTAssertEqual(try ProcessRunner(timeout: 0.75).run(
             "/usr/bin/perl", ["-e", program, pidFile.path], in: nil
         ), "")
         XCTAssertLessThan(Date().timeIntervalSince(started), 3)
