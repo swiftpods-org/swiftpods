@@ -1353,18 +1353,21 @@ struct BinaryStore {
         private var outputs: Set<String> = []
         private var count = 0
 
-        func reserve(_ selections: [(source: URL, output: String)], binary: Binary) throws {
+        func reserve(frameworks: [URL], resources: [URL], binary: Binary) throws {
+            let selections = frameworks.map { BinaryArtifactSelection($0, kind: .framework) }
+                + resources.map { BinaryArtifactSelection($0, kind: .resource) }
             try lock.withLock {
                 guard count <= BinaryStore.maximumSelectedArtifacts - selections.count else {
                     throw SwiftPodsError("Binaries select too many artifacts", file: binary.declaredAt.description)
                 }
                 var newSources: Set<String> = []
                 var newOutputs: Set<String> = []
+                var selected: [BinaryArtifactSelection] = []
                 for selection in selections {
                     // Fold only the comparison identity. The caller keeps using the authenticated, exactly resolved URL
                     // for I/O, so a case/Unicode alias cannot redirect which tree is copied.
-                    let source = Self.fileSystemPathKey(selection.source.standardizedFileURL.path)
-                    let output = Self.fileSystemPathKey(selection.output)
+                    let source = selection.pathKey
+                    let output = selection.outputKey
                     guard newSources.insert(source).inserted, !sources.contains(source) else {
                         throw SwiftPodsError(
                             "Binary artifact is selected more than once: \(selection.source.path)",
@@ -1372,34 +1375,26 @@ struct BinaryStore {
                     }
                     guard newOutputs.insert(output).inserted, !outputs.contains(output) else {
                         throw SwiftPodsError(
-                            "Binary artifacts have colliding output names: \(selection.output)",
+                            "Binary artifacts have colliding output names: \(selection.source.lastPathComponent)",
                             file: binary.declaredAt.description)
                     }
-                    let otherSources = sources.union(newSources).subtracting([source])
-                    guard !otherSources.contains(where: { Self.pathsOverlap(source, $0) }) else {
+                    let overlapsPriorDeclaration = sources.contains {
+                        source.hasPrefix($0 + "/") || $0.hasPrefix(source + "/")
+                    }
+                    guard !overlapsPriorDeclaration,
+                        !selected.contains(where: { selection.overlaps($0) && !selection.permitsOverlap(with: $0) })
+                    else {
                         throw SwiftPodsError(
                             "Binary artifacts select overlapping directory trees",
                             file: binary.declaredAt.description,
-                            hint: "Select only the outer artifact or only its nested artifacts")
+                            hint: "Only resource bundles inside a selected xcframework of the same binary may overlap")
                     }
+                    selected.append(selection)
                 }
                 sources.formUnion(newSources)
                 outputs.formUnion(newOutputs)
                 count += selections.count
             }
-        }
-
-        /// Artifact trees are authenticated and copied independently. Selecting both an ancestor and a descendant
-        /// would therefore charge the archive budget once but multiply all later hashing and copy work.
-        private static func pathsOverlap(_ lhsKey: String, _ rhsKey: String) -> Bool {
-            lhsKey == rhsKey || lhsKey.hasPrefix(rhsKey + "/") || rhsKey.hasPrefix(lhsKey + "/")
-        }
-
-        private static func fileSystemPathKey(_ path: String) -> String {
-            path.split(separator: "/", omittingEmptySubsequences: false).map { component in
-                String(component).precomposedStringWithCanonicalMapping.lowercased()
-                    .precomposedStringWithCanonicalMapping
-            }.joined(separator: "/")
         }
     }
 
@@ -1417,6 +1412,8 @@ struct BinaryStore {
         private var entries = 0
         private var bytes: Int64 = 0
         private var scannedEntries = 0
+
+        var usage: (entries: Int, bytes: Int64) { lock.withLock { (entries, bytes) } }
 
         struct DownloadReservation {
             let bytes: Int64
@@ -2151,6 +2148,7 @@ struct BinaryStore {
     }
 
     var artifactIndexBuildCount: Int { artifactIndexes.buildCount }
+    var chargedArtifactWorkForTesting: (entries: Int, bytes: Int64) { workBudget.usage }
 
     init(
         cache: URL, runner: CommandRunner, offline: Bool,
@@ -2272,8 +2270,7 @@ struct BinaryStore {
             // Local declarations can name the generated SwiftPods directory itself. Keep the authenticated copy
             // outside the source and copy only selected artifacts, never the potentially broad declared root.
             try selectionTracker.reserve(
-                zip(sourceFrameworks, frameworkPaths).map { ($0.0, ($0.1 as NSString).lastPathComponent) }
-                    + zip(sourceResources, resourcePaths).map { ($0.0, ($0.1 as NSString).lastPathComponent) },
+                frameworks: sourceFrameworks, resources: sourceResources,
                 binary: binary)
             let container = snapshotDirectory ?? automaticSnapshot
             let snapshotRoot = try prepareSnapshotContainer(container, outside: validated.0)
@@ -2342,9 +2339,18 @@ struct BinaryStore {
         let frameworkPaths = frameworks.map(stablePath)
         let resourcePaths = resources.map(stablePath)
         try selectionTracker.reserve(
-            zip(frameworks, frameworkPaths).map { ($0.0, ($0.1 as NSString).lastPathComponent) }
-                + zip(resources, resourcePaths).map { ($0.0, ($0.1 as NSString).lastPathComponent) },
+            frameworks: frameworks, resources: resources,
             binary: binary)
+        let frameworkSelections = frameworks.map { BinaryArtifactSelection($0, kind: .framework) }
+        for resource in resources {
+            let selection = BinaryArtifactSelection(resource, kind: .resource)
+            guard frameworkSelections.contains(where: { selection.isNestedResource(of: $0) }) else { continue }
+            // The archive inspection already charged the framework tree once. Its separately embedded resource is
+            // copied and authenticated again, so charge that additional work too before package hashing/rendering.
+            let extra = try SecureFileTree.validate(
+                resource, allowRootSymlink: false, limits: .local, hashingContents: false)
+            try workBudget.reserve(entries: extra.entries, bytes: extra.bytes, binary: binary)
+        }
         return Contents(
             xcframeworks: frameworks, resources: resources,
             xcframeworkPaths: frameworkPaths, resourcePaths: resourcePaths,

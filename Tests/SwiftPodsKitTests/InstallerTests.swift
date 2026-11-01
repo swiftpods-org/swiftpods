@@ -552,6 +552,26 @@ final class InstallerTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: installed.file, encoding: .utf8), Fixtures.project)
     }
 
+    func testNestedBinaryResourceIsCopiedSeparatelyAndRemainsIdempotent() throws {
+        let relative = "Ads.xcframework/ios-arm64/Ads.framework/AdsRes.bundle"
+        let directory = try fixture(
+            "target 'App' do\n  binary 'Ads', path: 'Vendor', resources: ['\(relative)']\nend\n")
+        try makeXCFramework(directory.appendingPathComponent("Vendor/Ads.xcframework"))
+        let bundle = directory.appendingPathComponent("Vendor/\(relative)")
+        try FileManager.default.createDirectory(at: bundle, withIntermediateDirectories: true)
+        try Data("nested-resource".utf8).write(to: bundle.appendingPathComponent("strings.txt"))
+
+        _ = try installer(directory).install(InstallOptions())
+        let installed = directory.appendingPathComponent("SwiftPods/SwiftPodsBinaries/Artifacts/Ads")
+        for path in ["Ads.xcframework/ios-arm64/Ads.framework/AdsRes.bundle", "Resources/AdsRes.bundle"] {
+            XCTAssertEqual(try Data(contentsOf: installed.appendingPathComponent(path + "/strings.txt")), Data("nested-resource".utf8))
+        }
+        let finish = try generated(directory, "Scripts/App/App/finish.sh")
+        XCTAssertTrue(finish.contains("Artifacts/Ads/Resources/AdsRes.bundle"), finish)
+        XCTAssertEqual(try installer(directory).install(InstallOptions()).projects[0].changes, [])
+        _ = try installer(directory).deintegrate()
+    }
+
     func testBinaryResourcesAreCopiedIntoTheApp() throws {
         let directory = try fixture("target 'App' do\n  binary 'Ads', path: 'Vendor/Ads', resources: ['AdsRes.bundle']\nend\n")
         try makeXCFramework(directory.appendingPathComponent("Vendor/Ads/Ads.xcframework"))

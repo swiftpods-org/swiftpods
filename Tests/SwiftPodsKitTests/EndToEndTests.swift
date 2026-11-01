@@ -24,7 +24,8 @@ final class EndToEndTests: XCTestCase {
                 target 'App' do
                   use :common
                   spm 'https://github.com/apple/swift-collections.git', revision: '671108c96644956dddcd89dd59c203dcdb36cec7', products: ['DequeModule']
-                  binary 'Answer', path: 'Vendor/Answer.xcframework', linker_flags: ['-ObjC'], system_frameworks: ['Foundation']
+                  binary 'Answer', path: 'Vendor', linker_flags: ['-ObjC'], system_frameworks: ['Foundation'],
+                         resources: ['Answer.xcframework/ios-arm64-simulator/AnswerRes.bundle']
                   script_phase name: 'Stamp', script: 'echo stamped > "$DERIVED_FILE_DIR/stamp.txt"',
                                output_files: ['$(DERIVED_FILE_DIR)/stamp.txt'], execution_position: :before_compile
                 end
@@ -48,6 +49,9 @@ final class EndToEndTests: XCTestCase {
             "-output", directory.appendingPathComponent("Vendor/Answer.xcframework").path,
         ], in: source)
 
+        let nestedResource = directory.appendingPathComponent("Vendor/Answer.xcframework/ios-arm64-simulator/AnswerRes.bundle")
+        try FileManager.default.createDirectory(at: nestedResource, withIntermediateDirectories: true)
+        try Data("nested-sdk-resource".utf8).write(to: nestedResource.appendingPathComponent("payload.txt"))
         var options = InstallOptions()
         options.resolve = true
         let installer = Installer(directory: directory, cache: directory.appendingPathComponent(".cache"))
@@ -63,6 +67,8 @@ final class EndToEndTests: XCTestCase {
         XCTAssertEqual(stamps?.count, 1, "The script phase ran")
         let app = derived.appendingPathComponent("Build/Products/Debug-iphonesimulator/App.app/App")
         XCTAssertTrue(FileManager.default.fileExists(atPath: app.path))
+        XCTAssertEqual(try Data(contentsOf: app.deletingLastPathComponent().appendingPathComponent("AnswerRes.bundle/payload.txt")),
+                       Data("nested-sdk-resource".utf8))
         let symbols = try shell.run("/usr/bin/xcrun", ["nm", "-gU", app.path], in: nil)
         XCTAssertTrue(symbols.contains("_answer"), "The binary SDK is linked")
 

@@ -43,16 +43,20 @@ struct BinaryPackage {
         var digests: [String: String] = [:]
         // These keys are used only for filesystem identity/containment comparisons. Keep the original URLs for every
         // read so normalization cannot redirect an artifact to a differently spelled path.
-        var selectedTrees: [String] = []
-        for entry in entries {
-            for url in entry.xcframeworks + entry.resources {
-                let pathKey = Self.fileSystemPathKey(url.standardizedFileURL.path)
-                guard !selectedTrees.contains(where: { Self.pathsOverlap(pathKey, $0) }) else {
+        var selectedTrees: [(owner: Int, selection: BinaryArtifactSelection)] = []
+        for (owner, entry) in entries.enumerated() {
+            let selections = entry.xcframeworks.map { BinaryArtifactSelection($0, kind: .framework) }
+                + entry.resources.map { BinaryArtifactSelection($0, kind: .resource) }
+            for selection in selections {
+                guard !selectedTrees.contains(where: {
+                    selection.overlaps($0.selection)
+                        && (owner != $0.owner || !selection.permitsOverlap(with: $0.selection))
+                }) else {
                     throw SwiftPodsError(
                         "Binary package contains overlapping artifact directory trees",
                         file: entry.binary.declaredAt.description)
                 }
-                selectedTrees.append(pathKey)
+                selectedTrees.append((owner, selection))
             }
         }
         for entry in entries {
@@ -73,19 +77,6 @@ struct BinaryPackage {
             }
         }
         authenticatedContentDigests = digests
-    }
-
-    /// Compares filesystem path keys, not paths used for I/O. The separator boundary prevents sibling prefixes from
-    /// being mistaken for ancestors after case and canonical-Unicode folding.
-    private static func pathsOverlap(_ lhsKey: String, _ rhsKey: String) -> Bool {
-        lhsKey == rhsKey || lhsKey.hasPrefix(rhsKey + "/") || rhsKey.hasPrefix(lhsKey + "/")
-    }
-
-    private static func fileSystemPathKey(_ path: String) -> String {
-        path.split(separator: "/", omittingEmptySubsequences: false).map { component in
-            String(component).precomposedStringWithCanonicalMapping.lowercased()
-                .precomposedStringWithCanonicalMapping
-        }.joined(separator: "/")
     }
 
     /// Binary target names are the frameworks' module names; two binaries cannot ship the same one.

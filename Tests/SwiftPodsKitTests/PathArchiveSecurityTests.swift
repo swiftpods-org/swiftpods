@@ -1023,6 +1023,77 @@ final class PathArchiveSecurityTests: XCTestCase {
         }
     }
 
+    func testRemoteNestedResourceIsAuthenticatedRenderedAndChargedTwice() throws {
+        let directory = try fixture()
+        let archive = directory.appendingPathComponent("source.tar")
+        let nested = "Kit.xcframework/ios-arm64/Kit.framework/AdsRes.bundle"
+        try tar([.file(nested + "/payload.txt", "nested resource")]).write(to: archive)
+        let digest = try BinaryStore.sha256(of: archive)
+        try "target 'App' do\n  binary 'Kit', url: '\(archive.absoluteString)', sha256: '\(digest)', resources: ['\(nested)']\nend\n"
+            .write(to: directory.appendingPathComponent("Podfile"), atomically: true, encoding: .utf8)
+        let binary = try Installer(directory: directory).manifest().binaries[0]
+        let store = BinaryStore(cache: directory.appendingPathComponent("cache"), runner: ProcessRunner(), offline: false)
+        let contents = try store.contents(binary, podfileDirectory: directory)
+        let resource = try XCTUnwrap(contents.resources.first)
+        let inspected = try BinaryStore.inspectArchive(at: archive, url: archive.absoluteString)
+        let extra = try SecureFileTree.validate(resource, allowRootSymlink: false, limits: .local, hashingContents: false)
+        XCTAssertEqual(store.chargedArtifactWorkForTesting.entries, inspected.entries + extra.entries)
+        XCTAssertEqual(store.chargedArtifactWorkForTesting.bytes, inspected.bytes + extra.bytes)
+
+        let package = try BinaryPackage(entries: [.init(
+            binary: binary, xcframeworks: contents.xcframeworks, resources: contents.resources,
+            xcframeworkPaths: contents.xcframeworkPaths, resourcePaths: contents.resourcePaths,
+            snapshotLease: contents.snapshotLease)], platforms: [])
+        let destination = directory.appendingPathComponent("generated")
+        _ = try package.render(into: destination)
+        XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent(
+            "Artifacts/Kit/Resources/AdsRes.bundle/payload.txt")), Data("nested resource".utf8))
+        // Resources remain covered by the snapshot digest, even though their ancestor framework was also selected.
+        try Data("tampered".utf8).write(to: resource.appendingPathComponent("payload.txt"))
+        XCTAssertThrowsError(try package.render(into: directory.appendingPathComponent("tampered-render")))
+    }
+
+    func testNestedResourceExceptionDoesNotPermitResourceOverlapOrDuplicateSelection() throws {
+        let nested = "Kit.xcframework/AdsRes.bundle"
+        for resources in [[nested, nested + "/Inner.bundle"], [nested, nested.uppercased()]] {
+            let directory = try fixture(
+                "target 'App' do\n  binary 'Kit', path: 'Vendor', resources: ['\(resources.joined(separator: "', '"))']\nend\n")
+            let bundle = directory.appendingPathComponent("Vendor/\(nested)/Inner.bundle")
+            try FileManager.default.createDirectory(at: bundle, withIntermediateDirectories: true)
+            let binary = try Installer(directory: directory).manifest().binaries[0]
+            XCTAssertThrowsError(try BinaryStore(
+                cache: directory.appendingPathComponent("cache"), runner: ProcessRunner(), offline: true
+            ).contents(binary, podfileDirectory: directory))
+            XCTAssertThrowsError(try BinaryPackage(entries: [.init(
+                binary: binary,
+                xcframeworks: [directory.appendingPathComponent("Vendor/Kit.xcframework")],
+                resources: resources.map { directory.appendingPathComponent("Vendor/\($0)") })], platforms: []))
+        }
+    }
+
+    func testNestedResourceExceptionDoesNotCrossBinaryDeclarations() throws {
+        let directory = try fixture("""
+            target 'App' do
+              binary 'Kit', path: 'Vendor', xcframeworks: ['Kit.xcframework']
+              binary 'Other', path: 'Vendor', xcframeworks: ['Other.xcframework'], resources: ['Kit.xcframework/AdsRes.bundle']
+            end
+            """)
+        let framework = directory.appendingPathComponent("Vendor/Kit.xcframework")
+        let resource = framework.appendingPathComponent("AdsRes.bundle")
+        let other = directory.appendingPathComponent("Vendor/Other.xcframework")
+        try FileManager.default.createDirectory(at: resource, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        let binaries = try Installer(directory: directory).manifest().binaries
+        let store = BinaryStore(cache: directory.appendingPathComponent("cache"), runner: ProcessRunner(), offline: true)
+        let first = try store.contents(binaries[0], podfileDirectory: directory)
+        defer { withExtendedLifetime(first) {} }
+        XCTAssertThrowsError(try store.contents(binaries[1], podfileDirectory: directory))
+        XCTAssertThrowsError(try BinaryPackage(entries: [
+            .init(binary: binaries[0], xcframeworks: [framework], resources: []),
+            .init(binary: binaries[1], xcframeworks: [other], resources: [resource]),
+        ], platforms: []))
+    }
+
     func testLocalBinaryRejectsFilesystemEquivalentOverlappingExplicitSelectionsBeforeSnapshotting() throws {
         let spellings = [
             ("Outer.xcframework", "outer.xcframework"),

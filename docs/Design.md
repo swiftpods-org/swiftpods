@@ -17,6 +17,18 @@ snapshot is recorded or a later concurrent edit preserves evidence and fails
 closed. Ordinary validation also permits Xcode's group-writable derived state
 without relaxing ownership or permissions for managed package contents.
 
+## Nested binary resources
+
+A binary may explicitly select a `.bundle` inside one of its selected
+`.xcframework` directories. The framework and the standalone resource have
+different generated destinations: the latter is copied under `Resources/` for
+embedding in the app. Permit this only within the same binary selection, not
+between declarations. Framework/framework and resource/resource overlap,
+duplicate sources and colliding output names remain errors. Selected resources
+are disjoint, so no source can be copied more than twice through this exception.
+Charge the additional nested-resource traversal and bytes against the aggregate
+work budget; local artifact snapshots already charge each selected copy.
+
 ## ADR-010: product thesis
 
 SwiftPods is a declarative dependency manifest for Xcode projects, built on
