@@ -4358,8 +4358,8 @@ struct BinaryStore {
         init() throws {
             let running = try Self.currentExecutablePath()
             let selected: String
-            let authenticateAgainstCurrentImage: Bool
             #if DEBUG
+            let authenticateAgainstCurrentImage: Bool
             let testBundles = Bundle.allBundles.map(\.bundleURL).filter { $0.pathExtension == "xctest" }
             let testBundle = Self.containingTestBundle(of: URL(fileURLWithPath: running))
                 ?? (testBundles.count == 1 ? testBundles[0] : nil)
@@ -4373,7 +4373,6 @@ struct BinaryStore {
             }
             #else
             selected = running
-            authenticateAgainstCurrentImage = true
             #endif
             path = selected
             descriptor = selected.withCString {
@@ -4397,9 +4396,13 @@ struct BinaryStore {
             status = opened
             do {
                 processIdentity = try ProcessExecutableIdentity(descriptor: descriptor)
+                #if DEBUG
                 if authenticateAgainstCurrentImage {
                     try Self.validateCurrentMappedExecutable(processIdentity)
                 }
+                #else
+                try Self.validateCurrentMappedExecutable(processIdentity)
+                #endif
             } catch {
                 close(descriptor)
                 throw error
