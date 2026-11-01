@@ -1518,6 +1518,10 @@ private struct Evaluator {
         private var targetLocations: [TargetKey: SourceLocation] = [:]
         private var targetItemWork = 0
 
+        init(file: String) {
+            self.file = file
+        }
+
         private mutating func consumeTargetItems(_ amount: Int, at location: SourceLocation) throws(ManifestError) {
             guard amount >= 0, targetItemWork <= Evaluator.maximumTargetItemWork - amount else {
                 throw ManifestError(
