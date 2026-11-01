@@ -5595,9 +5595,6 @@ struct BinaryStore {
         let executableDescriptor = try compactArchiveWorkerDescriptor(receivedExecutableDescriptor)
         let parentPipeDescriptor = try compactArchiveWorkerDescriptor(receivedParentPipeDescriptor)
 
-        try applyArchiveWorkerResourceLimits(
-            additionalAddressBytes: operation == .frameworkInfo
-                ? 256 * 1_024 * 1_024 : 512 * 1_024 * 1_024)
         let memoryWatchdog = try ArchiveWorkerMemoryWatchdog(
             maximumPhysicalFootprint: operation == .frameworkInfo
                 ? 256 * 1_024 * 1_024 : 512 * 1_024 * 1_024)
@@ -5629,6 +5626,13 @@ struct BinaryStore {
         }
 
         try ArchiveWorkerSandbox.apply(extractionRootDescriptor: extractionRoot)
+        // Seatbelt and the watchdog queues lazily initialize system libraries and allocator arenas. Measuring the
+        // virtual baseline before that trusted setup makes sandbox_init sporadically fail with ENOMEM on macOS 15.
+        // The parent already bounds physical memory and wall time during startup; lower all worker limits only after
+        // setup, still before the first attacker-controlled archive/plist byte reaches any parser.
+        try applyArchiveWorkerResourceLimits(
+            additionalAddressBytes: operation == .frameworkInfo
+                ? 256 * 1_024 * 1_024 : 512 * 1_024 * 1_024)
         let inspection: ArchiveInspection?
         let frameworkLibraries: [FrameworkLibraryMetadata]?
         switch operation {
