@@ -54,6 +54,27 @@ final class XcodeProjectTests: XCTestCase {
         XCTAssertEqual(project.serialized(), Fixtures.project)
     }
 
+    func testSourceRootUsesProjectDirectoryWhenProjectDirPathIsEmpty() throws {
+        let project = try load()
+        XCTAssertEqual(project.sourceRoot.path, "/project")
+    }
+
+    func testSourceRootResolvesRelativeProjectDirPathFromProjectDirectory() throws {
+        let source = Fixtures.project.replacingOccurrences(
+            of: "projectDirPath = \"\";", with: "projectDirPath = ../../Sources/App;")
+        let project = try XcodeProject(path: URL(fileURLWithPath: "/build/generated/App.xcodeproj"), text: source)
+
+        XCTAssertEqual(project.sourceRoot.path, "/Sources/App")
+    }
+
+    func testSourceRootUsesAbsoluteProjectDirPath() throws {
+        let source = Fixtures.project.replacingOccurrences(
+            of: "projectDirPath = \"\";", with: "projectDirPath = /workspace/Sources/App;")
+        let project = try XcodeProject(path: URL(fileURLWithPath: "/build/generated/App.xcodeproj"), text: source)
+
+        XCTAssertEqual(project.sourceRoot.path, "/workspace/Sources/App")
+    }
+
     func testEditsRewriteOnlyChangedRecords() throws {
         var project = try load()
         let app = project.nativeTargets[0].id

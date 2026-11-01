@@ -231,22 +231,23 @@ final class KitSecurityRegressionTests: XCTestCase {
     func testGeneratedScriptsUseAbsoluteInfrastructureCommands() throws {
         let files = TargetScripts.files(
             scripts: [], resources: ["Artifacts/Vendor/Assets.bundle"], embedsFrameworks: true,
-            signed: [], fileLists: [:],
+            signed: [], fileLists: [:], packageModules: ["Interop"],
             paths: .init(generated: "Generated", podfile: ".", target: "Scripts/App"))
         let scripts = [try XCTUnwrap(files["prepare.sh"]), try XCTUnwrap(files["finish.sh"])]
         let expression = try NSRegularExpression(
-            pattern: #"(?m)(?:^|[;&|()]\s*)(?:rm|mkdir|basename|xcrun|sed|rsync|codesign|shasum)(?:\s|$)"#)
+            pattern: #"(?m)(?:^|[;&|()]\s*)(?:rm|mkdir|basename|xcrun|sed|rsync|codesign|shasum|mktemp|printf|grep|chmod|mv)(?:\s|$)"#)
         for script in scripts {
             XCTAssertEqual(
                 expression.numberOfMatches(in: script, range: NSRange(script.startIndex..., in: script)), 0,
                 script)
         }
-        let finish = scripts[1]
+        let generated = scripts.joined(separator: "\n")
         for command in [
             "/bin/rm", "/bin/mkdir", "/usr/bin/basename", "/usr/bin/xcrun", "/usr/bin/sed",
-            "/usr/bin/rsync", "/usr/bin/codesign",
+            "/usr/bin/rsync", "/usr/bin/codesign", "/usr/bin/mktemp", "/usr/bin/printf",
+            "/usr/bin/grep", "/bin/chmod", "/bin/mv",
         ] {
-            XCTAssertTrue(finish.contains(command), "Missing \(command):\n\(finish)")
+            XCTAssertTrue(generated.contains(command), "Missing \(command):\n\(generated)")
         }
         XCTAssertTrue(scripts[0].contains("/usr/bin/shasum"), scripts[0])
     }

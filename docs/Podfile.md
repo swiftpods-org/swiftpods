@@ -159,8 +159,9 @@ A remote package needs exactly one requirement:
 | `branch: 'main'`, `revision: '<full commit object ID>'` | Branch or commit |
 
 Versions must have at most three numeric components. A lower bound without an
-upper bound is rejected. `link: false` adds the package without linking any
-product into the target.
+upper bound is rejected. `link: false` adds the product as a build dependency
+without putting it in the target's Frameworks phase; target source must not
+import that build-only product.
 
 ### Binary SDKs
 

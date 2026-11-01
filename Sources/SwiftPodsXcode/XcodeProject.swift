@@ -412,7 +412,19 @@ public struct XcodeProject: Sendable {
     public var objectVersion: Int? { root["objectVersion"]?.string.flatMap { Int($0) } }
 
     /// The project's directory: where `<group>` and `SOURCE_ROOT` paths start.
-    public var sourceRoot: URL { path.deletingLastPathComponent() }
+    ///
+    /// Xcode generators may place the `.xcodeproj` outside the source tree and record that tree in the
+    /// `PBXProject.projectDirPath` field. An empty field means the directory containing the `.xcodeproj`.
+    public var sourceRoot: URL {
+        let projectDirectory = path.deletingLastPathComponent()
+        guard let projectDirPath = project.string("projectDirPath"), !projectDirPath.isEmpty else {
+            return projectDirectory
+        }
+        if (projectDirPath as NSString).isAbsolutePath {
+            return URL(fileURLWithPath: projectDirPath).standardizedFileURL
+        }
+        return projectDirectory.appendingPathComponent(projectDirPath).standardizedFileURL
+    }
 
     public subscript(id: String) -> PBXObject? {
         get { objects[id] }

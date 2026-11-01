@@ -140,17 +140,27 @@ its identifier matches that derivation, so a fresh clone, a deleted cache or a
 hand-edited project never loses track of what SwiftPods manages, and objects
 users create in Xcode are never touched.
 
-**A project that does not follow the Podfile.** The project references one
-generated local package, `SwiftPods/SwiftPodsDependencies`, by a file reference
-to its folder, and each target links its product `SwiftPods-<Target>` and has a
-generated settings file and the phases `[SwiftPods] Prepare` and
-`[SwiftPods] Finish`, which run generated scripts. None of this depends on what
-the Podfile declares, so the Podfile changes alone: the package lists
-requirements and products, the scripts run script phases, copy binary resource
-bundles and check `Podfile.sha256` so that a build after an uninstalled Podfile
-change stops, as CocoaPods' manifest check does. A file reference rather than an
-`XCLocalSwiftPackageReference` also avoids a crash in Xcode 26.2 when the
-package graph shrinks during resolution. A target that embeds a framework target
+**Products are direct target dependencies.** Each remote or local Swift package
+product is attached directly to its Xcode target. A generated wrapper package
+cannot provide the same result: Swift can see some transitive modules, but
+Objective-C and Objective-C++ compilation does not receive the underlying
+module maps or generated Swift headers. Direct products make module visibility
+an Xcode responsibility for every supported source language. Xcode omits those
+generated module maps from Clang's search path for native static-library
+targets, so their Prepare phase publishes a target-scoped external module map
+for linked products that actually generated one. Build-only (`link: false`)
+products are excluded, and app and framework targets keep Xcode's native path.
+
+The project also references `SwiftPods/SwiftPodsDependencies` by a file
+reference and each target links its stable binary-container product
+`SwiftPods-<Target>`. Each target has a generated settings file and the phases
+`[SwiftPods] Prepare` and `[SwiftPods] Finish`. Changing Swift package
+declarations updates the project's package references and product links;
+binary contents, scripts and settings change under `SwiftPods/`. The scripts
+run script phases, copy binary resource bundles and check `Podfile.sha256` so
+that a build after an uninstalled Podfile change stops. A file reference rather
+than an `XCLocalSwiftPackageReference` also avoids a crash in Xcode 26.2 when the
+generated package graph shrinks during resolution. A target that embeds a framework target
 of the Podfile, such as Unity's app, gets the Finish phase too, whether the
 Podfile declares it or not; it embeds the dynamic frameworks Xcode leaves out,
 which a build-time script finds without knowing the packages in advance.

@@ -1,15 +1,10 @@
 import Foundation
 import SwiftPodsManifest
 
-/// The generated local Swift package that carries every package and binary the Podfile declares. A project references
-/// it once and links one of its products per target, so changing the Podfile changes this package, not the project.
+/// The generated local Swift package that carries binary SDKs declared by the Podfile. Remote and local Swift
+/// packages are direct Xcode target dependencies so their modules are visible to every supported source language.
 struct DependencyPackage {
     static let directoryName = "SwiftPodsDependencies"
-
-    struct Remote {
-        let url: String
-        let requirement: Requirement
-    }
 
     struct Product {
         let name: String
@@ -19,15 +14,12 @@ struct DependencyPackage {
     }
 
     let platforms: [Platform]
-    let remote: [Remote]
     /// Local package directories, relative to this package's directory.
     let local: [String]
     let products: [Product]
 
-    /// The product a target links; `unlinked` is the one it only builds against.
-    static func productName(_ target: String, unlinked: Bool = false) -> String {
-        "SwiftPods-" + target + (unlinked ? "-Unlinked" : "")
-    }
+    /// The generated binary container product a target links.
+    static func productName(_ target: String) -> String { "SwiftPods-" + target }
 
     /// A Swift module name for a product.
     static func moduleName(_ product: String) -> String {
@@ -52,16 +44,6 @@ struct DependencyPackage {
             }
             return result + "\""
         }
-        func requirement(_ requirement: Requirement) -> String {
-            switch requirement {
-            case .exact(let version): "exact: \(quoted(version.description))"
-            case .upToNextMajor(let version): "from: \(quoted(version.description))"
-            case .upToNextMinor(let version): ".upToNextMinor(from: \(quoted(version.description)))"
-            case .range(let lower, let upper): "\(quoted(lower.description))..<\(quoted(upper.description))"
-            case .branch(let branch): "branch: \(quoted(branch))"
-            case .revision(let revision): "revision: \(quoted(revision))"
-            }
-        }
         let names: [PlatformName: String] = [.ios: ".iOS", .macos: ".macOS", .tvos: ".tvOS", .watchos: ".watchOS", .visionos: ".visionOS"]
         var lines = [
             "// swift-tools-version: 5.9",
@@ -79,7 +61,6 @@ struct DependencyPackage {
         lines += products.map { "        .library(name: \(quoted($0.name)), targets: [\(quoted($0.module))])," }
         lines.append("    ],")
         lines.append("    dependencies: [")
-        lines += remote.map { "        .package(url: \(quoted($0.url)), \(requirement($0.requirement)))," }
         lines += local.map { "        .package(path: \(quoted($0)))," }
         lines.append("    ],")
         lines.append("    targets: [")

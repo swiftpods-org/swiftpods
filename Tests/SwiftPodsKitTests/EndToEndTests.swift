@@ -6,6 +6,63 @@ import XCTest
 /// Builds an iOS app with Xcode after `swiftpods install`. Needs Xcode, an iOS SDK and network access
 /// to GitHub, so it runs only with SWIFTPODS_E2E=1.
 final class EndToEndTests: XCTestCase {
+    func testObjectiveCPlusPlusStaticLibraryImportsALocalSwiftPackageProduct() throws {
+        guard ProcessInfo.processInfo.environment["SWIFTPODS_E2E"] == "1" else {
+            throw XCTSkip("Set SWIFTPODS_E2E=1 to build with Xcode")
+        }
+        let shell = ProcessRunner()
+        let project = Fixtures.project
+            .replacingOccurrences(of: "main.swift", with: "main.mm")
+            .replacingOccurrences(of: "sourcecode.swift", with: "sourcecode.cpp.objcpp")
+            .replacingOccurrences(
+                of: "explicitFileType = wrapper.application; includeInIndex = 0; path = App.app;",
+                with: "explicitFileType = archive.ar; includeInIndex = 0; path = libApp.a;")
+            .replacingOccurrences(
+                of: #"productType = "com.apple.product-type.application";"#,
+                with: #"productType = "com.apple.product-type.library.static";"#)
+        let directory = try Fixtures.directory(
+            podfile: """
+                platform :ios, '15.0'
+                target 'App' do
+                  settings 'GENERATE_INFOPLIST_FILE' => 'YES', 'PRODUCT_BUNDLE_IDENTIFIER' => 'org.swiftpods.objc-e2e',
+                           'CODE_SIGNING_ALLOWED' => 'NO', 'IPHONEOS_DEPLOYMENT_TARGET' => '15.0',
+                           'CLANG_ENABLE_MODULES' => 'YES', 'ENABLE_USER_SCRIPT_SANDBOXING' => 'YES',
+                           'OTHER_CPLUSPLUSFLAGS' => '$(inherited) -fmodules -fcxx-modules'
+                  spm 'Interop', path: 'Modules/Interop'
+                end
+                """,
+            project: project,
+            files: [
+                "main.mm": "@import Foundation;\n@import Interop;\nint main() { return [SPGreeter value] == 7 ? 0 : 1; }\n",
+                "Modules/Interop/Package.swift": """
+                    // swift-tools-version: 5.9
+                    import PackageDescription
+                    let package = Package(
+                        name: "Interop",
+                        platforms: [.iOS(.v15)],
+                        products: [.library(name: "Interop", targets: ["Interop"])],
+                        targets: [.target(name: "Interop")]
+                    )
+                    """,
+                "Modules/Interop/Sources/Interop/Greeter.swift": """
+                    import Foundation
+                    @objc(SPGreeter) public final class Greeter: NSObject {
+                        @objc public static func value() -> Int32 { 7 }
+                    }
+                    """,
+            ])
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        _ = try Installer(directory: directory, cache: directory.appendingPathComponent(".cache")).install(InstallOptions())
+        let derived = directory.appendingPathComponent("DerivedData")
+        _ = try shell.run("/usr/bin/xcrun", [
+            "xcodebuild", "build", "-project", "App.xcodeproj", "-scheme", "App",
+            "-destination", "generic/platform=iOS Simulator", "-derivedDataPath", derived.path, "ARCHS=arm64", "-quiet",
+        ], in: directory)
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: derived.appendingPathComponent("Build/Products/Debug-iphonesimulator/libApp.a").path))
+    }
+
     func testXcodeBuildsTheIntegratedApp() throws {
         guard ProcessInfo.processInfo.environment["SWIFTPODS_E2E"] == "1" else {
             throw XCTSkip("Set SWIFTPODS_E2E=1 to build with Xcode")

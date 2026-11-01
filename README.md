@@ -2,10 +2,9 @@
 
 SwiftPods gives Xcode projects a declarative dependency manifest. A `Podfile`
 says which targets use which Swift packages, prebuilt binary SDKs, build
-settings and script phases; `swiftpods install` generates a local Swift package
-and scripts from it, which the Xcode project references once. Changing the
-`Podfile` never changes the project. Xcode and Swift Package Manager resolve and
-build everything.
+settings and script phases; `swiftpods install` adds Swift package products
+directly to their Xcode targets and generates a local package for binary SDKs.
+Xcode and Swift Package Manager resolve and build everything.
 
 The `Podfile` keeps the Podfile syntax you know, but it is read as data: there is
 no Ruby, no CocoaPods and no `Pods` project.
@@ -48,13 +47,13 @@ Then:
 swiftpods install --resolve
 ```
 
-The first install adds to each target of `MyApp.xcodeproj` one product of a
-generated package, a settings file and two Run Script phases. Versions,
-products, binary SDKs, settings and scripts live in the generated `SwiftPods/`
-directory: add it to `.gitignore`, and commit the `Podfile`, the project once
-and, for pinned transitive versions, `Package.resolved`. As with `pod install`,
-run `swiftpods install` after the `Podfile` changes; until then the build stops
-and says so.
+The first install adds direct Swift package products, one generated binary
+container product, a settings file and two Run Script phases to each target.
+Binary SDKs, settings and scripts live in the generated `SwiftPods/` directory:
+add it to `.gitignore`, and commit the `Podfile`, project changes and, for pinned
+transitive versions, `Package.resolved`. As with `pod install`, run
+`swiftpods install` after the `Podfile` changes; until then the build stops and
+says so.
 
 ## Sharing declarations
 

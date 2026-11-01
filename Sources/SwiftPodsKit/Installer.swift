@@ -811,7 +811,9 @@ public struct Installer: Sendable {
         /// not be read again: inode, size, flags, mtime and unforgeable ctime are included for every member, while link
         /// targets are hashed explicitly. A same-UID non-cooperating writer therefore cannot replace or edit a member
         /// without changing the token that is verified after the atomic rename.
-        fileprivate static func mutationToken(named name: String, in parent: Int32) throws -> GeneratedEntryToken? {
+        fileprivate static func mutationToken(
+            named name: String, in parent: Int32, package: Bool? = nil
+        ) throws -> GeneratedEntryToken? {
             try requireComponent(name)
             guard let status = try status(named: name, in: parent) else { return nil }
             var hasher = SHA256()
@@ -819,7 +821,8 @@ public struct Installer: Sendable {
             var members: [String: TransactionFileSnapshot.EntryState] = [:]
             let entry = try mutationFingerprint(
                 named: name, relative: "", in: parent, depth: 0, entries: &entries,
-                members: &members, hasher: &hasher, package: GeneratedPackageMetadata.isPackage(name))
+                members: &members, hasher: &hasher,
+                package: package ?? GeneratedPackageMetadata.isPackage(name))
             guard entry == TransactionFileSnapshot.EntryState(status) else {
                 throw SwiftPodsError("Generated path changed while its mutation token was captured: \(name)")
             }
@@ -1821,13 +1824,16 @@ public struct Installer: Sendable {
                 throw SwiftPodsError(
                     "Cannot quarantine generated staging entry \(entry): \(String(cString: strerror(errno)))")
             }
-            guard let moved = try GeneratedRoot.mutationToken(named: quarantine, in: descriptor),
+            let package = GeneratedPackageMetadata.isPackage(entry)
+            guard let moved = try GeneratedRoot.mutationToken(
+                named: quarantine, in: descriptor, package: package),
                 moved.representsAfterRename(expected)
             else {
                 throw SwiftPodsError("Generated staging entry changed while it was quarantined: \(entry)")
             }
             try removeManifestEntry(
-                named: quarantine, relative: "", expected: moved.entry, manifest: moved.members, in: descriptor)
+                named: quarantine, relative: "", expected: moved.entry, manifest: moved.members,
+                package: package, in: descriptor)
             guard try GeneratedRoot.status(named: quarantine, in: descriptor) == nil else {
                 throw SwiftPodsError("Quarantined generated staging entry was replaced during cleanup: \(entry)")
             }
@@ -1835,7 +1841,7 @@ public struct Installer: Sendable {
 
         private func removeManifestEntry(
             named name: String, relative: String, expected: TransactionFileSnapshot.EntryState,
-            manifest: [String: TransactionFileSnapshot.EntryState], in parent: Int32
+            manifest: [String: TransactionFileSnapshot.EntryState], package: Bool, in parent: Int32
         ) throws {
             guard let status = try GeneratedRoot.status(named: name, in: parent),
                 TransactionFileSnapshot.EntryState(status) == expected
@@ -1860,8 +1866,14 @@ public struct Installer: Sendable {
             guard fstat(directory, &opened) == 0,
                 TransactionFileSnapshot.EntryState(opened) == expected
             else { throw SwiftPodsError("Quarantined generated directory changed while it was opened: \(name)") }
-            try GeneratedRoot.validateOwnedDescriptor(
-                directory, privateDirectory: false, kind: "Quarantined generated directory \(name)")
+            if package, GeneratedPackageMetadata.contains(relative) {
+                guard opened.st_uid == geteuid() else {
+                    throw SwiftPodsError("Resolver metadata directory is not owned by the current user: \(name)")
+                }
+            } else {
+                try GeneratedRoot.validateOwnedDescriptor(
+                    directory, privateDirectory: false, kind: "Quarantined generated directory \(name)")
+            }
 
             let prefix = relative.isEmpty ? "" : relative + "/"
             let children = manifest.keys.compactMap { path -> String? in
@@ -1891,7 +1903,8 @@ public struct Installer: Sendable {
                 }
                 try removeManifestEntry(
                     named: quarantine, relative: childRelative,
-                    expected: TransactionFileSnapshot.EntryState(moved), manifest: manifest, in: directory)
+                    expected: TransactionFileSnapshot.EntryState(moved), manifest: manifest,
+                    package: package, in: directory)
             }
             guard try GeneratedRoot.names(in: directory).isEmpty else {
                 throw SwiftPodsError("Quarantined generated directory gained an unknown child: \(name)")
@@ -2216,6 +2229,18 @@ public struct Installer: Sendable {
         let projectDirectories = try Dictionary(uniqueKeysWithValues: projectPaths.map { path in
             (path, try RetainedProjectDirectory(projects[path]!))
         })
+        let packageModulesByTarget = Dictionary(uniqueKeysWithValues: projectPaths.map { path in
+            let staticLibraries = Set(projects[path]!.nativeTargets.compactMap {
+                $0.productType == "com.apple.product-type.library.static" ? $0.name : nil
+            })
+            let modules = Dictionary(uniqueKeysWithValues: targetsByProject[path]!.map { target in
+                let names = staticLibraries.contains(target.name)
+                    ? Array(Set(target.products.filter(\.link).map { DependencyPackage.moduleName($0.product) })).sorted()
+                    : []
+                return (target.name, names)
+            })
+            return (path, modules)
+        })
         // Targets embedding a framework target from the Podfile also receive an embedding phase.
         let embedders = Dictionary(uniqueKeysWithValues: projectPaths.map { path in
             let names = Set(targetsByProject[path]!.map(\.name))
@@ -2383,8 +2408,9 @@ public struct Installer: Sendable {
             obsolete.append(BinaryPackage.directoryName)
         }
 
-        // Everything the targets use goes into one generated package with a product per target, so projects keep
-        // referencing the same products whatever the Podfile declares.
+        // Binary SDKs go through one generated package. Swift package products are attached directly to Xcode
+        // targets below: a transitive dependency of a wrapper package is not visible to Objective-C/Objective-C++
+        // compilation, even though Swift can import it.
         let dependencyDirectory = generated.appendingPathComponent(DependencyPackage.directoryName, isDirectory: true)
         let targetCounts = Dictionary(projectPaths.flatMap { path in targetsByProject[path]!.map { ($0.name, 1) } }, uniquingKeysWith: +)
         func productBase(_ target: Target, _ path: String) -> String {
@@ -2398,13 +2424,7 @@ public struct Installer: Sendable {
                 let linked = DependencyPackage.productName(productBase(target, path))
                 productSpecifications.append((
                     name: linked,
-                    dependencies: target.products.filter(\.link).map { ($0.product, $0.package) }
-                        + target.binaries.map { ($0, BinaryPackage.directoryName) }))
-                let unlinked = target.products.filter { !$0.link }
-                if !unlinked.isEmpty {
-                    let name = DependencyPackage.productName(productBase(target, path), unlinked: true)
-                    productSpecifications.append((name: name, dependencies: unlinked.map { ($0.product, $0.package) }))
-                }
+                    dependencies: target.binaries.map { ($0, BinaryPackage.directoryName) }))
             }
         }
         let productNames = productSpecifications.map(\.name)
@@ -2422,14 +2442,7 @@ public struct Installer: Sendable {
         }
         let dependencies = DependencyPackage(
             platforms: platforms,
-            remote: usedPackages.compactMap { package in
-                guard case .remote(let url) = package.location else { return nil }
-                return .init(url: url, requirement: package.requirement!)
-            },
-            local: usedPackages.compactMap { package in
-                guard case .local(let relative) = package.location else { return nil }
-                return Paths.relative(from: dependencyDirectory, to: directory.appendingPathComponent(relative))
-            } + (usesBinaries ? [Paths.relative(from: dependencyDirectory, to: binaryDirectory)] : []),
+            local: usesBinaries ? [Paths.relative(from: dependencyDirectory, to: binaryDirectory)] : [],
             products: products)
         try stage(DependencyPackage.directoryName, dependencies.files())
 
@@ -2442,7 +2455,8 @@ public struct Installer: Sendable {
                 let file = settingsDirectory.appendingPathComponent(projectFolders[path]!)
                     .appendingPathComponent(targetFolders[path]![target.name]! + ".xcconfig")
                 settingsFiles[path, default: [:]][target.name] = file
-                settingsTexts[Paths.relative(from: settingsDirectory, to: file)] = Self.xcconfig(target.settings)
+                settingsTexts[Paths.relative(from: settingsDirectory, to: file)] = Self.xcconfig(
+                    target.settings, packageModuleBridge: !(packageModulesByTarget[path]?[target.name] ?? []).isEmpty)
             }
         }
         try stage("Settings", settingsTexts)
@@ -2565,7 +2579,7 @@ public struct Installer: Sendable {
                 let files = TargetScripts.files(
                     scripts: target.scriptPhases, resources: resources, embedsFrameworks: embedders[path]!.contains(target.name),
                     signed: freshnessPaths,
-                    fileLists: fileLists, paths: locations)
+                    fileLists: fileLists, packageModules: packageModulesByTarget[path]?[target.name] ?? [], paths: locations)
                 for (relative, text) in files {
                     scriptFiles[Paths.relative(from: scriptsDirectory, to: targetDirectory.appendingPathComponent(relative))] = text
                 }
@@ -2601,29 +2615,46 @@ public struct Installer: Sendable {
                     inputFileLists: [TargetScripts.fileList(phase, outputs: false, paths: locations)],
                     outputFileLists: [TargetScripts.fileList(phase, outputs: true, paths: locations)], position: phase.position)
             }
+            let targets = targetsByProject[path]!
+            var packagesByIdentity: [String: ProjectPlan.PackageReference] = [:]
             var plan = ProjectPlan()
             plan.packages = [package]
-            let targets = targetsByProject[path]!
             for declared in usedPackages where targets.contains(where: { $0.products.contains { $0.package == declared.identity } }) {
                 switch declared.location {
                 case .remote(let url):
-                    plan.managedPackageKeys.insert("package:" + PackageLocation.canonical(url))
-                case .local(let path):
-                    plan.managedPackageKeys.insert(
-                        "package:local:" + Paths.relative(from: projectDirectory, to: directory.appendingPathComponent(path)))
+                    let key = "package:" + PackageLocation.canonical(url)
+                    let reference = ProjectPlan.PackageReference(key: key, object: [
+                        "isa": "XCRemoteSwiftPackageReference", "repositoryURL": .string(url),
+                        "requirement": Self.requirement(declared.requirement!),
+                    ])
+                    packagesByIdentity[declared.identity] = reference
+                    plan.packages.append(reference)
+                case .local(let declaredPath):
+                    let relative = Paths.relative(
+                        from: projectDirectory, to: directory.appendingPathComponent(declaredPath))
+                    let key = "package:local:" + relative
+                    let reference = ProjectPlan.PackageReference(key: key, object: [
+                        "isa": "PBXFileReference", "lastKnownFileType": "wrapper",
+                        "name": .string(declared.name), "path": .string(relative), "sourceTree": "SOURCE_ROOT",
+                    ])
+                    packagesByIdentity[declared.identity] = reference
+                    plan.packages.append(reference)
                     plan.managedLocalProducts.formUnion(targets.flatMap { $0.products.filter { $0.package == declared.identity }.map(\.product) })
                 }
             }
             for target in targets {
                 let base = productBase(target, path)
                 var products = [ProjectPlan.Product(package: package, name: DependencyPackage.productName(base), link: true)]
-                if target.products.contains(where: { !$0.link }) {
-                    products.append(.init(package: package, name: DependencyPackage.productName(base, unlinked: true), link: false))
+                for product in target.products {
+                    guard let dependencyPackage = packagesByIdentity[product.package] else {
+                        throw SwiftPodsError("Target `\(target.name)` references unknown package `\(product.package)`")
+                    }
+                    products.append(.init(package: dependencyPackage, name: product.product, link: product.link))
                 }
                 plan.targets.append(.init(
                     name: target.name, products: products, phases: TargetScripts.Phase.allCases.map { phasePlan($0, target.name) },
                     settingsFile: Paths.relative(from: projectDirectory, to: settingsFiles[path]![target.name]!),
-                    hasSettings: !target.settings.isEmpty))
+                    hasSettings: !target.settings.isEmpty || !(packageModulesByTarget[path]?[target.name] ?? []).isEmpty))
             }
             let declared = Set(targets.map(\.name))
             for name in embedders[path]! where !declared.contains(name) {
@@ -3286,7 +3317,7 @@ public struct Installer: Sendable {
         }
     }
 
-    static func xcconfig(_ settings: [BuildSetting]) -> String {
+    static func xcconfig(_ settings: [BuildSetting], packageModuleBridge: Bool = false) -> String {
         var lines = ["// Generated by SwiftPods from the Podfile. Do not edit."]
         for setting in settings {
             if let configurations = setting.configurations {
@@ -3294,6 +3325,9 @@ public struct Installer: Sendable {
             } else {
                 lines.append("\(setting.key) = \(setting.value)")
             }
+        }
+        if packageModuleBridge {
+            lines.append("HEADER_SEARCH_PATHS = $(inherited) \(TargetScripts.packageModuleSearchPath)")
         }
         return lines.joined(separator: "\n") + "\n"
     }
