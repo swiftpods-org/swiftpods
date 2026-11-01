@@ -13,6 +13,8 @@ from pathlib import Path
 TEAM_ID = re.compile(r"[A-Z0-9]{10}")
 CERTIFICATE_SHA1 = re.compile(r"[0-9A-F]{40}")
 CERTIFICATE_SHA256 = re.compile(r"[0-9a-f]{64}")
+APPLICATIONS_DIRECTORY = Path("/Applications")
+APPLE_XCODE_TOOL_IDENTIFIERS = {"notarytool": "com.apple.gke.notary.tool"}
 
 
 def apple_tool_environment():
@@ -34,7 +36,8 @@ def inspection_environment():
 
 def trusted_xcode_tool(name):
     """Resolve one selected-Xcode tool without honoring ambient toolchain overrides."""
-    if re.fullmatch(r"[A-Za-z0-9_-]+", name) is None:
+    identifier = APPLE_XCODE_TOOL_IDENTIFIERS.get(name)
+    if identifier is None:
         raise RuntimeError("Invalid Xcode tool name")
     environment = apple_tool_environment()
     selected_text = subprocess.check_output(
@@ -68,7 +71,7 @@ def trusted_xcode_tool(name):
         ),
         None,
     )
-    if bundle is None or bundle.parent != Path("/Applications"):
+    if bundle is None or bundle.parent != APPLICATIONS_DIRECTORY:
         raise RuntimeError("Selected Xcode must be installed directly in /Applications")
     relative = candidate.relative_to(bundle)
     current = bundle
@@ -76,13 +79,42 @@ def trusted_xcode_tool(name):
     for component in relative.parts:
         current /= component
         paths.append(current)
+    requires_signature_check = False
+    hosted_runner = (
+        os.environ.get("GITHUB_ACTIONS") == "true"
+        and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted"
+    )
     for path in paths:
         status = path.lstat()
-        if stat.S_ISLNK(status.st_mode) or status.st_uid != 0 or status.st_mode & 0o022:
-            raise RuntimeError("Selected Xcode is not a root-owned, non-writable installation")
+        if stat.S_ISLNK(status.st_mode):
+            raise RuntimeError("Selected Xcode installation contains a symbolic link")
+        if status.st_mode & 0o022:
+            raise RuntimeError("Selected Xcode installation has shared write permissions")
+        if status.st_uid != 0:
+            if not hosted_runner or status.st_uid != os.geteuid():
+                raise RuntimeError("Selected Xcode installation has an unexpected owner")
+            requires_signature_check = True
     status = candidate.stat()
     if not stat.S_ISREG(status.st_mode) or status.st_mode & 0o111 == 0:
         raise RuntimeError("Selected Xcode tool is not an executable regular file")
+    if requires_signature_check:
+        verification = subprocess.run(
+            [
+                "/usr/bin/codesign",
+                "--verify",
+                "--strict",
+                "--verbose=2",
+                f'-R=identifier "{identifier}" and anchor apple',
+                candidate,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=60,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+        )
+        if verification.returncode:
+            raise RuntimeError("Selected Xcode tool does not have a valid Apple signature")
     return str(candidate)
 
 

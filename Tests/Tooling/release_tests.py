@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from scripts import (
+    apple_signing,
     publish_release,
     release,
     sign_release,
@@ -156,6 +157,116 @@ class SigningTests(unittest.TestCase):
         self.assertNotIn("TOOLCHAINS", environment)
         self.assertNotIn("SWIFTPODS_SIGNING_PASSWORD", environment)
         self.assertEqual(environment["PATH"], "/usr/bin:/bin:/usr/sbin:/sbin")
+
+
+class XcodeToolTrustTests(unittest.TestCase):
+    def setUp(self):
+        owner = tempfile.TemporaryDirectory(prefix="swiftpods-xcode-trust-test-")
+        self.addCleanup(owner.cleanup)
+        self.root = Path(owner.name).resolve()
+        self.bundle = self.root / "Xcode_Fixture.app"
+        self.selected = self.bundle / "Contents/Developer"
+        self.candidate = self.selected / "usr/bin/notarytool"
+        self.candidate.parent.mkdir(parents=True)
+        self.candidate.write_bytes(b"fixture executable")
+        self.candidate.chmod(0o755)
+
+    def selected_tool(self, command, **options):
+        self.assertEqual(options["env"], apple_signing.apple_tool_environment())
+        if command == ["/usr/bin/xcode-select", "-p"]:
+            return str(self.selected) + "\n"
+        if command == ["/usr/bin/xcrun", "--find", "notarytool"]:
+            return str(self.candidate) + "\n"
+        self.fail("Unexpected Xcode tool probe: " + repr(command))
+
+    def trust(self, signature_status=0):
+        with (
+            patch.object(apple_signing, "APPLICATIONS_DIRECTORY", self.root),
+            patch.object(
+                apple_signing.subprocess,
+                "check_output",
+                side_effect=self.selected_tool,
+            ),
+            patch.object(
+                apple_signing.subprocess,
+                "run",
+                return_value=SimpleNamespace(returncode=signature_status),
+            ) as verification,
+            patch.dict(
+                os.environ,
+                {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted"},
+            ),
+        ):
+            result = apple_signing.trusted_xcode_tool("notarytool")
+        return result, verification
+
+    def test_hosted_runner_owned_xcode_requires_an_exact_apple_signature(self):
+        result, verification = self.trust()
+        self.assertEqual(result, str(self.candidate))
+        command = verification.call_args.args[0]
+        self.assertEqual(command[0:4], [
+            "/usr/bin/codesign", "--verify", "--strict", "--verbose=2"
+        ])
+        self.assertEqual(
+            command[4],
+            '-R=identifier "com.apple.gke.notary.tool" and anchor apple',
+        )
+        self.assertEqual(command[5], self.candidate)
+        environment = verification.call_args.kwargs["env"]
+        self.assertEqual(set(environment), {"HOME", "LANG", "LC_ALL", "PATH", "TMPDIR"})
+        self.assertNotIn("SWIFTPODS_NOTARY_KEY", environment)
+
+    def test_hosted_runner_owned_xcode_rejects_an_invalid_apple_signature(self):
+        with self.assertRaisesRegex(RuntimeError, "valid Apple signature"):
+            self.trust(signature_status=1)
+
+    def test_user_owned_xcode_is_not_trusted_outside_a_github_hosted_runner(self):
+        with (
+            patch.object(apple_signing, "APPLICATIONS_DIRECTORY", self.root),
+            patch.object(
+                apple_signing.subprocess,
+                "check_output",
+                side_effect=self.selected_tool,
+            ),
+            patch.object(apple_signing.subprocess, "run") as verification,
+            patch.dict(
+                os.environ,
+                {"GITHUB_ACTIONS": "", "RUNNER_ENVIRONMENT": ""},
+            ),
+            self.assertRaisesRegex(RuntimeError, "unexpected owner"),
+        ):
+            apple_signing.trusted_xcode_tool("notarytool")
+        verification.assert_not_called()
+
+    def test_shared_writable_xcode_path_is_rejected_before_signature_check(self):
+        self.candidate.parent.chmod(0o775)
+        with (
+            patch.object(apple_signing, "APPLICATIONS_DIRECTORY", self.root),
+            patch.object(
+                apple_signing.subprocess,
+                "check_output",
+                side_effect=self.selected_tool,
+            ),
+            patch.object(apple_signing.subprocess, "run") as verification,
+            patch.dict(
+                os.environ,
+                {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted"},
+            ),
+            self.assertRaisesRegex(RuntimeError, "shared write permissions"),
+        ):
+            apple_signing.trusted_xcode_tool("notarytool")
+        verification.assert_not_called()
+
+    @unittest.skipUnless(
+        sys.platform == "darwin"
+        and os.environ.get("GITHUB_ACTIONS") == "true"
+        and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted",
+        "requires a GitHub-hosted macOS image",
+    )
+    def test_github_hosted_selected_notarytool_satisfies_the_live_policy(self):
+        self.assertTrue(
+            Path(apple_signing.trusted_xcode_tool("notarytool")).is_absolute()
+        )
 
 
 class NotarizationVerificationTests(unittest.TestCase):
