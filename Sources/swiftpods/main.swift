@@ -87,6 +87,7 @@ func run(_ arguments: [String]) throws {
     var operands: [String] = []
     var source: String?
     var project: URL?
+    var requested: String?
     while !arguments.isEmpty {
         let argument = arguments.removeFirst()
         switch argument {
@@ -104,8 +105,8 @@ func run(_ arguments: [String]) throws {
                 throw Usage(description: "--source must be an HTTPS/SSH repository URL, file URL or absolute local path")
             }
             source = value
-        case "-h", "--help", "help": command = command ?? "help"
-        case "--version": command = command ?? "version"
+        case "-h", "--help": requested = "help"
+        case "--version": requested = requested ?? "version"
         default:
             if argument.hasPrefix("-") {
                 flags.insert(argument)
@@ -115,6 +116,14 @@ func run(_ arguments: [String]) throws {
                 operands.append(argument)
             }
         }
+    }
+    // A help or version flag replaces the command, so `swiftpods deintegrate --help` never deintegrates.
+    if let requested {
+        command = requested
+        flags = []
+        operands = []
+        source = nil
+        project = nil
     }
     let allowed: [String: Set<String>] = [
         "install": ["--deployment", "--resolve", "--adopt", "--offline", "--update-sources", "--allow-external-file-lists"], "deintegrate": ["--cocoapods"],
