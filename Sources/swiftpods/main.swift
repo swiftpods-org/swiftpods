@@ -2,7 +2,7 @@ import Foundation
 import SwiftPodsKit
 import SwiftPodsManifest
 
-let version = "0.3.3"
+let version = "0.3.4"
 
 let help = """
     SwiftPods \(version): Swift packages and binary SDKs for Xcode projects, declared in a Podfile.

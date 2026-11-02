@@ -249,8 +249,18 @@ class InstallTests(unittest.TestCase):
         }
 
         def codesign(arguments, **_options):
-            if "--extract-certificates" in arguments:
-                prefix = Path(arguments[arguments.index("--extract-certificates") + 1])
+            extraction = next(
+                (
+                    argument
+                    for argument in arguments
+                    if isinstance(argument, str)
+                    and argument.startswith("--extract-certificates=")
+                ),
+                None,
+            )
+            if extraction is not None:
+                self.assertNotIn("--extract-certificates", arguments)
+                prefix = Path(extraction.split("=", 1)[1])
                 Path(str(prefix) + "0").write_bytes(certificate)
                 return SimpleNamespace(
                     returncode=0,

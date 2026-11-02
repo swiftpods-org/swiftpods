@@ -40,6 +40,52 @@ def write_archive(path, files):
             archive.writestr(member, contents)
 
 
+class AppleSignatureInspectionTests(unittest.TestCase):
+    def test_certificate_prefix_is_one_codesign_option_argument(self):
+        owner = tempfile.TemporaryDirectory(prefix="swiftpods-signature-inspection-test-")
+        self.addCleanup(owner.cleanup)
+        executable = Path(owner.name) / "swiftpods"
+        executable.write_bytes(b"signed fixture")
+        certificate = b"fixture developer id leaf certificate"
+        commands = []
+
+        def codesign(arguments, **_options):
+            commands.append(arguments)
+            extraction = next(
+                (
+                    argument
+                    for argument in arguments
+                    if isinstance(argument, str)
+                    and argument.startswith("--extract-certificates=")
+                ),
+                None,
+            )
+            if extraction is not None:
+                self.assertNotIn("--extract-certificates", arguments)
+                prefix = Path(extraction.split("=", 1)[1])
+                Path(str(prefix) + "0").write_bytes(certificate)
+                return SimpleNamespace(
+                    returncode=0,
+                    stderr=(
+                        "Authority=Developer ID Application: Fixture (TEAMID1234)\n"
+                        "TeamIdentifier=TEAMID1234\n"
+                    ),
+                )
+            return SimpleNamespace(returncode=0, stderr=b"")
+
+        with patch.object(apple_signing.subprocess, "run", side_effect=codesign):
+            publisher = apple_signing.inspect_signature(executable)
+
+        self.assertEqual(len(commands), 2)
+        self.assertEqual(publisher["team_id"], "TEAMID1234")
+        self.assertEqual(
+            publisher["certificate_sha1"], hashlib.sha1(certificate).hexdigest().upper()
+        )
+        self.assertEqual(
+            publisher["certificate_sha256"], hashlib.sha256(certificate).hexdigest()
+        )
+
+
 class SigningTests(unittest.TestCase):
     def setUp(self):
         owner = tempfile.TemporaryDirectory(prefix="swiftpods-signing-test-")
