@@ -32,7 +32,7 @@ struct ProjectPlan {
         let phases: [PhasePlan]
         /// The generated settings file, relative to the project directory.
         let settingsFile: String?
-        /// Whether the Podfile gives the target build settings, which a base configuration of its own must include.
+        /// Whether the generated file contains effective build settings, which a base configuration of its own must include.
         var hasSettings = true
         /// Resource bundles copied into the target's product, relative to the project directory.
         var resources: [String] = []

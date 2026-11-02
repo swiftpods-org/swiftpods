@@ -191,6 +191,9 @@ final class EndToEndTests: XCTestCase {
         let frameworks = derived.appendingPathComponent("Build/Products/Debug-iphonesimulator/App.app/Frameworks")
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: frameworks.path).sorted(), ["Greeting.framework", "Plugin.framework"])
         XCTAssertFalse(FileManager.default.fileExists(atPath: frameworks.appendingPathComponent("Greeting.framework/Headers").path))
+        let loadCommands = try shell.run(
+            "/usr/bin/otool", ["-l", derived.appendingPathComponent("Build/Products/Debug-iphonesimulator/App.app/App").path], in: nil)
+        XCTAssertTrue(loadCommands.contains("@executable_path/Frameworks"), loadCommands)
         let signature = try shell.run("/usr/bin/codesign", ["-dv", frameworks.appendingPathComponent("Greeting.framework").path], in: nil)
         XCTAssertTrue(signature.contains("Signature=adhoc"), signature)
     }

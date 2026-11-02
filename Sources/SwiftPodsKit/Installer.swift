@@ -2246,6 +2246,19 @@ public struct Installer: Sendable {
             let names = Set(targetsByProject[path]!.map(\.name))
             return (path, ProjectIntegration.embeddingTargets(projects[path]!, of: names))
         })
+        let applicationRuntimeSearchPaths = Dictionary(uniqueKeysWithValues: projectPaths.map { path in
+            let project = projects[path]!
+            let declaredPlatforms = Dictionary(uniqueKeysWithValues: targetsByProject[path]!.map { ($0.name, $0.platform) })
+            var paths: [String: String] = [:]
+            for target in project.nativeTargets {
+                guard target.productType == "com.apple.product-type.application",
+                    let platform = Self.platformName(of: target.name, declared: declaredPlatforms[target.name] ?? nil, in: project)
+                else { continue }
+                let frameworks = platform == .macos ? "@executable_path/../Frameworks" : "@executable_path/Frameworks"
+                if paths[target.name] == nil { paths[target.name] = "$(inherited) " + frameworks }
+            }
+            return (path, paths)
+        })
 
         var deploymentSnapshots: [String: PackageResolved.PathSnapshot] = [:]
         if options.deployment {
@@ -2324,10 +2337,14 @@ public struct Installer: Sendable {
         guard Set(projectFolders.values.map(Self.fileSystemKey)).count == projectFolders.count else {
             throw SwiftPodsError("Xcode project names produce colliding SwiftPods paths")
         }
-        let targetFolders = Dictionary(uniqueKeysWithValues: projectPaths.map { path in
+        let targetNames = Dictionary(uniqueKeysWithValues: projectPaths.map { path in
             let names = targetsByProject[path]!.map(\.name) + embedders[path]!.filter {
                 embedder in !targetsByProject[path]!.contains { $0.name == embedder }
             }
+            return (path, names)
+        })
+        let targetFolders = Dictionary(uniqueKeysWithValues: projectPaths.map { path in
+            let names = targetNames[path]!
             let groups = Dictionary(grouping: names, by: Self.fileSystemKey)
             let folders = Dictionary(uniqueKeysWithValues: names.map { name in
                 let base = folder(name)
@@ -2446,17 +2463,23 @@ public struct Installer: Sendable {
             products: products)
         try stage(DependencyPackage.directoryName, dependencies.files())
 
-        // Build settings become one xcconfig per target; every target has one, so adding settings changes no project.
+        // Build settings become one xcconfig per declared target. Application embedders outside the Podfile also get
+        // the runtime search path required for frameworks copied into their bundle by the Finish phase.
         let settingsDirectory = generated.appendingPathComponent("Settings", isDirectory: true)
         var settingsFiles: [String: [String: URL]] = [:]
         var settingsTexts: [String: String] = [:]
         for path in projectPaths {
-            for target in targetsByProject[path]! {
+            let declared = Dictionary(uniqueKeysWithValues: targetsByProject[path]!.map { ($0.name, $0) })
+            for name in targetNames[path]! {
+                let target = declared[name]
+                let runtimeSearchPaths = applicationRuntimeSearchPaths[path]?[name]
+                guard target != nil || runtimeSearchPaths != nil else { continue }
                 let file = settingsDirectory.appendingPathComponent(projectFolders[path]!)
-                    .appendingPathComponent(targetFolders[path]![target.name]! + ".xcconfig")
-                settingsFiles[path, default: [:]][target.name] = file
+                    .appendingPathComponent(targetFolders[path]![name]! + ".xcconfig")
+                settingsFiles[path, default: [:]][name] = file
                 settingsTexts[Paths.relative(from: settingsDirectory, to: file)] = Self.xcconfig(
-                    target.settings, packageModuleBridge: !(packageModulesByTarget[path]?[target.name] ?? []).isEmpty)
+                    target?.settings ?? [], runtimeSearchPaths: runtimeSearchPaths,
+                    packageModuleBridge: !(packageModulesByTarget[path]?[name] ?? []).isEmpty)
             }
         }
         try stage("Settings", settingsTexts)
@@ -2654,11 +2677,15 @@ public struct Installer: Sendable {
                 plan.targets.append(.init(
                     name: target.name, products: products, phases: TargetScripts.Phase.allCases.map { phasePlan($0, target.name) },
                     settingsFile: Paths.relative(from: projectDirectory, to: settingsFiles[path]![target.name]!),
-                    hasSettings: !target.settings.isEmpty || !(packageModulesByTarget[path]?[target.name] ?? []).isEmpty))
+                    hasSettings: !target.settings.isEmpty || !(packageModulesByTarget[path]?[target.name] ?? []).isEmpty
+                        || applicationRuntimeSearchPaths[path]?[target.name] != nil))
             }
             let declared = Set(targets.map(\.name))
             for name in embedders[path]! where !declared.contains(name) {
-                plan.targets.append(.init(name: name, products: [], phases: [phasePlan(.finish, name)], settingsFile: nil, hasSettings: false))
+                let settingsFile = settingsFiles[path]?[name].map { Paths.relative(from: projectDirectory, to: $0) }
+                plan.targets.append(.init(
+                    name: name, products: [], phases: [phasePlan(.finish, name)],
+                    settingsFile: settingsFile, hasSettings: settingsFile != nil))
             }
             let changes = try ProjectIntegration.apply(
                 plan, to: &project, adopt: options.adopt, migrateLegacyCrashlyticsPaths: true)
@@ -3317,8 +3344,13 @@ public struct Installer: Sendable {
         }
     }
 
-    static func xcconfig(_ settings: [BuildSetting], packageModuleBridge: Bool = false) -> String {
+    static func xcconfig(
+        _ settings: [BuildSetting], runtimeSearchPaths: String? = nil, packageModuleBridge: Bool = false
+    ) -> String {
         var lines = ["// Generated by SwiftPods from the Podfile. Do not edit."]
+        if let runtimeSearchPaths {
+            lines.append("LD_RUNPATH_SEARCH_PATHS = \(runtimeSearchPaths)")
+        }
         for setting in settings {
             if let configurations = setting.configurations {
                 lines += configurations.map { "\(setting.key)[config=\($0)] = \(setting.value)" }
@@ -3330,6 +3362,29 @@ public struct Installer: Sendable {
             lines.append("HEADER_SEARCH_PATHS = $(inherited) \(TargetScripts.packageModuleSearchPath)")
         }
         return lines.joined(separator: "\n") + "\n"
+    }
+
+    /// The platform family controls the relative layout of an application's executable and Frameworks directory.
+    private static func platformName(of target: String, declared: Platform?, in project: XcodeProject) -> PlatformName? {
+        if let declared { return declared.name }
+        var settings: [String: PBXValue] = [:]
+        let owners = (project.nativeTargets.first { $0.name == target }.map { [$0.id] } ?? []) + [project.rootID]
+        for owner in owners {
+            for id in project.configurations(of: owner).values.sorted() {
+                for (key, value) in project[id]?["buildSettings"]?.dictionary ?? [:] where settings[key] == nil {
+                    settings[key] = value
+                }
+            }
+        }
+        let platforms: [(PlatformName, String, String)] = [
+            (.ios, "iphoneos", "IPHONEOS_DEPLOYMENT_TARGET"), (.macos, "macosx", "MACOSX_DEPLOYMENT_TARGET"),
+            (.tvos, "appletvos", "TVOS_DEPLOYMENT_TARGET"), (.watchos, "watchos", "WATCHOS_DEPLOYMENT_TARGET"),
+            (.visionos, "xros", "XROS_DEPLOYMENT_TARGET"),
+        ]
+        if let sdk = settings["SDKROOT"]?.string, let platform = platforms.first(where: { $0.1 == sdk }) {
+            return platform.0
+        }
+        return platforms.first(where: { settings[$0.2] != nil })?.0
     }
 
     /// Text files below `directory` by relative path; hidden files, such as Xcode's `.swiftpm`, are not SwiftPods'.

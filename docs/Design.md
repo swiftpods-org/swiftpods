@@ -164,6 +164,9 @@ generated package graph shrinks during resolution. A target that embeds a framew
 of the Podfile, such as Unity's app, gets the Finish phase too, whether the
 Podfile declares it or not; it embeds the dynamic frameworks Xcode leaves out,
 which a build-time script finds without knowing the packages in advance.
+Application settings include the platform's bundle-relative Frameworks runtime
+search path, so removing a CocoaPods base configuration cannot leave embedded
+dynamic frameworks reachable only through a build-machine path.
 
 **Binary packaging.** SDK archives are used as published, except that
 SwiftPods normalizes, in its own copy, the iOS framework slices Xcode would embed
