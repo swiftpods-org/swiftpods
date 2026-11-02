@@ -109,6 +109,9 @@ class WorkflowSecurityTests(unittest.TestCase):
             workflow[assemble:],
         )
         self.assertNotIn("environment: release-signing", workflow[smoke_job:assemble])
+        verification = workflow[workflow.index("  verify-notarization:"):assemble]
+        self.assertEqual(verification.count("timeout-minutes: 60"), 2)
+        self.assertNotIn("timeout-minutes: 15", verification)
         signing_source = (ROOT / "scripts/sign_release.py").read_text()
         self.assertNotIn('[str(executable)', signing_source)
         self.assertIn("Never execute artifact code in this process", signing_source)
