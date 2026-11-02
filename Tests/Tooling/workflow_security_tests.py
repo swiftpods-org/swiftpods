@@ -137,6 +137,10 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertIn('gh release download "v$RELEASE_VERSION"', workflow)
         self.assertGreaterEqual(workflow.count("--verify-published"), 2)
         self.assertIn('--expected-manifest-sha256 "$expected"', workflow)
+        reverify = workflow.split(
+            "name: Reverify the public payload before changing integration pins", 1
+        )[1].split("- id: pin", 1)[0]
+        self.assertIn("GH_TOKEN: ${{ github.token }}", reverify)
         self.assertIn("needs.metadata.outputs.published == 'true'", workflow)
         self.assertNotIn("is already published; release a new version", workflow)
         self.assertIn("A hidden draft exists; the signed payload will be rebuilt", workflow)

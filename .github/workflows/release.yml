@@ -504,6 +504,7 @@ jobs:
       - id: release-assets
         name: Reverify the public payload before changing integration pins
         env:
+          GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
           RELEASE_COMMIT: ${{ needs.metadata.outputs.commit }}
           RELEASE_TAG_OBJECT: ${{ needs.metadata.outputs.source-tag-object }}

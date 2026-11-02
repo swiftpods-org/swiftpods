@@ -11,7 +11,7 @@ External Dependency Manager (EDM4U).
 1. Add the package to `Packages/manifest.json`:
 
    ```json
-   "org.swiftpods.unity": "https://github.com/swiftpods-org/swiftpods.git?path=Unity#v0.3.6"
+   "org.swiftpods.unity": "https://github.com/swiftpods-org/swiftpods.git?path=Unity#v0.3.7"
    ```
 
    Commit Unity's `Packages/packages-lock.json`; it records the exact Git
