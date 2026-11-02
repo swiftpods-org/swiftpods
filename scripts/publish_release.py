@@ -94,11 +94,39 @@ def existing_release(tag):
             text=True, stderr=subprocess.PIPE,
         ))
     except subprocess.CalledProcessError as error:
-        # Missing is the only state in which a version may be published.
-        # Authentication and transport failures stop publication before changes.
-        if re.search(r"\bHTTP 404\b", error.stderr or ""):
-            return None
-        raise
+        # GitHub's release-by-tag endpoint deliberately excludes drafts. A 404
+        # therefore requires an authenticated, paginated list lookup before the
+        # tag can be treated as unused. Authentication and transport failures
+        # still stop publication before changes.
+        if re.search(r"\bHTTP 404\b", error.stderr or "") is None:
+            raise
+    pages = json.loads(
+        subprocess.check_output(
+            [
+                "gh",
+                "api",
+                "--paginate",
+                "--slurp",
+                f"repos/{REPOSITORY}/releases?per_page=100",
+            ],
+            text=True,
+        )
+    )
+    if (
+        not isinstance(pages, list)
+        or any(not isinstance(page, list) for page in pages)
+        or any(not isinstance(release, dict) for page in pages for release in page)
+    ):
+        raise RuntimeError("GitHub returned invalid paginated release metadata")
+    matches = [
+        release
+        for page in pages
+        for release in page
+        if release.get("tag_name") == tag
+    ]
+    if len(matches) > 1:
+        raise RuntimeError("GitHub returned ambiguous release metadata for " + tag)
+    return matches[0] if matches else None
 
 
 def github_json(path):

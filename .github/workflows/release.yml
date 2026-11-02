@@ -82,9 +82,17 @@ jobs:
         run: |
           set -euo pipefail
           echo "published=false" >> "$GITHUB_OUTPUT"
-          lookup="$RUNNER_TEMP/release-lookup.log"
           release_record="$RUNNER_TEMP/swiftpods-release-record.json"
-          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/v$RELEASE_VERSION" > "$release_record" 2> "$lookup"; then
+          python3 - "$release_record" "$RELEASE_VERSION" <<'PY'
+          import json, sys
+          from scripts.publish_release import existing_release
+
+          release = existing_release("v" + sys.argv[2])
+          if release is not None:
+              with open(sys.argv[1], "w") as output:
+                  json.dump(release, output)
+          PY
+          if [[ -s "$release_record" ]]; then
             draft="$(python3 - "$release_record" <<'PY'
           import json, sys
           value = json.load(open(sys.argv[1])).get("draft")
@@ -117,10 +125,6 @@ jobs:
               --tag-object "$RELEASE_TAG_OBJECT" --verify-published
             echo "published=true" >> "$GITHUB_OUTPUT"
             exit 0
-          fi
-          if ! grep -q 'HTTP 404' "$lookup"; then
-            cat "$lookup" >&2
-            exit 1
           fi
   build:
     needs: metadata

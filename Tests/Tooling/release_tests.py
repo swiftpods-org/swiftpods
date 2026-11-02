@@ -1146,6 +1146,46 @@ class ReleaseTests(unittest.TestCase):
             ):
                 publish_release.existing_release("v0.2.0")
 
+    def test_draft_is_found_after_release_by_tag_returns_404(self):
+        draft = {"tag_name": "v0.2.0", "draft": True}
+        missing = subprocess.CalledProcessError(
+            1, ["gh", "api"], stderr="gh: Not Found (HTTP 404)"
+        )
+        with patch.object(
+            publish_release.subprocess,
+            "check_output",
+            side_effect=[missing, json.dumps([[draft]])],
+        ) as check_output:
+            self.assertEqual(publish_release.existing_release("v0.2.0"), draft)
+        self.assertIn("--paginate", check_output.call_args_list[1].args[0])
+        self.assertIn("--slurp", check_output.call_args_list[1].args[0])
+
+    def test_missing_release_requires_an_exhaustive_draft_lookup(self):
+        missing = subprocess.CalledProcessError(
+            1, ["gh", "api"], stderr="gh: Not Found (HTTP 404)"
+        )
+        with patch.object(
+            publish_release.subprocess,
+            "check_output",
+            side_effect=[missing, "[[], []]"],
+        ):
+            self.assertIsNone(publish_release.existing_release("v0.2.0"))
+
+    def test_duplicate_release_records_are_rejected_as_ambiguous(self):
+        missing = subprocess.CalledProcessError(
+            1, ["gh", "api"], stderr="gh: Not Found (HTTP 404)"
+        )
+        draft = {"tag_name": "v0.2.0", "draft": True}
+        with (
+            patch.object(
+                publish_release.subprocess,
+                "check_output",
+                side_effect=[missing, json.dumps([[draft], [draft]])],
+            ),
+            self.assertRaisesRegex(RuntimeError, "ambiguous release metadata"),
+        ):
+            publish_release.existing_release("v0.2.0")
+
 
 class ArchiveInspectionTests(unittest.TestCase):
     def setUp(self):
