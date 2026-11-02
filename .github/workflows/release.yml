@@ -72,6 +72,18 @@ jobs:
             exit 1
           fi
           echo "run-id=$run_id" >> "$GITHUB_OUTPUT"
+      - name: Require tested Fastlane plugin of the tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ steps.resolve.outputs.commit }}
+        run: |
+          run_id=$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/fastlane-plugin.yml/runs" \
+            -f "head_sha=$RELEASE_COMMIT" -f status=success -f per_page=100 \
+            --jq '[.workflow_runs[] | select(.head_sha == "'"$RELEASE_COMMIT"'" and .event == "push" and .head_branch == "main" and .path == ".github/workflows/fastlane-plugin.yml" and .conclusion == "success" and .head_repository.full_name == "'"$GITHUB_REPOSITORY"'")] | sort_by(.run_number) | last | .id // empty')
+          if [[ -z "$run_id" ]]; then
+            echo "No trusted successful .github/workflows/fastlane-plugin.yml run for exact commit $RELEASE_COMMIT" >&2
+            exit 1
+          fi
       - id: publication
         name: Accept only a missing or byte-for-byte verified publication
         env:

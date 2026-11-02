@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Static regression checks for release gates that live in GitHub Actions."""
 
+import re
 import unittest
 
-from scripts.support.version import ROOT
+from scripts.support.version import ROOT, source_version
 
 
 class WorkflowSecurityTests(unittest.TestCase):
@@ -20,6 +21,8 @@ class WorkflowSecurityTests(unittest.TestCase):
             workflow,
         )
         self.assertIn("actions/workflows/build.yml/runs", workflow)
+        self.assertIn("actions/workflows/fastlane-plugin.yml/runs", workflow)
+        self.assertIn("Require tested Fastlane plugin of the tagged commit", workflow)
         self.assertIn('select(.head_sha == "\'"$RELEASE_COMMIT"\'"', workflow)
         self.assertIn('.event == "push" and .head_branch == "main"', workflow)
         self.assertNotIn("commits/$RELEASE_COMMIT/check-runs", workflow)
@@ -202,6 +205,11 @@ class WorkflowSecurityTests(unittest.TestCase):
         lock = (ROOT / "Gemfile.lock").read_text()
         gemfile = (ROOT / "Gemfile").read_text()
         gemspec = (ROOT / "fastlane-plugin-swiftpods.gemspec").read_text()
+        self.assertEqual(
+            re.findall(r"(?m)^ {2,4}fastlane-plugin-swiftpods \(([^)]+)\)$", lock),
+            [source_version(), source_version()],
+            "Frozen plugin spec and checksum entry must match the CLI release version",
+        )
         self.assertIn("ruby: ['3.0.7', '4.0.9']", workflow)
         self.assertIn("ruby-version: ${{ matrix.ruby }}", workflow)
         self.assertIn("ruby/setup-ruby@de492cf36cbab201753d720ce4f4e336cd688c94", workflow)
