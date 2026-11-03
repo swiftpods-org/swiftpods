@@ -382,6 +382,72 @@ final class InstallTransactionTests: XCTestCase {
             atPath: workspace.directory.appendingPathComponent(InstallTransactionJournal.directoryName).path))
     }
 
+    func testActiveJournalRecoversPublishedTreeWithVersionedFrameworkSymlinks() throws {
+        let workspace = try journalWorkspace()
+        let name = "SwiftPodsBinaries"
+        let staged = workspace.staging.appendingPathComponent(name)
+        let published = workspace.generated.appendingPathComponent(name)
+        let framework = staged.appendingPathComponent("Kit.framework")
+        let headers = framework.appendingPathComponent("Versions/A/Headers")
+        try FileManager.default.createDirectory(at: headers, withIntermediateDirectories: true)
+        try Data("vendor header\n".utf8).write(to: headers.appendingPathComponent("Kit.h"))
+        try FileManager.default.createSymbolicLink(
+            atPath: framework.appendingPathComponent("Versions/Current").path, withDestinationPath: "A")
+        try FileManager.default.createSymbolicLink(
+            atPath: framework.appendingPathComponent("Headers").path,
+            withDestinationPath: "Versions/Current/Headers")
+        var journal: InstallTransactionJournal? = try InstallTransactionJournal.begin(
+            directory: workspace.directory, workspaceDescriptor: workspaceDescriptor(workspace.directory),
+            generatedRoot: workspace.generated, stagingName: workspace.staging.lastPathComponent,
+            lockFile: workspace.directory.appendingPathComponent(SwiftPodsLock.fileName), plannedLock: nil)
+        try journal!.prepareGenerated(.publish, name: name)
+        try FileManager.default.moveItem(at: staged, to: published)
+        try journal!.synchronizeGeneratedMutation()
+        journal = nil
+
+        try InstallTransactionJournal.recover(
+            directory: workspace.directory, workspaceDescriptor: workspaceDescriptor(workspace.directory))
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: published.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: workspace.staging.path))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: workspace.directory.appendingPathComponent(InstallTransactionJournal.directoryName).path))
+    }
+
+    func testCommittedJournalResumesCleanupWithVersionedFrameworkSymlinks() throws {
+        let workspace = try journalWorkspace()
+        let framework = workspace.staging.appendingPathComponent("Kit.framework")
+        let headers = framework.appendingPathComponent("Versions/A/Headers")
+        try FileManager.default.createDirectory(at: headers, withIntermediateDirectories: true)
+        try Data("obsolete header\n".utf8).write(to: headers.appendingPathComponent("Kit.h"))
+        try FileManager.default.createSymbolicLink(
+            atPath: framework.appendingPathComponent("Versions/Current").path, withDestinationPath: "A")
+        try FileManager.default.createSymbolicLink(
+            atPath: framework.appendingPathComponent("Headers").path,
+            withDestinationPath: "Versions/Current/Headers")
+        var journal: InstallTransactionJournal? = try InstallTransactionJournal.begin(
+            directory: workspace.directory, workspaceDescriptor: workspaceDescriptor(workspace.directory),
+            generatedRoot: workspace.generated, stagingName: workspace.staging.lastPathComponent,
+            lockFile: workspace.directory.appendingPathComponent(SwiftPodsLock.fileName), plannedLock: nil)
+        try journal!.markCommitted()
+        XCTAssertThrowsError(try journal!.finishCommitted(_beforeStagingCleanup: {
+            // Simulate an interruption after cleanup has removed a file but before its symlinks are removed.
+            try FileManager.default.removeItem(at: headers.appendingPathComponent("Kit.h"))
+            throw SwiftPodsError("simulated cleanup interruption")
+        })) { error in
+            XCTAssertTrue("\(error)".contains("simulated cleanup interruption"), "\(error)")
+        }
+        journal = nil
+
+        try InstallTransactionJournal.recover(
+            directory: workspace.directory, workspaceDescriptor: workspaceDescriptor(workspace.directory))
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: workspace.staging.path))
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: workspace.directory.appendingPathComponent(InstallTransactionJournal.directoryName).path))
+        XCTAssertEqual(try Data(contentsOf: workspace.projectFile), Data("original project\n".utf8))
+    }
+
     func testActiveJournalRecoversConfirmedPackageResolved() throws {
         let workspace = try journalWorkspace()
         let project = workspace.projectFile.deletingLastPathComponent()

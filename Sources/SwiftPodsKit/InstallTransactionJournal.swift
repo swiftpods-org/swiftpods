@@ -1861,7 +1861,9 @@ final class InstallTransactionJournal {
                 ? actual.representsAfterRename(member.entry) : actual == member.entry
             guard entryMatches else { return false }
             var target = [CChar](repeating: 0, count: Int(PATH_MAX) + 1)
-            let count = name.withCString { readlinkat(parent, $0, &target, target.count) }
+            let count = target.withUnsafeMutableBytes { buffer in
+                name.withCString { readlinkat(parent, $0, buffer.baseAddress, buffer.count) }
+            }
             guard count >= 0, count < target.count else { return false }
             return sha256(Data(target.prefix(Int(count)).map { UInt8(bitPattern: $0) })) == member.payloadSHA256
         default:
@@ -1957,7 +1959,9 @@ final class InstallTransactionJournal {
             let entryMatches = relative.isEmpty
                 ? actual.representsAfterRename(member.entry) : actual == member.entry
             var target = [CChar](repeating: 0, count: Int(PATH_MAX) + 1)
-            let count = name.withCString { readlinkat(parent, $0, &target, target.count) }
+            let count = target.withUnsafeMutableBytes { buffer in
+                name.withCString { readlinkat(parent, $0, buffer.baseAddress, buffer.count) }
+            }
             guard entryMatches, count >= 0, count < target.count,
                 sha256(Data(target.prefix(Int(count)).map { UInt8(bitPattern: $0) })) == member.payloadSHA256
             else { throw SwiftPodsError("Generated recovery symbolic link changed: \(relative)") }
@@ -2030,7 +2034,9 @@ final class InstallTransactionJournal {
             else { throw SwiftPodsError("Cannot safely remove generated recovery file: \(relative)") }
         case S_IFLNK:
             var target = [CChar](repeating: 0, count: Int(PATH_MAX) + 1)
-            let count = name.withCString { readlinkat(parent, $0, &target, target.count) }
+            let count = target.withUnsafeMutableBytes { buffer in
+                name.withCString { readlinkat(parent, $0, buffer.baseAddress, buffer.count) }
+            }
             guard count >= 0, count < target.count,
                 sha256(Data(target.prefix(Int(count)).map { UInt8(bitPattern: $0) })) == member.payloadSHA256
             else { throw SwiftPodsError("Generated recovery symbolic link changed: \(relative)") }
@@ -2563,8 +2569,10 @@ final class InstallTransactionJournal {
             }
         case S_IFLNK:
             var target = [CChar](repeating: 0, count: Int(PATH_MAX) + 1)
-            let count = name.withCString {
-                readlinkat(parent, $0, &target, target.count)
+            let count = target.withUnsafeMutableBytes { buffer in
+                name.withCString {
+                    readlinkat(parent, $0, buffer.baseAddress, buffer.count)
+                }
             }
             guard count >= 0, count < target.count else {
                 throw SwiftPodsError("Generated transaction symbolic link changed while it was captured")

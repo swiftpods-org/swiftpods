@@ -508,6 +508,55 @@ final class InstallerTests: XCTestCase {
         XCTAssertEqual(modified, unchanged, "An unchanged binary package is not regenerated")
     }
 
+    func testVersionedCatalystFrameworkSymlinksSurviveInstallAndReplacement() throws {
+        let directory = try fixture("target 'App' do\n  binary 'Kit', path: 'Vendor/Kit.xcframework'\nend\n")
+        let artifact = directory.appendingPathComponent("Vendor/Kit.xcframework")
+        let frameworkPath = "ios-arm64_x86_64-maccatalyst/Kit.framework"
+        let framework = artifact.appendingPathComponent(frameworkPath)
+        let headers = framework.appendingPathComponent("Versions/A/Headers")
+        try FileManager.default.createDirectory(at: headers, withIntermediateDirectories: true)
+        let info: [String: Any] = [
+            "AvailableLibraries": [[
+                "LibraryIdentifier": "ios-arm64_x86_64-maccatalyst", "LibraryPath": "Kit.framework",
+                "SupportedArchitectures": ["arm64", "x86_64"], "SupportedPlatform": "ios",
+                "SupportedPlatformVariant": "maccatalyst",
+            ]],
+            "CFBundlePackageType": "XFWK", "XCFrameworkFormatVersion": "1.0",
+        ]
+        try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
+            .write(to: artifact.appendingPathComponent("Info.plist"))
+        try FileManager.default.createSymbolicLink(
+            atPath: framework.appendingPathComponent("Versions/Current").path, withDestinationPath: "A")
+        try FileManager.default.createSymbolicLink(
+            atPath: framework.appendingPathComponent("Headers").path,
+            withDestinationPath: "Versions/Current/Headers")
+        let installedFramework = directory.appendingPathComponent(
+            "SwiftPods/SwiftPodsBinaries/Artifacts/Kit/Kit.xcframework/" + frameworkPath)
+        // Run the built CLI so Release tests also exercise its optimized code and executable archive worker.
+        let executable = Bundle(for: InstallerTests.self).bundleURL.deletingLastPathComponent()
+            .appendingPathComponent("swiftpods")
+
+        for contents in ["original header\n", "original header\n", "updated header\n"] {
+            let existing = try? String(contentsOf: headers.appendingPathComponent("Kit.h"), encoding: .utf8)
+            if existing != contents {
+                try Data(contents.utf8).write(to: headers.appendingPathComponent("Kit.h"))
+            }
+            _ = try ProcessRunner().run(
+                executable.path, ["install", "--project-directory", directory.path, "--offline"], in: nil)
+
+            XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(
+                atPath: installedFramework.appendingPathComponent("Headers").path), "Versions/Current/Headers")
+            XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(
+                atPath: installedFramework.appendingPathComponent("Versions/Current").path), "A")
+            XCTAssertEqual(try String(
+                contentsOf: installedFramework.appendingPathComponent("Headers/Kit.h"), encoding: .utf8), contents)
+            XCTAssertFalse(FileManager.default.fileExists(
+                atPath: directory.appendingPathComponent(InstallTransactionJournal.directoryName).path))
+            XCTAssertFalse(try FileManager.default.contentsOfDirectory(
+                atPath: directory.appendingPathComponent("SwiftPods").path).contains { $0.hasPrefix(".staging-") })
+        }
+    }
+
     func testInstallReadsLocalBinaryThroughLockedWorkspaceAfterPathRebind() throws {
         let podfile = "target 'App' do\n  binary 'Kit', path: 'Vendor/Kit.xcframework'\nend\n"
         let directory = try fixture(podfile)

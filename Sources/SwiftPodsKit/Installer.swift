@@ -944,8 +944,10 @@ public struct Installer: Sendable {
                 }
             case S_IFLNK:
                 var target = [UInt8](repeating: 0, count: 64 * 1_024)
-                let count = name.withCString {
-                    readlinkat(parent, $0, &target, target.count)
+                let count = target.withUnsafeMutableBytes { buffer in
+                    name.withCString {
+                        readlinkat(parent, $0, buffer.baseAddress, buffer.count)
+                    }
                 }
                 guard count >= 0, count < target.count else {
                     throw SwiftPodsError("Generated symbolic link is too large or changed: \(name)")
