@@ -489,7 +489,7 @@ final class InstallerTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: package.appendingPathComponent("Artifacts/Core/Core.xcframework/Info.plist").path))
 
         let installed = try project(directory)
-        XCTAssertEqual(localPackages(installed), ["SwiftPods/SwiftPodsDependencies"])
+        XCTAssertEqual(localPackages(installed), ["SwiftPods/SwiftPodsDependencies", "SwiftPods/SwiftPodsBinaries"])
         XCTAssertEqual(products(installed, "App"), ["SwiftPods-App"])
         let dependencies = try generated(directory, "SwiftPodsDependencies/Package.swift")
         XCTAssertTrue(dependencies.contains(#".package(path: "../SwiftPodsBinaries")"#), dependencies)
@@ -506,6 +506,9 @@ final class InstallerTests: XCTestCase {
         _ = try installer(directory).install(InstallOptions())
         let unchanged = try FileManager.default.attributesOfItem(atPath: package.appendingPathComponent("Package.swift").path)[.modificationDate] as? Date
         XCTAssertEqual(modified, unchanged, "An unchanged binary package is not regenerated")
+
+        _ = try installer(directory).deintegrate()
+        XCTAssertEqual(try String(contentsOf: installed.file, encoding: .utf8), Fixtures.project)
     }
 
     func testVersionedCatalystFrameworkSymlinksSurviveInstallAndReplacement() throws {
@@ -634,6 +637,7 @@ final class InstallerTests: XCTestCase {
             .write(to: directory.appendingPathComponent("Podfile"), atomically: true, encoding: .utf8)
         try makeXCFramework(directory.appendingPathComponent("Vendor/Ads.xcframework"))
         XCTAssertEqual(try installer(directory).install(InstallOptions()).projects[0].changes.map(\.description), [
+            "Added local package SwiftPods/SwiftPodsBinaries",
             "Updated package https://github.com/Alamofire/Alamofire.git",
         ])
         XCTAssertEqual(products(try project(directory), "Plugin"), ["SwiftPods-Plugin", "Alamofire"])
@@ -1657,7 +1661,8 @@ final class InstallerTests: XCTestCase {
         let resolved = PackageResolved.location(project: projectURL)
         let runner = RecordingRunner { _, _, _ in
             try FileManager.default.createDirectory(
-                at: resolved.deletingLastPathComponent(), withIntermediateDirectories: true)
+                at: resolved.deletingLastPathComponent().appendingPathComponent("configuration"),
+                withIntermediateDirectories: true)
             try Data(#"{"pins":[],"version":3}"#.utf8).write(to: resolved)
             throw SwiftPodsError("resolver failed after creating Package.resolved")
         }
@@ -1667,6 +1672,7 @@ final class InstallerTests: XCTestCase {
             directory: directory, runner: runner, cache: directory.appendingPathComponent(".cache")
         ).install(options)) { error in
             XCTAssertTrue("\(error)".contains("resolver failed after creating"), "\(error)")
+            XCTAssertFalse("\(error)".contains("rollback was incomplete"), "\(error)")
         }
         XCTAssertFalse(FileManager.default.fileExists(
             atPath: projectURL.appendingPathComponent("project.xcworkspace").path))

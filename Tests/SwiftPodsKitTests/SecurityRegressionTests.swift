@@ -602,7 +602,9 @@ final class KitSecurityRegressionTests: XCTestCase {
         let contents = Data(#"{"pins":[],"version":3}"#.utf8)
 
         let beforeWorkspace = try PackageResolved.currentSnapshot(project: project)
-        try FileManager.default.createDirectory(at: resolved.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: resolved.deletingLastPathComponent().appendingPathComponent("configuration"),
+            withIntermediateDirectories: true)
         try contents.write(to: resolved)
         let afterWorkspace = try PackageResolved.currentSnapshot(project: project)
         try PackageResolved.restore(beforeWorkspace, project: project, replacing: afterWorkspace)
@@ -612,13 +614,72 @@ final class KitSecurityRegressionTests: XCTestCase {
         let workspace = project.appendingPathComponent("project.xcworkspace", isDirectory: true)
         try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: false)
         let beforeSharedData = try PackageResolved.currentSnapshot(project: project)
-        try FileManager.default.createDirectory(at: resolved.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(
+            at: resolved.deletingLastPathComponent().appendingPathComponent("configuration"),
+            withIntermediateDirectories: true)
         try contents.write(to: resolved)
         let afterSharedData = try PackageResolved.currentSnapshot(project: project)
         try PackageResolved.restore(beforeSharedData, project: project, replacing: afterSharedData)
         XCTAssertTrue(FileManager.default.fileExists(atPath: workspace.path))
         XCTAssertFalse(FileManager.default.fileExists(
             atPath: workspace.appendingPathComponent("xcshareddata").path))
+
+        // A configuration directory that existed before the resolver ran belongs to the workspace.
+        let configuration = resolved.deletingLastPathComponent().appendingPathComponent("configuration")
+        try FileManager.default.createDirectory(at: configuration, withIntermediateDirectories: true)
+        let beforeFile = try PackageResolved.currentSnapshot(project: project)
+        try contents.write(to: resolved)
+        let afterFile = try PackageResolved.currentSnapshot(project: project)
+        try PackageResolved.restore(beforeFile, project: project, replacing: afterFile)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: configuration.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: resolved.path))
+    }
+
+    func testPackageResolvedRollbackPreservesNonemptyResolverConfiguration() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let project = directory.appendingPathComponent("App.xcodeproj", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        let original = try PackageResolved.currentSnapshot(project: project)
+        let resolved = PackageResolved.location(project: project)
+        let configuration = resolved.deletingLastPathComponent().appendingPathComponent("configuration")
+        try FileManager.default.createDirectory(at: configuration, withIntermediateDirectories: true)
+        let contents = Data("preserve concurrent configuration\n".utf8)
+        try contents.write(to: configuration.appendingPathComponent("keep.txt"))
+        try Data(#"{"pins":[],"version":3}"#.utf8).write(to: resolved)
+        let installed = try PackageResolved.currentSnapshot(project: project)
+
+        XCTAssertThrowsError(try PackageResolved.restore(original, project: project, replacing: installed)) {
+            XCTAssertTrue("\($0)".contains("configuration is not empty"), "\($0)")
+        }
+        let entries = try XCTUnwrap(FileManager.default.enumerator(at: project, includingPropertiesForKeys: nil))
+        let preserved = entries.allObjects.compactMap { $0 as? URL }.filter { $0.lastPathComponent == "keep.txt" }
+        XCTAssertEqual(preserved.count, 1)
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(preserved.first)), contents)
+    }
+
+    func testPackageResolvedRollbackDoesNotFollowResolverConfigurationSymlink() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let project = directory.appendingPathComponent("App.xcodeproj", isDirectory: true)
+        let outside = directory.appendingPathComponent("outside", isDirectory: true)
+        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        let sentinel = outside.appendingPathComponent("keep.txt")
+        let contents = Data("preserve external configuration\n".utf8)
+        try contents.write(to: sentinel)
+        let original = try PackageResolved.currentSnapshot(project: project)
+        let resolved = PackageResolved.location(project: project)
+        try FileManager.default.createDirectory(at: resolved.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(
+            at: resolved.deletingLastPathComponent().appendingPathComponent("configuration"), withDestinationURL: outside)
+        try Data(#"{"pins":[],"version":3}"#.utf8).write(to: resolved)
+        let installed = try PackageResolved.currentSnapshot(project: project)
+
+        XCTAssertThrowsError(try PackageResolved.restore(original, project: project, replacing: installed)) {
+            XCTAssertTrue("\($0)".contains("not a real directory"), "\($0)")
+        }
+        XCTAssertEqual(try Data(contentsOf: sentinel), contents)
     }
 
     func testPackageResolvedRollbackDoesNotReverseOverAConcurrentReplacement() throws {

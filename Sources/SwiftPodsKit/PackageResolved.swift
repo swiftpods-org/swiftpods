@@ -1063,6 +1063,7 @@ struct PackageResolved {
                     let child = try openRecoveryDirectory(
                         named: component, in: parent, expected: installed.directories[index], file: file)
                     defer { close(child) }
+                    if component == "swiftpm" { try removeEmptyResolverConfiguration(in: child, file: file) }
                     guard try directoryIsEmpty(child) else {
                         throw SwiftPodsError(
                             "A resolver-created Package.resolved directory is not empty; evidence was preserved",
@@ -1080,6 +1081,7 @@ struct PackageResolved {
                     let child = try openRecoveryDirectory(
                         named: quarantine, in: parent, expected: installed.directories[index], file: file)
                     defer { close(child) }
+                    if component == "swiftpm" { try removeEmptyResolverConfiguration(in: child, file: file) }
                     guard try directoryIsEmpty(child),
                         quarantine.withCString({ unlinkat(parent, $0, AT_REMOVEDIR) }) == 0,
                         fsync(parent) == 0
@@ -1752,12 +1754,36 @@ struct PackageResolved {
                 "A resolver-created Package.resolved directory changed during cleanup; evidence remains at \(quarantine.name)",
                 file: file.path)
         }
+        if name == "swiftpm" { try removeEmptyResolverConfiguration(in: descriptor, file: file) }
         guard item.withCString({ unlinkat(quarantine.descriptor, $0, AT_REMOVEDIR) }) == 0 else {
             throw SwiftPodsError(
                 "A resolver-created Package.resolved directory is no longer empty; evidence remains at \(quarantine.name)",
                 file: file.path)
         }
         try quarantine.finish()
+    }
+
+    /// Xcode creates this empty directory alongside Package.resolved. Remove it only inside a resolver-created
+    /// swiftpm directory. Pre-existing swiftpm directories, configuration files and symlinks are left alone.
+    private static func removeEmptyResolverConfiguration(in parent: Int32, file: URL) throws {
+        let name = "configuration"
+        var linked = stat()
+        let result = name.withCString { fstatat(parent, $0, &linked, AT_SYMLINK_NOFOLLOW) }
+        if result != 0 && errno == ENOENT { return }
+        guard result == 0, linked.st_mode & S_IFMT == S_IFDIR else {
+            throw SwiftPodsError("Resolver configuration is not a real directory; evidence was preserved", file: file.path)
+        }
+        let expected = NodeState(linked)
+        let descriptor = try openRecoveryDirectory(named: name, in: parent, expected: expected, file: file)
+        defer { close(descriptor) }
+        guard try directoryIsEmpty(descriptor) else {
+            throw SwiftPodsError("Resolver configuration is not empty; evidence was preserved", file: file.path)
+        }
+        try quarantineAndRemoveCreatedDirectory(
+            named: name, in: parent, opened: descriptor, expected: expected, file: file)
+        guard fsync(parent) == 0 else {
+            throw SwiftPodsError("Cannot synchronize resolver configuration rollback", file: file.path)
+        }
     }
 
     /// Problems that make the pins unusable for a deployment install.

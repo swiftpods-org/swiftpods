@@ -558,7 +558,8 @@ final class InstallTransactionTests: XCTestCase {
             lockFile: workspace.directory.appendingPathComponent(SwiftPodsLock.fileName), plannedLock: nil)
         try journal!.preparePackage(project: project, original: original)
         try FileManager.default.createDirectory(
-            at: resolved.deletingLastPathComponent(), withIntermediateDirectories: true)
+            at: resolved.deletingLastPathComponent().appendingPathComponent("configuration"),
+            withIntermediateDirectories: true)
         try packageResolved("[]").write(to: resolved)
         try journal!.confirmPackage(project: project, installed: PackageResolved.snapshot(project: project))
         journal = nil

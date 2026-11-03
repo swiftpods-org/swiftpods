@@ -2231,6 +2231,9 @@ public struct Installer: Sendable {
         let projectDirectories = try Dictionary(uniqueKeysWithValues: projectPaths.map { path in
             (path, try RetainedProjectDirectory(projects[path]!))
         })
+        // The journal borrows raw descriptors from these owners. Optimized builds can otherwise release them
+        // after the final dictionary lookup, before descriptor-backed verification and rollback have finished.
+        defer { withExtendedLifetime(projectDirectories) {} }
         let packageModulesByTarget = Dictionary(uniqueKeysWithValues: projectPaths.map { path in
             let staticLibraries = Set(projects[path]!.nativeTargets.compactMap {
                 $0.productType == "com.apple.product-type.library.static" ? $0.name : nil
@@ -2644,6 +2647,15 @@ public struct Installer: Sendable {
             var packagesByIdentity: [String: ProjectPlan.PackageReference] = [:]
             var plan = ProjectPlan()
             plan.packages = [package]
+            if usesBinaries {
+                // Xcode 26.2 also needs a folder reference for the binary package reached through the generated
+                // dependency container. Leaving that local package implicit can crash dependency-group updates.
+                let relative = Paths.relative(from: projectDirectory, to: binaryDirectory)
+                plan.packages.append(.init(key: "package:local:" + relative, object: [
+                    "isa": "PBXFileReference", "lastKnownFileType": "wrapper",
+                    "name": .string(BinaryPackage.directoryName), "path": .string(relative), "sourceTree": "SOURCE_ROOT",
+                ]))
+            }
             for declared in usedPackages where targets.contains(where: { $0.products.contains { $0.package == declared.identity } }) {
                 switch declared.location {
                 case .remote(let url):
