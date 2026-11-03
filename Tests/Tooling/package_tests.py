@@ -36,6 +36,7 @@ class PackageStorageTests(unittest.TestCase):
             path.write_text(contents)
         self.version = "0.2.0"
         self.build_error = None
+        self.smoke_error = False
         self.build_count = 0
         self.original_run = package.run_checked
         self.enterContext(patch.object(package, "ROOT", self.root))
@@ -83,6 +84,7 @@ class PackageStorageTests(unittest.TestCase):
             "tempfile.mkstemp(dir=os.environ['TMPDIR'])\n"
             "arguments = sys.argv[1:]\n"
             f"if arguments == ['version', '--json']:\n    print(json.dumps({{'version': {self.version!r}}}))\n"
+            f"elif {self.smoke_error!r}:\n    raise SystemExit(65)\n"
             "elif arguments == ['help']:\n    print('Usage: swiftpods <command> [options]')\n"
             "elif len(arguments) == 8 and arguments[:3] == "
             "['--swiftpods-internal-archive-worker-v1', '1', 'inspect']:\n"
@@ -161,6 +163,27 @@ class PackageStorageTests(unittest.TestCase):
             self.run_package("--destination", destination)
         self.assertEqual(marker.read_text(), "user data\n")
         self.builder.assert_not_called()
+        self.assert_clean()
+
+    def test_skipping_smoke_tests_exports_without_running_runtime_probes(self):
+        self.smoke_error = True
+        destination = self.workspace / "export/SwiftPods"
+        self.run_package("--destination", destination, "--skip-smoke-tests")
+        self.assertTrue((destination / "bin/swiftpods").is_file())
+        self.assert_clean()
+
+    def test_default_build_rejects_failed_runtime_smoke_tests(self):
+        self.smoke_error = True
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.run_package()
+        self.assert_clean()
+
+    def test_skipping_smoke_tests_still_rejects_a_wrong_compiled_version(self):
+        self.version = "9.9.9"
+        destination = self.workspace / "export/SwiftPods"
+        with self.assertRaisesRegex(RuntimeError, "version differs"):
+            self.run_package("--destination", destination, "--skip-smoke-tests")
+        self.assertFalse(destination.exists())
         self.assert_clean()
 
 

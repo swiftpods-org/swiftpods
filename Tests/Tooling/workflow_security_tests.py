@@ -22,31 +22,31 @@ class WorkflowSecurityTests(unittest.TestCase):
         )
         self.assertIn("actions/workflows/build.yml/runs", workflow)
         self.assertIn("actions/workflows/fastlane-plugin.yml/runs", workflow)
-        self.assertIn("Require tested Fastlane plugin of the tagged commit", workflow)
+        self.assertIn("Require successful Fastlane plugin build of the tagged commit", workflow)
         self.assertIn('select(.head_sha == "\'"$RELEASE_COMMIT"\'"', workflow)
         self.assertIn('.event == "push" and .head_branch == "main"', workflow)
         self.assertNotIn("commits/$RELEASE_COMMIT/check-runs", workflow)
         self.assertNotIn('startswith("build")', workflow)
 
-    def test_release_promotes_the_exact_tested_artifact_before_signing(self):
+    def test_release_promotes_the_exact_built_artifact_before_signing(self):
         workflow = (ROOT / ".github/workflows/release.yml").read_text()
         self.assertIn("build-run-id: ${{ steps.build-gate.outputs.run-id }}", workflow)
         self.assertIn("run-id: ${{ needs.metadata.outputs.build-run-id }}", workflow)
         self.assertIn("name: swiftpods-${{ matrix.runner }}", workflow)
-        self.assertIn("Restore the exact tested distribution", workflow)
+        self.assertIn("Restore the exact built distribution", workflow)
         self.assertIn("extract_archive(data, Path(temporary))", workflow)
-        self.assertIn("Tested distribution differs from its build artifact checksum", workflow)
+        self.assertIn("Built distribution differs from its build artifact checksum", workflow)
         self.assertIn("SwiftPods.provenance.json", workflow)
         self.assertIn('"source_revision": os.environ["EXPECTED_COMMIT"]', workflow)
-        self.assertIn("Tested artifact provenance does not match the release commit", workflow)
+        self.assertIn("Built artifact provenance does not match the release commit", workflow)
         signing = workflow.index("python3 -m scripts.sign_release")
-        self.assertLess(workflow.index("Restore the exact tested distribution"), signing)
+        self.assertLess(workflow.index("Restore the exact built distribution"), signing)
         self.assertNotIn(
             'python3 -m scripts.package --destination "$SWIFTPODS_BUILD_ROOT/SwiftPods"',
             workflow,
         )
 
-    def test_build_smoke_tests_the_packaged_release_without_dirtying_the_checkout(self):
+    def test_build_verifies_the_packaged_version_without_running_smoke_tests(self):
         workflow = (ROOT / ".github/workflows/build.yml").read_text()
         package = workflow.index("python3 -m scripts.package --destination")
         smoke = workflow.index('"$SWIFTPODS_BUILD_ROOT/SwiftPods/bin/swiftpods" version --json')
@@ -64,19 +64,17 @@ class WorkflowSecurityTests(unittest.TestCase):
         )
         self.assertIn('manifest.get("packages", [])', package_source)
 
-    def test_e2e_cannot_poison_the_fresh_packaging_runners(self):
+    def test_build_packages_both_architectures_without_running_test_jobs(self):
         workflow = (ROOT / ".github/workflows/build.yml").read_text()
-        e2e = workflow.index("  e2e:")
-        package = workflow.index("  package:")
-        self.assertLess(e2e, package)
-        self.assertIn("needs: [test, e2e]", workflow[package:])
+        self.assertIn("  package:", workflow)
+        self.assertIn("runner: [macos-15, macos-15-intel]", workflow)
+        self.assertIn('--skip-smoke-tests', workflow)
+        self.assertNotIn("  test:", workflow)
+        self.assertNotIn("  e2e:", workflow)
+        self.assertNotIn("swift test", workflow)
+        self.assertNotIn("unittest", workflow)
+        self.assertNotIn('"$SWIFTPODS_BUILD_ROOT/SwiftPods/bin/swiftpods" help', workflow)
         self.assertEqual(workflow.count("name: swiftpods-${{ matrix.runner }}"), 1)
-        source = (ROOT / "Tests/SwiftPodsKitTests/EndToEndTests.swift").read_text()
-        self.assertIn(
-            "revision: '671108c96644956dddcd89dd59c203dcdb36cec7'",
-            source,
-        )
-        self.assertNotIn("swift-collections.git', '~>", source)
 
     def test_packaging_uses_xcrun_and_a_complete_allowlisted_environment(self):
         source = (ROOT / "scripts/package.py").read_text()
@@ -94,13 +92,13 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertIn("environment: release-notarization-verification", workflow)
         self.assertIn("SWIFTPODS_NOTARY_VERIFY_KEY", workflow)
 
-    def test_signed_candidate_runs_only_in_a_fresh_job_without_credentials(self):
+    def test_signed_candidate_signature_is_verified_without_running_it(self):
         workflow = (ROOT / ".github/workflows/release.yml").read_text()
         signing = workflow.index("python3 -m scripts.sign_release")
         cleanup = workflow.index("python3 -m scripts.ci_signing cleanup", signing)
         upload = workflow.index("actions/upload-artifact@", cleanup)
         smoke_job = workflow.index("  verify-signed:", upload)
-        smoke = workflow.index("python3 -m scripts.smoke_release", smoke_job)
+        smoke = workflow.index("/usr/bin/codesign --verify --strict --verbose=2", smoke_job)
         assemble = workflow.index("  assemble:", smoke)
         self.assertLess(signing, cleanup)
         self.assertLess(cleanup, upload)
@@ -112,6 +110,7 @@ class WorkflowSecurityTests(unittest.TestCase):
             workflow[assemble:],
         )
         self.assertNotIn("environment: release-signing", workflow[smoke_job:assemble])
+        self.assertNotIn("scripts.smoke_release", workflow)
         verification = workflow[workflow.index("  verify-notarization:"):assemble]
         self.assertEqual(verification.count("timeout-minutes: 60"), 2)
         self.assertNotIn("timeout-minutes: 15", verification)
@@ -126,7 +125,7 @@ class WorkflowSecurityTests(unittest.TestCase):
             "swiftpods-existing-release",
             "swiftpods-release-build",
             "swiftpods-release-notary",
-            "swiftpods-release-smoke",
+            "swiftpods-release-verify",
             "swiftpods-release-assets",
             "swiftpods-release-publish",
             "swiftpods-release-integrations",
@@ -215,7 +214,7 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertIn("ruby/setup-ruby@de492cf36cbab201753d720ce4f4e336cd688c94", workflow)
         self.assertIn("bundler: '2.5.23'", workflow)
         self.assertIn("BUNDLE_FROZEN: 'true'", workflow)
-        self.assertIn("bundle exec ruby Tests/FastlanePlugin/run.rb", workflow)
+        self.assertNotIn("bundle exec ruby Tests/FastlanePlugin/run.rb", workflow)
         self.assertIn("Gem::Package.new(ARGV.fetch(0)).spec.version.to_s", workflow)
         self.assertIn('gem "fastlane", "2.237.0"', gemfile)
         self.assertIn('gem "minitest", "5.26.1"', gemfile)
@@ -233,17 +232,6 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertTrue(remote_lines)
         for line in remote_lines:
             self.assertRegex(line, r"^  .+ \(.+\) sha256=[0-9a-f]{64}$")
-
-    def test_plugin_failure_annotation_escapes_workflow_commands(self):
-        workflow = (ROOT / ".github/workflows/fastlane-plugin.yml").read_text()
-        percent = "message=\"${message//'%'/%25}\""
-        carriage_return = "message=\"${message//$'\\r'/%0D}\""
-        newline = '"${message//$\'\\n\'/%0A}"'
-        self.assertIn(percent, workflow)
-        self.assertIn(carriage_return, workflow)
-        self.assertIn(newline, workflow)
-        self.assertLess(workflow.index(percent), workflow.index(carriage_return))
-        self.assertLess(workflow.index(carriage_return), workflow.index(newline))
 
     def test_action_executes_only_the_authenticated_private_runtime_copy(self):
         action = (ROOT / "action.yml").read_text()
@@ -283,7 +271,7 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertIn('gh workflow run fastlane-plugin.yml --ref "$INTEGRATION_CHECK_BRANCH"', workflow)
         self.assertIn('gh workflow run fastlane-plugin.yml --ref "$PLUGIN_CHECK_BRANCH"', workflow)
         self.assertEqual(workflow.count("gh workflow run fastlane-plugin.yml --ref"), 2)
-        self.assertIn("Both 15-minute Fastlane checks are dispatched up front", workflow)
+        self.assertIn("Both 15-minute Fastlane builds are dispatched up front", workflow)
         self.assertIn("-f event=workflow_dispatch", workflow)
         self.assertIn('-f "branch=$branch"', workflow)
         self.assertIn('.head_branch == "\'"$branch"\'"', workflow)

@@ -59,7 +59,7 @@ jobs:
               )
           PY
       - id: build-gate
-        name: Select the tested artifacts of the tagged commit
+        name: Select the built artifacts of the tagged commit
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_COMMIT: ${{ steps.resolve.outputs.commit }}
@@ -72,7 +72,7 @@ jobs:
             exit 1
           fi
           echo "run-id=$run_id" >> "$GITHUB_OUTPUT"
-      - name: Require tested Fastlane plugin of the tagged commit
+      - name: Require successful Fastlane plugin build of the tagged commit
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_COMMIT: ${{ steps.resolve.outputs.commit }}
@@ -169,10 +169,10 @@ jobs:
           run-id: ${{ needs.metadata.outputs.build-run-id }}
           github-token: ${{ github.token }}
           name: swiftpods-${{ matrix.runner }}
-          path: ${{ env.SWIFTPODS_BUILD_ROOT }}/tested
-      - name: Restore the exact tested distribution
+          path: ${{ env.SWIFTPODS_BUILD_ROOT }}/built
+      - name: Restore the exact built distribution
         env:
-          TESTED_ARTIFACTS: ${{ env.SWIFTPODS_BUILD_ROOT }}/tested
+          BUILT_ARTIFACTS: ${{ env.SWIFTPODS_BUILD_ROOT }}/built
           EXPECTED_COMMIT: ${{ needs.metadata.outputs.commit }}
           EXPECTED_RUNNER: ${{ matrix.runner }}
         run: |
@@ -181,15 +181,15 @@ jobs:
           from pathlib import Path
           from scripts.install import extract_archive
 
-          artifacts = Path(os.environ["TESTED_ARTIFACTS"])
+          artifacts = Path(os.environ["BUILT_ARTIFACTS"])
           archive = artifacts / "SwiftPods.zip"
           checksum_file = artifacts / "SwiftPods.zip.sha256"
           fields = checksum_file.read_text().split()
           if len(fields) != 2 or fields[1] != "SwiftPods.zip":
-              raise RuntimeError("Tested artifact has an invalid checksum file")
+              raise RuntimeError("Built artifact has an invalid checksum file")
           data = archive.read_bytes()
           if hashlib.sha256(data).hexdigest() != fields[0]:
-              raise RuntimeError("Tested distribution differs from its build artifact checksum")
+              raise RuntimeError("Built distribution differs from its build artifact checksum")
           provenance = json.loads((artifacts / "SwiftPods.provenance.json").read_text())
           expected_provenance = {
               "archive_sha256": fields[0],
@@ -200,11 +200,11 @@ jobs:
               "source_revision": os.environ["EXPECTED_COMMIT"],
           }
           if provenance != expected_provenance:
-              raise RuntimeError("Tested artifact provenance does not match the release commit")
+              raise RuntimeError("Built artifact provenance does not match the release commit")
           destination = artifacts.parent / "SwiftPods"
           if destination.exists() or destination.is_symlink():
-              raise RuntimeError("Tested distribution destination already exists")
-          with tempfile.TemporaryDirectory(prefix=".tested-", dir=artifacts.parent) as temporary:
+              raise RuntimeError("Built distribution destination already exists")
+          with tempfile.TemporaryDirectory(prefix=".built-", dir=artifacts.parent) as temporary:
               root = extract_archive(data, Path(temporary))
               root.rename(destination)
           PY
@@ -218,7 +218,7 @@ jobs:
           SWIFTPODS_NOTARY_KEY_ID: ${{ secrets.SWIFTPODS_NOTARY_KEY_ID }}
           SWIFTPODS_NOTARY_ISSUER: ${{ secrets.SWIFTPODS_NOTARY_ISSUER }}
         run: python3 -m scripts.ci_signing setup
-      - name: Sign and notarize the exact tested distribution
+      - name: Sign and notarize the exact built distribution
         run: |
           python3 -m scripts.sign_release "$SWIFTPODS_BUILD_ROOT/SwiftPods" \
             --identity "$SWIFTPODS_SIGNING_IDENTITY" \
@@ -319,20 +319,20 @@ jobs:
         with:
           ref: ${{ needs.metadata.outputs.commit }}
           persist-credentials: false
-      - name: Create temporary smoke-test directory
+      - name: Create temporary signature verification directory
         run: |
-          smoke_root="$(mktemp -d "$RUNNER_TEMP/swiftpods-release-smoke.XXXXXX")"
-          echo "SWIFTPODS_SMOKE_ROOT=$smoke_root" >> "$GITHUB_ENV"
+          verify_root="$(mktemp -d "$RUNNER_TEMP/swiftpods-release-verify.XXXXXX")"
+          echo "SWIFTPODS_VERIFY_ROOT=$verify_root" >> "$GITHUB_ENV"
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.13.16'
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           name: release-${{ matrix.runner }}
-          path: ${{ env.SWIFTPODS_SMOKE_ROOT }}/signed
-      - name: Verify and smoke-test the signed distribution without credentials
+          path: ${{ env.SWIFTPODS_VERIFY_ROOT }}/signed
+      - name: Verify the signed distribution without credentials
         env:
-          SIGNED_ARTIFACTS: ${{ env.SWIFTPODS_SMOKE_ROOT }}/signed
+          SIGNED_ARTIFACTS: ${{ env.SWIFTPODS_VERIFY_ROOT }}/signed
         run: |
           python3 - <<'PY'
           import hashlib, json, os, tempfile
@@ -356,19 +356,19 @@ jobs:
               root = extract_archive(data, Path(temporary))
               root.rename(destination)
           PY
-          python3 -m scripts.smoke_release "$SWIFTPODS_SMOKE_ROOT/SwiftPods"
-      - name: Remove temporary smoke-test files
+          /usr/bin/codesign --verify --strict --verbose=2 "$SWIFTPODS_VERIFY_ROOT/SwiftPods/bin/swiftpods"
+      - name: Remove temporary signature verification files
         if: always()
         run: |
-          if [[ -n "${SWIFTPODS_SMOKE_ROOT:-}" ]]; then
-            parent="$(cd -- "$(dirname -- "$SWIFTPODS_SMOKE_ROOT")" && pwd -P)"
+          if [[ -n "${SWIFTPODS_VERIFY_ROOT:-}" ]]; then
+            parent="$(cd -- "$(dirname -- "$SWIFTPODS_VERIFY_ROOT")" && pwd -P)"
             runner_temp="$(cd -- "$RUNNER_TEMP" && pwd -P)"
-            name="$(basename -- "$SWIFTPODS_SMOKE_ROOT")"
-            if [[ "$parent" != "$runner_temp" || ! "$name" =~ ^swiftpods-release-smoke\.[A-Za-z0-9]{6}$ || -L "$SWIFTPODS_SMOKE_ROOT" ]]; then
-              echo "Refusing unsafe smoke cleanup: $SWIFTPODS_SMOKE_ROOT" >&2
+            name="$(basename -- "$SWIFTPODS_VERIFY_ROOT")"
+            if [[ "$parent" != "$runner_temp" || ! "$name" =~ ^swiftpods-release-verify\.[A-Za-z0-9]{6}$ || -L "$SWIFTPODS_VERIFY_ROOT" ]]; then
+              echo "Refusing unsafe signature verification cleanup: $SWIFTPODS_VERIFY_ROOT" >&2
               exit 1
             fi
-            rm -rf -- "$SWIFTPODS_SMOKE_ROOT"
+            rm -rf -- "$SWIFTPODS_VERIFY_ROOT"
           fi
 
   assemble:
@@ -486,9 +486,8 @@ jobs:
        (needs.publish.result == 'skipped' && needs.metadata.outputs.published == 'true'))
     runs-on: ubuntu-latest
     environment: release-publish
-    # Build SwiftPods can legitimately use 45 minutes for tests followed by
-    # 30 minutes for packaging, before runner queueing and integration setup.
-    # Both 15-minute Fastlane checks are dispatched up front and run in parallel.
+    # Leave time for both architecture builds, runner queueing and integration setup.
+    # Both 15-minute Fastlane builds are dispatched up front and run in parallel.
     timeout-minutes: 100
     permissions:
       contents: write
@@ -661,7 +660,7 @@ jobs:
           integration_check_branch="swiftpods-integration-check-$RELEASE_VERSION-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           plugin_check_branch="swiftpods-plugin-check-$RELEASE_VERSION-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           # Pushes made with GITHUB_TOKEN deliberately do not trigger other workflows. A unique temporary ref lets
-          # workflow_dispatch test both immutable candidates even if main moves immediately afterwards.
+          # workflow_dispatch builds both immutable candidates even if main moves immediately afterwards.
           git push --atomic origin \
             "$integration_commit:refs/heads/$integration_check_branch" \
             "$plugin_commit:refs/heads/$plugin_check_branch"

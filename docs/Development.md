@@ -24,7 +24,14 @@ See [Design](Design.md) for the decisions behind them.
 
 ```sh
 swift test -Xswiftc -warnings-as-errors
+python3 -m unittest discover -s Tests/Tooling -t . -p '*_tests.py'
+bundle exec ruby Tests/FastlanePlugin/run.rb
 ```
+
+Run tests locally before pushing changes. CI/CD builds the distributions and
+gem, signs and notarizes the executables, and verifies artifact integrity.
+It does not run test suites or runtime smoke tests. After publication, test
+the downloaded release through a verified installation.
 
 Two suites are opt-in:
 
@@ -42,8 +49,9 @@ record new design decisions in [Design](Design.md) before implementing them.
 The plugin supports Ruby 3.0 and later. Its development dependencies are
 separate from the gem's runtime contract: `Gemfile.lock` pins a graph whose gem
 metadata accepts both Ruby 3.0 and Ruby 4.0, including Fastlane 2.237.0 and
-Bundler 2.5.23. CI runs the complete plugin suite at both ends of that range
-with frozen mode enabled, so neither job may rewrite the lock.
+Bundler 2.5.23. CI builds the gem at both ends of that range with frozen mode
+enabled, so neither job may rewrite the lock. Run the plugin suite locally
+before pushing.
 
 The plugin declares `fiddle` as a runtime dependency for its ACL checks because
 Ruby 4 no longer includes it as a default gem. Bundler installs it for consumers

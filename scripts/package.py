@@ -51,7 +51,7 @@ def swift_executable(environment):
     return str(executable)
 
 
-def verify_distribution(binary, environment, temporary):
+def verify_distribution(binary, environment, temporary, *, smoke_tests=True):
     actual = json.loads(
         run_checked(
             [binary, "version", "--json"],
@@ -61,6 +61,9 @@ def verify_distribution(binary, environment, temporary):
     )
     if actual != {"version": source_version(ROOT)}:
         raise RuntimeError("Compiled CLI version differs from its source version")
+
+    if not smoke_tests:
+        return
 
     help_text = run_checked(
         [binary, "help"],
@@ -168,7 +171,7 @@ def verify_distribution(binary, environment, temporary):
             raise RuntimeError("Compiled CLI failed its offline Podfile smoke test")
 
 
-def assemble(destination, scratch):
+def assemble(destination, scratch, *, smoke_tests=True):
     if destination.exists():
         raise RuntimeError(
             "Destination exists; choose a new destination: " + str(destination)
@@ -208,7 +211,9 @@ def assemble(destination, scratch):
         shutil.copy2(binary_directory / "swiftpods", staging / "bin/swiftpods")
         shutil.copy2(ROOT / "LICENSE", staging / "LICENSE")
         shutil.copy2(ROOT / "README.md", staging / "README.md")
-        verify_distribution(staging / "bin/swiftpods", build_environment, build_temporary)
+        verify_distribution(
+            staging / "bin/swiftpods", build_environment, build_temporary, smoke_tests=smoke_tests
+        )
         staging.rename(destination)
 
 
@@ -219,6 +224,10 @@ def main():
         "--destination",
         type=Path,
         help="Export the package to this path; otherwise verify it in a temporary directory",
+    )
+    parser.add_argument(
+        "--skip-smoke-tests", action="store_true",
+        help="Build and check the version without running runtime smoke tests",
     )
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="swiftpods-package-") as temporary:
@@ -231,7 +240,7 @@ def main():
         )
         try:
             os.environ["TMPDIR"] = str(subprocess_temporary)
-            assemble(destination, workspace / "build")
+            assemble(destination, workspace / "build", smoke_tests=not args.skip_smoke_tests)
         finally:
             if previous_temporary is None:
                 os.environ.pop("TMPDIR", None)

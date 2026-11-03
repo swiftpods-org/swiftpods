@@ -74,6 +74,11 @@ new evidence format.
 
 ## Releasing
 
+Run tests locally before pushing the release commit. CI/CD builds and packages
+the artifacts, verifies their integrity, and signs and notarizes the executables;
+it does not run test suites or runtime smoke tests. After publication, test the
+downloaded signed executable through a verified installation.
+
 1. Change the version line in `Sources/swiftpods/main.swift`
    (`let version = "X.Y.Z"`). It is the only version source; `Unity/package.json`
    repeats it, and a test keeps the two equal. Merge to `main`.
@@ -86,32 +91,31 @@ new evidence format.
    same tag, source commit, manifest checksum and complete public asset set.
    It pins the exact annotated-tag object selected at workflow start and
    rechecks through the GitHub Git-data API that `refs/tags/vX.Y.Z` still has
-   that object and that the object directly names the tested commit. The exact
+   that object and that the object directly names the built commit. The exact
    object ID is written into both `release.json` and the GitHub Release notes,
    so replacing the tag with another annotated object for the same commit does
    not create a new acceptable release identity.
-   The build workflow runs its networked E2E suite before packaging on separate,
-   fresh runners; the E2E Swift package is pinned to a complete commit ID.
-   Release then downloads the exact content-addressed bundles produced by that
+   The build workflow packages both architectures on separate, fresh runners.
+   Release downloads the exact content-addressed bundles produced by that
    successful build run, signs them with the pinned Developer ID certificate and
    notarizes them. The signing job never executes artifact code. A separate
    protected job, using an independently managed App Store Connect credential,
    queries Apple's `notarytool info` and `notarytool log` services and requires
    their accepted submission ID, archive filename and SHA-256 to match the exact
    downloaded archive. A subsequent fresh job with no release credentials
-   verifies the local receipt and smoke-tests the signed executable before
+   verifies the local receipt and code signature before
    publication. The release publishes the archives, `install.py`, `release.json`
    and `SHA256SUMS` together.
    For a stable version, it prepares the Homebrew and Fastlane pins on the
    current captured `main` and separately prepares the Fastlane tag from the
-   exact release commit plus only the authenticated release pin. It tests both
+   exact release commit plus only the authenticated release pin. It builds both
    immutable candidates, then publishes the current-main pin commit and the
    annotated release-tree Fastlane tag atomically. A newer pin already on
    `main` is never downgraded. Versions with a suffix (`X.Y.Z-beta.1`) are
    marked as pre-releases and leave the integrations unchanged.
 
 If that build run's artifacts have expired, rerun `Build SwiftPods` for the
-same exact commit; the release fails closed instead of recompiling untested
+same exact commit; the release fails closed instead of recompiling different
 release bytes.
 
 Published versions are immutable: a release or its tag is never replaced. The
@@ -135,7 +139,7 @@ A draft created by an older workflow without that binding is intentionally not
 adopted automatically.
 
 If publication succeeds but the integration update is interrupted or `main`
-moves while its exact candidate is being tested, dispatch `Release SwiftPods`
+moves while its exact candidate is being built, dispatch `Release SwiftPods`
 again for the same version. The resume path does not rebuild, re-sign or replace
 the release: it downloads every public asset, verifies the tag and source
 commit and the exact annotated-tag object, checks all files through
