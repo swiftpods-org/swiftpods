@@ -22,6 +22,27 @@ enum PackageModuleBridge {
             .replacingOccurrences(of: "\"", with: "\\\"") + "\""
     }
 
+    // Xcode's compiler response files use GNU quoting, including single-quoted paths with spaces.
+    func words(_ text: String) throws -> [String] {
+        var result: [String] = []
+        var word = ""
+        var quote: Character?
+        var escaped = false
+        for character in text {
+            if escaped { word.append(character); escaped = false }
+            else if character == "\\" && quote != "'" { escaped = true }
+            else if let delimiter = quote {
+                if character == delimiter { quote = nil } else { word.append(character) }
+            } else if character == "\"" || character == "'" { quote = character }
+            else if character.isWhitespace {
+                if !word.isEmpty { result.append(word); word = "" }
+            } else { word.append(character) }
+        }
+        guard !escaped, quote == nil else { throw NSError(domain: "Invalid Xcode compiler response file", code: 1) }
+        if !word.isEmpty { result.append(word) }
+        return result
+    }
+
     do {
         let arguments = CommandLine.arguments
         guard arguments.count == 6 else { throw NSError(domain: "Invalid SwiftPods module bridge arguments", code: 1) }
@@ -41,23 +62,56 @@ enum PackageModuleBridge {
                 }
             }
         }
-        // A Clang package can supply its own module map instead of asking Xcode to generate one. PIF's
-        // package target records retain that source path. The live dependency lists above determine which
-        // modules may be used; old, unrelated cached target records can never add modules to that set.
-        let cache = URL(fileURLWithPath: arguments[5], isDirectory: true).appendingPathComponent("target")
+        // PIFCache retains multiple versions of the same target, including different package checkout
+        // roots. Xcode records the current description before running tasks, even when reusing a cached
+        // description. Its compiler arguments and response-file attachments identify the live paths.
+        let buildData = URL(fileURLWithPath: arguments[5], isDirectory: true)
+        var remainingBytes = 128 * 1_024 * 1_024
+        func read(_ file: URL) throws -> Data {
+            let size = try file.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+            guard size <= remainingBytes else { throw NSError(domain: "SwiftPods package build metadata is too large", code: 1) }
+            remainingBytes -= size
+            return try Data(contentsOf: file)
+        }
+        let history = String(decoding: try read(buildData.appendingPathComponent("prior-build-descriptions.txt")), as: UTF8.self)
+        guard let signature = history.split(separator: "\n").last,
+            signature.range(of: #"^[a-fA-F0-9]{32}$"#, options: .regularExpression) != nil else {
+            throw NSError(domain: "Missing current Xcode build description", code: 1)
+        }
+        let description = buildData.appendingPathComponent(String(signature) + ".xcbuilddata", isDirectory: true)
+        guard let manifest = try JSONSerialization.jsonObject(with: read(description.appendingPathComponent("manifest.json"))) as? [String: Any],
+            let commands = manifest["commands"] as? [String: [String: Any]] else {
+            throw NSError(domain: "Invalid current Xcode build manifest", code: 1)
+        }
+        var liveIncludes = Set<String>()
+        var liveMaps = Set<String>()
+        let liveOutputs = Set(commands.values.flatMap { $0["outputs"] as? [String] ?? [] })
+        func collect(_ arguments: [String]) {
+            for (index, argument) in arguments.enumerated() {
+                if argument == "-I", index + 1 < arguments.count { liveIncludes.insert(arguments[index + 1]) }
+                else if argument.hasPrefix("-I/") { liveIncludes.insert(String(argument.dropFirst(2))) }
+                else if argument.hasPrefix("-fmodule-map-file=") { liveMaps.insert(String(argument.dropFirst("-fmodule-map-file=".count))) }
+            }
+        }
+        for command in commands.values { collect(command["args"] as? [String] ?? []) }
+        let attachments = try FileManager.default.contentsOfDirectory(
+            at: description.appendingPathComponent("attachments"), includingPropertiesForKeys: [.fileSizeKey])
+        guard attachments.count <= 20_000 else { throw NSError(domain: "SwiftPods package build has too many attachments", code: 1) }
+        for attachment in attachments {
+            let data = try read(attachment)
+            // Other attachments contain generated sources, file lists and binary data, not flags.
+            guard let text = String(data: data, encoding: .utf8),
+                text.first == "-" || text.hasPrefix("'-") || text.hasPrefix("\"-") else { continue }
+            collect(try words(text))
+        }
+        let cache = buildData.appendingPathComponent("PIFCache/target", isDirectory: true)
         var recordedMaps: [String: Set<String>] = [:]
         var publicIncludes: [String: Set<String>] = [:]
         if FileManager.default.fileExists(atPath: cache.path) {
             let records = try FileManager.default.contentsOfDirectory(at: cache, includingPropertiesForKeys: [.fileSizeKey])
             guard records.count <= 20_000 else { throw NSError(domain: "SwiftPods package target cache is too large", code: 1) }
-            var remainingBytes = 128 * 1_024 * 1_024
             for record in records where record.lastPathComponent.hasSuffix("-json") {
-                let size = try record.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-                guard size <= 16 * 1_024 * 1_024, size <= remainingBytes else {
-                    throw NSError(domain: "SwiftPods package target records are too large", code: 1)
-                }
-                remainingBytes -= size
-                guard let target = try JSONSerialization.jsonObject(with: Data(contentsOf: record)) as? [String: Any],
+                guard let target = try JSONSerialization.jsonObject(with: read(record)) as? [String: Any],
                     (target["guid"] as? String)?.hasPrefix("PACKAGE-TARGET:") == true,
                     let configurations = target["buildConfigurations"] as? [[String: Any]] else { continue }
                 for configuration in configurations {
@@ -70,12 +124,15 @@ enum PackageModuleBridge {
                         flag.hasPrefix("-fmodule-map-file=") ? String(flag.dropFirst("-fmodule-map-file=".count)) : nil
                     }
                     for include in imparted?["HEADER_SEARCH_PATHS"] as? [String] ?? []
-                        where include.hasPrefix("/") && mayExist(include) {
+                        where liveIncludes.contains(include) {
                         publicIncludes[module, default: []].insert(include)
                     }
                     for rawPath in paths {
                         let path = rawPath.replacingOccurrences(of: "$(GENERATED_MODULEMAP_DIR)", with: maps.path)
                         guard path.hasPrefix("/"), mayExist(path) else { continue }
+                        let parent = URL(fileURLWithPath: path).deletingLastPathComponent()
+                        guard liveOutputs.contains(path)
+                            || liveMaps.contains(path) || liveIncludes.contains(parent.path) else { continue }
                         recordedMaps[module, default: []].insert(path)
                     }
                 }
@@ -90,11 +147,11 @@ enum PackageModuleBridge {
             }
             let candidates = recordedMaps[module] ?? []
             guard candidates.count <= 1 else {
-                throw NSError(domain: "Conflicting source module maps for \(module); clean the Xcode build folder", code: 1)
+                throw NSError(domain: "Conflicting source module maps in the current Xcode build for \(module): \(candidates.sorted().joined(separator: ", "))", code: 1)
             }
             let map = candidates.first.map { URL(fileURLWithPath: $0) } ?? maps.appendingPathComponent(module + ".modulemap")
             includes.formUnion(publicIncludes[module] ?? [])
-            if candidates.isEmpty && !FileManager.default.fileExists(atPath: map.path) { continue } // Binary frameworks have their own maps.
+            if candidates.isEmpty && !liveOutputs.contains(map.path) && !liveMaps.contains(map.path) { continue } // Binary frameworks have their own maps.
             external.append("extern module \(module) \(try quoted(map.path))")
             if map.deletingLastPathComponent().standardizedFileURL != maps.standardizedFileURL {
                 // Public include roots come from Xcode's package settings. Leave the source map itself to

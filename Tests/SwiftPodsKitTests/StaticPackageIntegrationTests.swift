@@ -333,10 +333,29 @@ final class StaticPackageIntegrationTests: XCTestCase {
             "buildSettings": ["PRODUCT_MODULE_NAME": "SDK_Base", "MODULEMAP_PATH": "$(GENERATED_MODULEMAP_DIR)/SDK-Base.modulemap"],
             "impartedBuildProperties": ["buildSettings": ["HEADER_SEARCH_PATHS": [publicRoot.path, "$(inherited)"]]],
         ]]]
-        _ = try write("Cache/target/TARGET-generated-json", String(decoding: try JSONSerialization.data(withJSONObject: generatedRecord), as: UTF8.self))
+        _ = try write("Cache/PIFCache/target/TARGET-generated-json", String(decoding: try JSONSerialization.data(withJSONObject: generatedRecord), as: UTF8.self))
         let record: [String: Any] = ["guid": "PACKAGE-TARGET:SDKC", "buildConfigurations": [["buildSettings": ["PRODUCT_MODULE_NAME": "SDKC", "MODULEMAP_FILE": originalMap.path]]]]
-        let recordURL = try write("Cache/target/TARGET-test-json", String(decoding: try JSONSerialization.data(withJSONObject: record), as: UTF8.self))
+        let recordURL = try write("Cache/PIFCache/target/TARGET-test-json", String(decoding: try JSONSerialization.data(withJSONObject: record), as: UTF8.self))
         XCTAssertTrue(FileManager.default.fileExists(atPath: recordURL.path))
+        let signature = String(repeating: "a", count: 32)
+        let oldSignature = String(repeating: "b", count: 32)
+        _ = try write("Cache/prior-build-descriptions.txt", oldSignature + "\n" + signature + "\n")
+        let manifest: [String: Any] = ["commands": ["compile": [
+            "args": ["clang", "-I", publicRoot.path],
+            "outputs": ["SDKBridge.modulemap", "SDK-Base.modulemap"].map { directory.appendingPathComponent("Maps/" + $0).path },
+        ]]]
+        _ = try write("Cache/\(signature).xcbuilddata/manifest.json", String(decoding: try JSONSerialization.data(withJSONObject: manifest), as: UTF8.self))
+        let flagsURL = try write("Cache/\(signature).xcbuilddata/attachments/flags", "-I'\(originalMap.deletingLastPathComponent().path)'\n")
+        // The stale checkout can have identical module-map bytes and still refer to different headers.
+        let staleMap = try write("Old SDK/include/module.modulemap", "module SDKC { umbrella header \"SDKC.h\" export * }\n")
+        let staleConfiguration: [String: Any] = [
+            "buildSettings": ["PRODUCT_MODULE_NAME": "SDKC", "MODULEMAP_FILE": staleMap.path],
+            "impartedBuildProperties": ["buildSettings": ["HEADER_SEARCH_PATHS": [staleMap.deletingLastPathComponent().path]]],
+        ]
+        let staleRecord: [String: Any] = ["guid": "PACKAGE-TARGET:SDKC", "buildConfigurations": [staleConfiguration]]
+        _ = try write("Cache/PIFCache/target/TARGET-stale-json", String(decoding: try JSONSerialization.data(withJSONObject: staleRecord), as: UTF8.self))
+        _ = try write("Cache/\(oldSignature).xcbuilddata/manifest.json", "{\"commands\":{}}")
+        _ = try write("Cache/\(oldSignature).xcbuilddata/attachments/flags", "-I'\(staleMap.deletingLastPathComponent().path)'\n")
         let current = try write("static.txt", "/Products/SDKBridge.appintents/Metadata.appintents/extract.actionsdata\n/Products/SDKC.appintents/Metadata.appintents/extract.actionsdata\n/Products/SDK_Base.appintents/Metadata.appintents/extract.actionsdata\n")
         let dynamic = try write("dynamic.txt", "")
         let runner = ProcessRunner()
@@ -357,6 +376,25 @@ final class StaticPackageIntegrationTests: XCTestCase {
         let flags = try String(contentsOf: output.appendingPathComponent("clang.rsp"), encoding: .utf8)
         XCTAssertTrue(flags.contains("Custom SDK/include"), flags)
         XCTAssertTrue(flags.contains("-I\"\(publicRoot.path)\""), flags)
+        XCTAssertFalse(flags.contains("Old SDK"), flags)
+        // Switch between cached build descriptions without cleaning, regardless of their timestamps.
+        try (signature + "\n" + oldSignature + "\n")
+            .write(to: directory.appendingPathComponent("Cache/prior-build-descriptions.txt"), atomically: true, encoding: .utf8)
+        try run()
+        let switched = try String(contentsOf: output.appendingPathComponent("module.modulemap"), encoding: .utf8)
+        XCTAssertTrue(switched.contains(staleMap.path), switched)
+        XCTAssertFalse(switched.contains(originalMap.path), switched)
+        try (oldSignature + "\n" + signature + "\n")
+            .write(to: directory.appendingPathComponent("Cache/prior-build-descriptions.txt"), atomically: true, encoding: .utf8)
+        // A genuine ambiguity within the live build must still fail with both paths in its diagnostic.
+        try "-I'\(originalMap.deletingLastPathComponent().path)' -fmodule-map-file='\(staleMap.path)'\n"
+            .write(to: flagsURL, atomically: true, encoding: .utf8)
+        XCTAssertThrowsError(try run()) { error in
+            let diagnostic = String(describing: error)
+            XCTAssertTrue(diagnostic.contains(originalMap.path), diagnostic)
+            XCTAssertTrue(diagnostic.contains(staleMap.path), diagnostic)
+        }
+        try "-I'\(originalMap.deletingLastPathComponent().path)'\n".write(to: flagsURL, atomically: true, encoding: .utf8)
         try "/Products/SDKBridge.appintents/Metadata.appintents/extract.actionsdata\n"
             .write(to: current, atomically: true, encoding: .utf8)
         try run()

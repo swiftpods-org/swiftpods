@@ -152,7 +152,7 @@ enum TargetScripts {
                 #"  swiftpods_host_sdk=$(/usr/bin/xcrun --sdk macosx --show-sdk-path)"#,
                 #"  /usr/bin/xcrun --sdk macosx swiftc -warnings-as-errors -sdk "$swiftpods_host_sdk" -module-cache-path "$swiftpods_bridge/cache" "$swiftpods_module_source" -o "$swiftpods_bridge/bridge""#,
                 #"fi"#,
-                #""$swiftpods_bridge/bridge" "${OBJROOT}/GeneratedModuleMaps${EFFECTIVE_PLATFORM_NAME}" "$swiftpods_modules" "${TEMP_DIR}/${PRODUCT_NAME}.DependencyStaticMetadataFileList" "${TEMP_DIR}/${PRODUCT_NAME}.DependencyMetadataFileList" "${OBJROOT}/XCBuildData/PIFCache""#,
+                #""$swiftpods_bridge/bridge" "${OBJROOT}/GeneratedModuleMaps${EFFECTIVE_PLATFORM_NAME}" "$swiftpods_modules" "${TEMP_DIR}/${PRODUCT_NAME}.DependencyStaticMetadataFileList" "${TEMP_DIR}/${PRODUCT_NAME}.DependencyMetadataFileList" "${OBJROOT}/XCBuildData""#,
             ]
         } else if !packageModules.isEmpty {
             prepare += packageModuleBridge(packageModules)
@@ -163,7 +163,7 @@ enum TargetScripts {
             "$(OBJROOT)/GeneratedModuleMaps$(EFFECTIVE_PLATFORM_NAME)",
             "$(TEMP_DIR)/$(PRODUCT_NAME).DependencyStaticMetadataFileList",
             "$(TEMP_DIR)/$(PRODUCT_NAME).DependencyMetadataFileList",
-            "$(OBJROOT)/XCBuildData/PIFCache",
+            "$(OBJROOT)/XCBuildData",
             sourceRootFileListPath(join(paths.target, "package-modules.swift")),
         ] : (packageModules.isEmpty ? [] : [generatedPackageModuleMaps])
         let moduleMapOutputs = compileOnlyPackages ? [packageModuleSearchPath, packageModuleSearchPath + "/module.modulemap", packageModuleSearchPath + "/clang.rsp"] : (

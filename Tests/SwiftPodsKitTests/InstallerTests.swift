@@ -252,6 +252,9 @@ final class InstallerTests: XCTestCase {
             try generated(directory, "Scripts/App/Plugin/prepare.inputs.xcfilelist")
                 .contains("GeneratedModuleMaps$(EFFECTIVE_PLATFORM_NAME)"))
         XCTAssertTrue(
+            try generated(directory, "Scripts/App/Plugin/prepare.inputs.xcfilelist")
+                .contains("$(OBJROOT)/XCBuildData\n"))
+        XCTAssertTrue(
             try generated(directory, "Scripts/App/Plugin/prepare.outputs.xcfilelist")
                 .contains("$(DERIVED_FILE_DIR)/SwiftPodsPackageModules/module.modulemap"))
     }

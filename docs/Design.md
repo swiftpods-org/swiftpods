@@ -166,7 +166,12 @@ map and Clang response file. Xcode's current `DependencyStaticMetadataFileList`
 and `DependencyMetadataFileList` select the actual transitive module closure,
 including products whose names differ from their modules. Generated maps supply
 Swift Objective-C interfaces and default Clang maps; package target PIF records
-locate explicit source module maps and their public include paths. Header/umbrella
+locate explicit source module maps and their public include paths. Prepare reads
+the current build description selected by Xcode's `prior-build-descriptions.txt`,
+including its compiler arguments and response-file attachments. Only source maps
+and include roots used by that description are accepted from PIF, and generated
+maps must belong to its outputs. This excludes cached records from other checkout
+roots even when their module names and module-map contents match. Header/umbrella
 declarations in generated maps supply the remaining public include directories.
 Old maps outside the current closure are excluded and the
 outputs are rebuilt on every Prepare. Conflicting source-map candidates fail
@@ -176,7 +181,7 @@ only its declared map and response outputs go into DerivedSources. Script
 sandboxing remains enabled. Empty binary containers for compile-only static
 targets remain build dependencies, avoiding empty archive-member warnings.
 Compile-only targets enable recursive script inputs so the declared module-map
-and PIF cache directories also grant read access to their contents.
+and XCBuildData directories also grant read access to their contents.
 
 The project also references `SwiftPods/SwiftPodsDependencies` by a file
 reference and each target links its stable binary-container product
