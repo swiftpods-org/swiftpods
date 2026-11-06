@@ -81,7 +81,9 @@ downloaded signed executable through a verified installation.
 
 1. Change the version line in `Sources/swiftpods/main.swift`
    (`let version = "X.Y.Z"`). It is the only version source; `Unity/package.json`
-   repeats it, and a test keeps the two equal. Merge to `main`.
+   repeats it, and a test keeps the two equal. Update the path gem's version in
+   `Gemfile.lock` (including its checksum entry), preserving remote gem pins.
+   Merge to `main`.
 2. When Build SwiftPods has passed for that commit, create an annotated tag and
    push it: `git tag -a vX.Y.Z COMMIT -m 'SwiftPods X.Y.Z' && git push origin vX.Y.Z`.
    The Fastlane plugin push build also runs for every commit, since the release

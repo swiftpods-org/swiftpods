@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    fastlane-plugin-swiftpods (0.3.13)
+    fastlane-plugin-swiftpods (0.3.14)
       fiddle (~> 1.1)
 
 GEM
@@ -278,7 +278,7 @@ CHECKSUMS
   faraday_middleware (1.2.1) sha256=d45b78c8ee864c4783fbc276f845243d4a7918a67301c052647bacabec0529e9
   fastimage (2.4.3) sha256=304457e3c35bfdaefda3f1dacab2222a96b230b8ce6977b6b54748c1cc7ec539
   fastlane (2.237.0) sha256=bb1e867bc070fb328741b5e6e7606d5ba596941a9ecca0478f60ef22d1009db9
-  fastlane-plugin-swiftpods (0.3.13)
+  fastlane-plugin-swiftpods (0.3.14)
   fastlane-sirp (1.1.0) sha256=10bc94f9682efd8e1badfb31452a76dd8981f1f3a33717c765fde6d75b54d847
   fiddle (1.1.8) sha256=7fa8ee3627271497f3add5503acdbc3f40b32f610fc1cf49634f083ef3f32eee
   gh_inspector (1.1.3) sha256=04cca7171b87164e053aa43147971d3b7f500fcb58177698886b48a9fc4a1939
