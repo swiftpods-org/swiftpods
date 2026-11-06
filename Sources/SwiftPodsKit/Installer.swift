@@ -3390,6 +3390,7 @@ public struct Installer: Sendable {
         }
         if compileOnlyPackages {
             let arguments = TargetScripts.packageCompilerArguments
+            lines.append("USE_RECURSIVE_SCRIPT_INPUTS_IN_SCRIPT_PHASES = YES")
             lines.append("OTHER_CFLAGS = $(inherited) \(arguments)")
             lines.append("OTHER_CPLUSPLUSFLAGS = $(inherited) \(arguments)")
             lines.append("OTHER_SWIFT_FLAGS = $(inherited) -Xcc \(arguments)")

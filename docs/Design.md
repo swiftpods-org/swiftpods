@@ -175,6 +175,8 @@ Swift source compiled by the selected Xcode in the target's temporary directory;
 only its declared map and response outputs go into DerivedSources. Script
 sandboxing remains enabled. Empty binary containers for compile-only static
 targets remain build dependencies, avoiding empty archive-member warnings.
+Compile-only targets enable recursive script inputs so the declared module-map
+and PIF cache directories also grant read access to their contents.
 
 The project also references `SwiftPods/SwiftPodsDependencies` by a file
 reference and each target links its stable binary-container product

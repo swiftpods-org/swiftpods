@@ -212,7 +212,10 @@ final class StaticPackageIntegrationTests: XCTestCase {
         let installer = Installer(directory: directory, cache: directory.appendingPathComponent(".cache"))
         _ = try installer.install(InstallOptions())
         let runner = ProcessRunner()
-        let derived = directory.appendingPathComponent("DerivedData")
+        // Keep build metadata inside the checkout to exercise sandbox access beyond the system temporary directory.
+        let packageRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let derived = packageRoot.appendingPathComponent(".build/static-package-integration-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: derived) }
         func build(_ configuration: String, _ platform: String, sdk: Bool = true, scheme: String = "App") throws {
             let log: String
             do {

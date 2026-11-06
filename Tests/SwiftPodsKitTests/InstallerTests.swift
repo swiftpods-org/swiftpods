@@ -247,6 +247,7 @@ final class InstallerTests: XCTestCase {
         let bridge = try generated(directory, "Scripts/App/Plugin/package-modules.swift")
         XCTAssertTrue(bridge.contains("extern module"), bridge)
         XCTAssertTrue(settings.contains("OTHER_SWIFT_FLAGS = $(inherited) -Xcc"), settings)
+        XCTAssertTrue(settings.contains("USE_RECURSIVE_SCRIPT_INPUTS_IN_SCRIPT_PHASES = YES"), settings)
         XCTAssertTrue(
             try generated(directory, "Scripts/App/Plugin/prepare.inputs.xcfilelist")
                 .contains("GeneratedModuleMaps$(EFFECTIVE_PLATFORM_NAME)"))
