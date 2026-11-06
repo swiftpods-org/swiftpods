@@ -38,9 +38,9 @@ final class StaticPackageIntegrationTests: XCTestCase {
             """,
         "Modules/CSupport/Sources/SDKC/include/SDKC.h": "#ifdef __cplusplus\nextern \"C\" {\n#endif\nint sdk_value(void);\n#ifdef __cplusplus\n}\n#endif\n",
         "Modules/CSupport/Sources/SDKC/include/module.modulemap": "module SDKC {\n  umbrella header \"SDKC.h\"\n  export *\n}\n",
-        "Modules/CSupport/Sources/SDKC/value.c": "#include \"SDKC.h\"\n#include \"SDKBase.h\"\nint sdk_value(void) { return sdk_base(); }\n",
-        "Modules/CSupport/Sources/SDKBase/include/SDKBase.h": "#ifdef __cplusplus\nextern \"C\" {\n#endif\nint sdk_base(void);\n#ifdef __cplusplus\n}\n#endif\n",
-        "Modules/CSupport/Sources/SDKBase/base.c": "#include \"SDKBase.h\"\nint sdk_base(void) { return 11; }\n",
+        "Modules/CSupport/Sources/SDKC/value.c": "#include \"SDKC.h\"\n#include <SDKBase/SDKBase.h>\nint sdk_value(void) { return sdk_base(); }\n",
+        "Modules/CSupport/Sources/SDKBase/include/SDKBase/SDKBase.h": "#ifdef __cplusplus\nextern \"C\" {\n#endif\nint sdk_base(void);\n#ifdef __cplusplus\n}\n#endif\n",
+        "Modules/CSupport/Sources/SDKBase/base.c": "#include <SDKBase/SDKBase.h>\nint sdk_base(void) { return 11; }\n",
         "plugin.swift": """
             import SDKBridge
             import SDKInternal
@@ -56,6 +56,7 @@ final class StaticPackageIntegrationTests: XCTestCase {
             @import SDKC;
             #import <SDKBridge-Swift.h>
             #include "SDKC.h"
+            #include <SDKBase/SDKBase.h>
             int plugin_two(void) { return [SPSharedBridge value] + [SPInternalBridge value] + sdk_value(); }
             """,
         "plugin.mm": """
@@ -322,10 +323,18 @@ final class StaticPackageIntegrationTests: XCTestCase {
         _ = try write("Maps/SDKBridge.modulemap", "module SDKBridge { header \"SDKBridge-Swift.h\" export * }\n")
         _ = try write("Maps/RemovedSDK.modulemap", "module RemovedSDK {}\n")
         _ = try write("Maps/Metadata.modulemap", "module Metadata {}\n")
+        let publicHeader = try write("Generated SDK/Public/SDK_Base/SDKBase.h", "int sdk_base(void);\n")
+        let publicRoot = publicHeader.deletingLastPathComponent().deletingLastPathComponent()
+        _ = try write("Maps/SDK-Base.modulemap", "module SDK_Base { umbrella header \"\(publicHeader.path)\" export * }\n")
+        let generatedRecord: [String: Any] = ["guid": "PACKAGE-TARGET:SDK-Base", "buildConfigurations": [[
+            "buildSettings": ["PRODUCT_MODULE_NAME": "SDK_Base", "MODULEMAP_PATH": "$(GENERATED_MODULEMAP_DIR)/SDK-Base.modulemap"],
+            "impartedBuildProperties": ["buildSettings": ["HEADER_SEARCH_PATHS": [publicRoot.path, "$(inherited)"]]],
+        ]]]
+        _ = try write("Cache/target/TARGET-generated-json", String(decoding: try JSONSerialization.data(withJSONObject: generatedRecord), as: UTF8.self))
         let record: [String: Any] = ["guid": "PACKAGE-TARGET:SDKC", "buildConfigurations": [["buildSettings": ["PRODUCT_MODULE_NAME": "SDKC", "MODULEMAP_FILE": originalMap.path]]]]
         let recordURL = try write("Cache/target/TARGET-test-json", String(decoding: try JSONSerialization.data(withJSONObject: record), as: UTF8.self))
         XCTAssertTrue(FileManager.default.fileExists(atPath: recordURL.path))
-        let current = try write("static.txt", "/Products/SDKBridge.appintents/Metadata.appintents/extract.actionsdata\n/Products/SDKC.appintents/Metadata.appintents/extract.actionsdata\n")
+        let current = try write("static.txt", "/Products/SDKBridge.appintents/Metadata.appintents/extract.actionsdata\n/Products/SDKC.appintents/Metadata.appintents/extract.actionsdata\n/Products/SDK_Base.appintents/Metadata.appintents/extract.actionsdata\n")
         let dynamic = try write("dynamic.txt", "")
         let runner = ProcessRunner()
         let executable = directory.appendingPathComponent("bridge")
@@ -339,10 +348,12 @@ final class StaticPackageIntegrationTests: XCTestCase {
         let map = try String(contentsOf: output.appendingPathComponent("module.modulemap"), encoding: .utf8)
         XCTAssertTrue(map.contains(originalMap.path), map)
         XCTAssertTrue(map.contains("SDKBridge"), map)
+        XCTAssertTrue(map.contains("SDK-Base.modulemap"), map)
         XCTAssertFalse(map.contains("RemovedSDK"), map)
         XCTAssertFalse(map.contains("extern module Metadata"), map)
         let flags = try String(contentsOf: output.appendingPathComponent("clang.rsp"), encoding: .utf8)
         XCTAssertTrue(flags.contains("Custom SDK/include"), flags)
+        XCTAssertTrue(flags.contains("-I\"\(publicRoot.path)\""), flags)
         try "/Products/SDKBridge.appintents/Metadata.appintents/extract.actionsdata\n"
             .write(to: current, atomically: true, encoding: .utf8)
         try run()

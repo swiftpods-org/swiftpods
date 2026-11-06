@@ -45,7 +45,7 @@ enum PackageModuleBridge {
         // package target records retain that source path. The live dependency lists above determine which
         // modules may be used; old, unrelated cached target records can never add modules to that set.
         let cache = URL(fileURLWithPath: arguments[5], isDirectory: true).appendingPathComponent("target")
-        var customMaps: [String: Set<String>] = [:]
+        var recordedMaps: [String: Set<String>] = [:]
         var publicIncludes: [String: Set<String>] = [:]
         if FileManager.default.fileExists(atPath: cache.path) {
             let records = try FileManager.default.contentsOfDirectory(at: cache, includingPropertiesForKeys: [.fileSizeKey])
@@ -69,12 +69,14 @@ enum PackageModuleBridge {
                     paths += (imparted?["OTHER_CFLAGS"] as? [String] ?? []).compactMap { flag in
                         flag.hasPrefix("-fmodule-map-file=") ? String(flag.dropFirst("-fmodule-map-file=".count)) : nil
                     }
-                    for path in paths where path.hasPrefix("/") && mayExist(path) {
-                        customMaps[module, default: []].insert(path)
-                        for include in imparted?["HEADER_SEARCH_PATHS"] as? [String] ?? []
-                            where include.hasPrefix("/") && mayExist(include) {
-                            publicIncludes[path, default: []].insert(include)
-                        }
+                    for include in imparted?["HEADER_SEARCH_PATHS"] as? [String] ?? []
+                        where include.hasPrefix("/") && mayExist(include) {
+                        publicIncludes[module, default: []].insert(include)
+                    }
+                    for rawPath in paths {
+                        let path = rawPath.replacingOccurrences(of: "$(GENERATED_MODULEMAP_DIR)", with: maps.path)
+                        guard path.hasPrefix("/"), mayExist(path) else { continue }
+                        recordedMaps[module, default: []].insert(path)
                     }
                 }
             }
@@ -86,18 +88,18 @@ enum PackageModuleBridge {
             guard module.range(of: #"^[A-Za-z_][A-Za-z_0-9]*$"#, options: .regularExpression) != nil else {
                 throw NSError(domain: "Invalid SwiftPods dependency module name: \(module)", code: 1)
             }
-            let candidates = customMaps[module] ?? []
+            let candidates = recordedMaps[module] ?? []
             guard candidates.count <= 1 else {
                 throw NSError(domain: "Conflicting source module maps for \(module); clean the Xcode build folder", code: 1)
             }
             let map = candidates.first.map { URL(fileURLWithPath: $0) } ?? maps.appendingPathComponent(module + ".modulemap")
+            includes.formUnion(publicIncludes[module] ?? [])
             if candidates.isEmpty && !FileManager.default.fileExists(atPath: map.path) { continue } // Binary frameworks have their own maps.
             external.append("extern module \(module) \(try quoted(map.path))")
-            if !candidates.isEmpty {
+            if map.deletingLastPathComponent().standardizedFileURL != maps.standardizedFileURL {
                 // Public include roots come from Xcode's package settings. Leave the source map itself to
                 // the compiler: script sandboxing need not grant read access to package checkout contents.
                 includes.insert(map.deletingLastPathComponent().path)
-                includes.formUnion(publicIncludes[map.path] ?? [])
                 continue
             }
             let text = try String(contentsOf: map, encoding: .utf8)
