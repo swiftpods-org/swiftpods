@@ -2,14 +2,7 @@ name: Fastlane plugin
 on:
   push:
     branches: ['**']
-    paths:
-      - 'lib/**'
-      - 'Tests/FastlanePlugin/**'
-      - 'fastlane-plugin-swiftpods.gemspec'
-      - 'Gemfile'
-      - 'Gemfile.lock'
-      - 'scripts/install.py'
-      - '.github/workflows/fastlane-plugin.yml'
+    # Release requires a successful push build of this workflow for the exact source commit.
   pull_request:
     paths:
       - 'lib/**'

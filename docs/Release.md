@@ -84,6 +84,8 @@ downloaded signed executable through a verified installation.
    repeats it, and a test keeps the two equal. Merge to `main`.
 2. When Build SwiftPods has passed for that commit, create an annotated tag and
    push it: `git tag -a vX.Y.Z COMMIT -m 'SwiftPods X.Y.Z' && git push origin vX.Y.Z`.
+   The Fastlane plugin push build also runs for every commit, since the release
+   gate requires its successful result for the exact tagged source commit.
 3. Release SwiftPods checks that the tag matches the version line, points to a
    commit on `main` with a successful run of the exact
    `.github/workflows/build.yml` workflow for that commit, and names a

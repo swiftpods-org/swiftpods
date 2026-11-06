@@ -27,6 +27,11 @@ class WorkflowSecurityTests(unittest.TestCase):
         self.assertIn('.event == "push" and .head_branch == "main"', workflow)
         self.assertNotIn("commits/$RELEASE_COMMIT/check-runs", workflow)
         self.assertNotIn('startswith("build")', workflow)
+        for name in ("build.yml", "fastlane-plugin.yml"):
+            build_workflow = (ROOT / ".github/workflows" / name).read_text()
+            push = build_workflow.split("  push:\n", 1)[1].split("  pull_request:", 1)[0]
+            self.assertIn("branches: ['**']", push)
+            self.assertNotRegex(push, r"(?m)^\s+paths(?:-ignore)?:")
 
     def test_release_promotes_the_exact_built_artifact_before_signing(self):
         workflow = (ROOT / ".github/workflows/release.yml").read_text()
