@@ -10,6 +10,7 @@ enum TargetScripts {
     /// Xcode does not add generated Swift package module maps to Clang's search path for static-library targets.
     /// Their prepare phase publishes a target-scoped external module map here after package dependencies build.
     static let packageModuleSearchPath = "$(DERIVED_FILE_DIR)/SwiftPodsPackageModules"
+    static let packageCompilerArguments = "@\"$(DERIVED_FILE_DIR)/SwiftPodsPackageModules/clang.rsp\""
     private static let generatedPackageModuleMaps = "$(BUILD_DIR)/../Intermediates.noindex/GeneratedModuleMaps$(EFFECTIVE_PLATFORM_NAME)"
 
     enum Phase: String, CaseIterable {
@@ -110,7 +111,7 @@ enum TargetScripts {
     ///   - fileLists: contents of the scripts' input and output file lists, by the path the Podfile gives.
     static func files(
         scripts: [ScriptPhase], resources: [String], embedsFrameworks: Bool = false, signed: [String], fileLists: [String: [String]],
-        packageModules: [String] = [], paths: Locations
+        packageModules: [String] = [], compileOnlyPackages: Bool = false, paths: Locations
     ) -> [String: String] {
         var files: [String: String] = [:]
         var numbered: [(Int, ScriptPhase)] = []
@@ -139,13 +140,34 @@ enum TargetScripts {
             "  exit 1",
             "fi",
         ]
-        if !packageModules.isEmpty {
+        if compileOnlyPackages {
+            files["package-modules.swift"] = PackageModuleBridge.source + "\n"
+            prepare += [
+                #"swiftpods_modules="${DERIVED_FILE_DIR}/SwiftPodsPackageModules""#,
+                #"/bin/mkdir -p "$swiftpods_modules""#,
+                #"swiftpods_bridge="${TEMP_DIR}/SwiftPodsPackageBridge""#,
+                #"/bin/mkdir -p "$swiftpods_bridge""#,
+                "swiftpods_module_source=" + sourceRootShellPath(join(paths.target, "package-modules.swift")),
+                #"if [ ! -x "$swiftpods_bridge/bridge" ] || [ "$swiftpods_module_source" -nt "$swiftpods_bridge/bridge" ]; then"#,
+                #"  swiftpods_host_sdk=$(/usr/bin/xcrun --sdk macosx --show-sdk-path)"#,
+                #"  /usr/bin/xcrun --sdk macosx swiftc -warnings-as-errors -sdk "$swiftpods_host_sdk" -module-cache-path "$swiftpods_bridge/cache" "$swiftpods_module_source" -o "$swiftpods_bridge/bridge""#,
+                #"fi"#,
+                #""$swiftpods_bridge/bridge" "${OBJROOT}/GeneratedModuleMaps${EFFECTIVE_PLATFORM_NAME}" "$swiftpods_modules" "${TEMP_DIR}/${PRODUCT_NAME}.DependencyStaticMetadataFileList" "${TEMP_DIR}/${PRODUCT_NAME}.DependencyMetadataFileList" "${OBJROOT}/XCBuildData/PIFCache""#,
+            ]
+        } else if !packageModules.isEmpty {
             prepare += packageModuleBridge(packageModules)
         }
         prepare += run(before)
         files["prepare.sh"] = prepare.joined(separator: "\n") + "\n"
-        let moduleMapInputs = packageModules.isEmpty ? [] : [generatedPackageModuleMaps]
-        let moduleMapOutputs = packageModules.isEmpty ? [] : [packageModuleSearchPath + "/module.modulemap"]
+        let moduleMapInputs = compileOnlyPackages ? [
+            "$(OBJROOT)/GeneratedModuleMaps$(EFFECTIVE_PLATFORM_NAME)",
+            "$(TEMP_DIR)/$(PRODUCT_NAME).DependencyStaticMetadataFileList",
+            "$(TEMP_DIR)/$(PRODUCT_NAME).DependencyMetadataFileList",
+            "$(OBJROOT)/XCBuildData/PIFCache",
+            sourceRootFileListPath(join(paths.target, "package-modules.swift")),
+        ] : (packageModules.isEmpty ? [] : [generatedPackageModuleMaps])
+        let moduleMapOutputs = compileOnlyPackages ? [packageModuleSearchPath, packageModuleSearchPath + "/module.modulemap", packageModuleSearchPath + "/clang.rsp"] : (
+            packageModules.isEmpty ? [] : [packageModuleSearchPath + "/module.modulemap"])
         files["prepare.inputs.xcfilelist"] = lines(
             [sourceRootFileListPath(join(paths.target, "prepare.sh")), sourceRootFileListPath(join(paths.generated, directoryName, signatureFile))]
                 + signed.map {

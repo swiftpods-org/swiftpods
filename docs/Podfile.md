@@ -159,9 +159,49 @@ A remote package needs exactly one requirement:
 | `branch: 'main'`, `revision: '<full commit object ID>'` | Branch or commit |
 
 Versions must have at most three numeric components. A lower bound without an
-upper bound is rejected. `link: false` adds the product as a build dependency
-without putting it in the target's Frameworks phase; target source must not
-import that build-only product.
+upper bound is rejected.
+
+#### Compile an SDK into the application, use it from static plugins
+
+`link: false` builds the package and makes its modules and public headers
+available for compilation, without linking or archiving the SDK's object files
+in the consuming target.
+Use this for a static plugin when the application owns the SDK's final linkage:
+
+```ruby
+target 'App' do
+  spm 'SharedSDK', path: 'Modules/SharedSDK'
+end
+
+target 'AnalyticsPlugin' do
+  spm 'SharedSDK', path: 'Modules/SharedSDK', link: false
+end
+```
+
+The application must declare every SDK product it needs to link. Other static
+plugins sharing it also use `link: false`. The plugin can import Swift modules,
+Clang modules, generated Swift Objective-C interfaces, and public headers from
+the product's transitive dependencies. Keep `$(inherited)` when overriding
+compiler flags, header paths or framework paths in the Xcode target. Objective-C++
+code using `@import` also needs Clang C++ modules enabled, for example
+`OTHER_CPLUSPLUSFLAGS = $(inherited) -fmodules -fcxx-modules`.
+
+SwiftPods uses a `PBXTargetDependency` with `productRef` for this mode. Merely
+omitting a Frameworks entry is insufficient: a product left in
+`packageProductDependencies` is still archived by Xcode into a native static
+library. The Prepare phase publishes the current dependency modules and public
+header paths for Swift, Objective-C and Objective-C++, including transitive
+modules whose names differ from the package product. It uses Xcode's generated
+dependency metadata lists and package target records; missing or incompatible
+metadata fails the build with a diagnostic. The generated host helper uses the
+selected Xcode toolchain and runs with script sandboxing enabled.
+
+The default, `link: true`, retains normal Xcode product linkage. When the same
+product is declared more than once in a target (including through groups or
+inheritance), a linked declaration wins. A child declaration with `link: false`
+cannot undo an inherited linked declaration; use `inherit! :none` and declare
+the intended dependencies explicitly, or share compile-only declarations and
+add the linked declaration in the application.
 
 ### Binary SDKs
 

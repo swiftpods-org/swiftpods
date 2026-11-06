@@ -40,10 +40,15 @@ the distribution is built without that test hook and checked through its CLI.
 Consumer checks must cover a fresh `install --resolve` and an unchanged repeat
 install; optimized builds can expose descriptor-lifetime errors absent in Debug.
 
-Two suites are opt-in:
+Xcode builds and the project corpus check are opt-in:
 
 - `SWIFTPODS_E2E=1 swift test --filter EndToEndTests` installs into a sample iOS
   app and builds it with Xcode. It needs an iOS SDK and access to GitHub.
+- `SWIFTPODS_E2E=1 swift test -Xswiftc -warnings-as-errors --filter StaticPackageIntegrationTests`
+  builds a local SDK shared by an app and two static plugins in Simulator Debug/Release
+  and unsigned iOS Release, with `-ObjC` and script sandboxing. It checks archive
+  members and final symbols, then updates/removes the SDK and deintegrates without
+  cleaning DerivedData. It needs Xcode and iOS SDKs, but no network dependencies.
 - `SWIFTPODS_PBX_CORPUS=/path/to/projects swift test --filter testCorpusRoundTrip`
   checks that real `project.pbxproj` files (any file names in that directory)
   round-trip byte for byte. Keep private projects outside the repository.

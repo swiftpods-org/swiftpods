@@ -180,8 +180,10 @@ final class InstallerTests: XCTestCase {
         XCTAssertNil(installed[target(installed, "App").strings("packageProductDependencies")[0]]?["package"], "Local products name no package")
         XCTAssertEqual(phaseNames(installed, "App"), ["[SwiftPods] Prepare", "PBXSourcesBuildPhase", "PBXFrameworksBuildPhase", "[SwiftPods] Finish"])
         XCTAssertEqual(products(installed, "AppTests"), ["SwiftPods-AppTests", "SnapshotTesting"])
-        XCTAssertEqual(products(installed, "Plugin"), ["SwiftPods-Plugin", "FirebaseCore"])
-        XCTAssertEqual(linked(installed, "Plugin"), ["SwiftPods-Plugin"], "link: false adds a build dependency only")
+        XCTAssertEqual(products(installed, "Plugin"), [])
+        XCTAssertEqual(linked(installed, "Plugin"), [], "link: false must not put SDK objects into a static archive")
+        XCTAssertEqual(target(installed, "Plugin").strings("dependencies").compactMap { installed[$0]?.string("productRef") }
+            .compactMap { installed[$0]?.string("productName") }, ["SwiftPods-Plugin", "FirebaseCore"])
 
         // The generated package carries only binaries; Xcode owns Swift package requirements and products directly.
         let manifest = try generated(directory, "SwiftPodsDependencies/Package.swift")
@@ -221,7 +223,7 @@ final class InstallerTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("SwiftPods").path))
     }
 
-    func testStaticLibraryPublishesOnlyLinkedPackageModuleMaps() throws {
+    func testStaticLibraryPreparesLinkedAndCompileOnlyPackageModules() throws {
         let directory = try fixture(
             """
             target 'Plugin' do
@@ -240,9 +242,11 @@ final class InstallerTests: XCTestCase {
         XCTAssertTrue(settings.contains("HEADER_SEARCH_PATHS = $(inherited) $(DERIVED_FILE_DIR)/SwiftPodsPackageModules"), settings)
         XCTAssertFalse(settings.contains("LD_RUNPATH_SEARCH_PATHS"), settings)
         let prepare = try generated(directory, "Scripts/App/Plugin/prepare.sh")
-        XCTAssertTrue(prepare.contains("Interop.modulemap"), prepare)
-        XCTAssertTrue(prepare.contains("extern module %s"), prepare)
-        XCTAssertFalse(prepare.contains("BuildOnly.modulemap"), prepare)
+        XCTAssertTrue(prepare.contains("package-modules.swift"), prepare)
+        XCTAssertTrue(prepare.contains("DependencyStaticMetadataFileList"), prepare)
+        let bridge = try generated(directory, "Scripts/App/Plugin/package-modules.swift")
+        XCTAssertTrue(bridge.contains("extern module"), bridge)
+        XCTAssertTrue(settings.contains("OTHER_SWIFT_FLAGS = $(inherited) -Xcc"), settings)
         XCTAssertTrue(
             try generated(directory, "Scripts/App/Plugin/prepare.inputs.xcfilelist")
                 .contains("GeneratedModuleMaps$(EFFECTIVE_PLATFORM_NAME)"))

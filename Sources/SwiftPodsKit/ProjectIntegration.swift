@@ -126,6 +126,8 @@ enum ProjectIntegration {
         "product:\(target)|\(package)|\(product)"
     }
 
+    static func dependencyKey(product: String) -> String { "build-dependency:" + product }
+
     static func scriptKey(target: String, name: String) -> String { "script:\(target)|\(name)" }
     static func frameworksKey(target: String) -> String { "frameworks-phase:\(target)" }
     static func settingsKey(path: String) -> String { "xcconfig:" + path }
@@ -158,9 +160,14 @@ enum ProjectIntegration {
         for target in project.nativeTargets {
             let object = project[target.id] ?? [:]
             try budget.consume(
-                object.strings("packageProductDependencies").count + object.strings("buildPhases").count,
+                object.strings("packageProductDependencies").count + object.strings("dependencies").count
+                    + object.strings("buildPhases").count,
                 file: project.file.path)
-            for id in object.strings("packageProductDependencies") {
+            let buildProducts = object.strings("dependencies").compactMap { id -> String? in
+                guard project[id]?.isa == "PBXTargetDependency" else { return nil }
+                return project[id]?.string("productRef")
+            }
+            for id in object.strings("packageProductDependencies") + buildProducts {
                 guard let dependency = project[id], let product = dependency.string("productName") else { continue }
                 if let package = dependency.string("package") {
                     check(id, project[package].flatMap(packageKey).map { productKey(target: target.name, package: $0, product: product) })
@@ -187,8 +194,10 @@ enum ProjectIntegration {
                 }
             }
         }
-        for (id, object) in project.objects where object.isa == "PBXBuildFile" {
-            if let product = object.string("productRef"), owned.contains(product) { check(id, "build-file:" + product) }
+        for (id, object) in project.objects {
+            guard let product = object.string("productRef"), owned.contains(product) else { continue }
+            if object.isa == "PBXBuildFile" { check(id, "build-file:" + product) }
+            if object.isa == "PBXTargetDependency" { check(id, dependencyKey(product: product)) }
         }
         return owned
     }
@@ -270,6 +279,7 @@ enum ProjectIntegration {
 
         struct TargetEdits {
             var products: [String] = []
+            var dependencies: [String] = []
             var buildFiles: [String] = []
             var scripts: [(String, ScriptPhase.Position)] = []
             var settings: String?
@@ -285,9 +295,13 @@ enum ProjectIntegration {
                 var object: PBXObject = ["isa": "XCSwiftPackageProductDependency", "productName": .string(product.name)]
                 if !isLocalPackage(product.package.object) { object["package"] = .string(XcodeProject.identifier(product.package.key)) }
                 let id = put(productKey(target: target.name, package: product.package.key, product: product.name), object)
-                edit.products.append(id)
                 if product.link {
+                    edit.products.append(id)
                     edit.buildFiles.append(put("build-file:" + id, ["isa": "PBXBuildFile", "productRef": .string(id)]))
+                } else {
+                    // Xcode archives packageProductDependencies into native static libraries even without a
+                    // Frameworks entry. A productRef target dependency schedules the SDK without archiving it.
+                    edit.dependencies.append(put(dependencyKey(product: id), ["isa": "PBXTargetDependency", "productRef": .string(id)]))
                 }
             }
             for phase in target.phases {
@@ -430,6 +444,11 @@ enum ProjectIntegration {
             let keep = !products.isEmpty || (object["packageProductDependencies"] != nil && existing.allSatisfy { !owned.contains($0) })
             object["packageProductDependencies"] = keep ? .array(products.map(PBXValue.string)) : nil
 
+            let existingDependencies = before[target.id]?.strings("dependencies") ?? []
+            let dependencies = existingDependencies.filter { !owned.contains($0) } + edit.dependencies
+            let keepDependencies = !dependencies.isEmpty || before[target.id]?["dependencies"] != nil
+            object["dependencies"] = keepDependencies ? .array(dependencies.map(PBXValue.string)) : nil
+
             var phases = object.strings("buildPhases").filter {
                 !owned.contains($0) || $0 == frameworksPhases[target.name] || $0 == resourcesPhases[target.name]
             }
@@ -489,7 +508,8 @@ enum ProjectIntegration {
             for object in objects.values {
                 guard let name = object.string("name") else { continue }
                 if object.isa == "PBXNativeTarget" {
-                    for product in object.strings("packageProductDependencies") where productTargets[product] == nil {
+                    let buildProducts = object.strings("dependencies").compactMap { objects[$0]?.string("productRef") }
+                    for product in object.strings("packageProductDependencies") + buildProducts where productTargets[product] == nil {
                         productTargets[product] = name
                     }
                 }

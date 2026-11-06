@@ -141,6 +141,8 @@ public struct ProductUse: Sendable, Codable, Equatable, Hashable {
     /// The package's identity.
     public var package: String
     public var product: String
+    /// False orders the package build and exposes its modules without linking or archiving its objects.
+    /// The final executable must also declare the product with `link: true` (the default).
     public var link: Bool
 
     public init(package: String, product: String, link: Bool) {

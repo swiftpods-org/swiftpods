@@ -148,8 +148,33 @@ module maps or generated Swift headers. Direct products make module visibility
 an Xcode responsibility for every supported source language. Xcode omits those
 generated module maps from Clang's search path for native static-library
 targets, so their Prepare phase publishes a target-scoped external module map
-for linked products that actually generated one. Build-only (`link: false`)
-products are excluded, and app and framework targets keep Xcode's native path.
+for linked products that actually generated one. App and framework targets with
+ordinary linked products keep Xcode's native path.
+
+**Compile-only products are target dependencies.** `link: false` is represented
+by a `PBXTargetDependency` with a package `productRef`, outside both Frameworks
+and `packageProductDependencies`. The latter causes Xcode to include SDK objects
+in static archives even when no Frameworks entry exists. The application links
+the SDK normally; static plugins only compile against it. Product and dependency
+IDs are deterministic and recognized through both target relationship lists, so
+reinstalling, changing linkage, updating/removing products and deintegrating also
+remove obsolete dependency objects while preserving user-owned target dependencies.
+
+Xcode does not impart package compiler settings through these build dependencies.
+For targets using this mode, Prepare generates a target-scoped external module
+map and Clang response file. Xcode's current `DependencyStaticMetadataFileList`
+and `DependencyMetadataFileList` select the actual transitive module closure,
+including products whose names differ from their modules. Generated maps supply
+Swift Objective-C interfaces and default Clang maps; package target PIF records
+locate explicit source module maps and their public include paths. Header/umbrella
+declarations in generated maps supply the remaining public include directories.
+Old maps outside the current closure are excluded and the
+outputs are rebuilt on every Prepare. Conflicting source-map candidates fail
+explicitly rather than choosing a cached version. The host helper is generated
+Swift source compiled by the selected Xcode in the target's temporary directory;
+only its declared map and response outputs go into DerivedSources. Script
+sandboxing remains enabled. Empty binary containers for compile-only static
+targets remain build dependencies, avoiding empty archive-member warnings.
 
 The project also references `SwiftPods/SwiftPodsDependencies` by a file
 reference and each target links its stable binary-container product
