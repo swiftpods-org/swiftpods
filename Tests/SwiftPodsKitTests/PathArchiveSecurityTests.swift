@@ -2446,6 +2446,34 @@ final class PathArchiveSecurityTests: XCTestCase {
         }
     }
 
+    func testProcessRunnerToleratesASameUIDProcessWithALargeDescriptorTable() throws {
+        // The virtual machine of Docker Desktop keeps 65,536 descriptor slots. Command tracking inspects every
+        // same-user process, so such a table must not stop SwiftPods from running commands.
+        let directory = try fixture()
+        let ready = directory.appendingPathComponent("large-table-ready")
+        let holder = Process()
+        holder.executableURL = URL(fileURLWithPath: "/bin/bash")
+        holder.arguments = [
+            "-c", #"ulimit -n 70000 && exec 69999</dev/null && : > "$1" && exec /bin/sleep 30"#, "holder", ready.path,
+        ]
+        holder.standardOutput = FileHandle.nullDevice
+        holder.standardError = FileHandle.nullDevice
+        try holder.run()
+        defer {
+            if holder.isRunning { holder.terminate() }
+            holder.waitUntilExit()
+        }
+        let deadline = Date().addingTimeInterval(5)
+        while !FileManager.default.fileExists(atPath: ready.path), holder.isRunning, Date() < deadline {
+            usleep(1_000)
+        }
+        guard FileManager.default.fileExists(atPath: ready.path) else {
+            throw XCTSkip("This system does not let a process hold 70,000 descriptors")
+        }
+        let output = try ProcessRunner().run("/bin/echo", ["tracked"], in: nil)
+        XCTAssertTrue(output.contains("tracked"), output)
+    }
+
     func testProcessRunnerParentEnforcesPhysicalMemoryCeiling() throws {
         let script = #"my @bytes; for (1..256) { push @bytes, "x" x 1048576; select(undef, undef, undef, 0.005); } sleep 5;"#
         XCTAssertThrowsError(try ProcessRunner().runData(

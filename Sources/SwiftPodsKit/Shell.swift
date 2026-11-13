@@ -681,7 +681,9 @@ private final class ProcessTrackingToken: @unchecked Sendable {
     }
 
     private static let maximumProcessIdentifiers = 131_072
-    private static let maximumDescriptorsPerProcess = 65_536
+    /// A descriptor table never grows past the kernel's per-process limit, but same-user services such as the virtual
+    /// machine of Docker Desktop do reach 65,536 slots. The margin covers the slack proc_pidinfo adds to its estimate.
+    private static let maximumDescriptorsPerProcess = max(65_536, kernelDescriptorLimitPerProcess()) + 64
     private static let maximumDescriptorsInspected = 1_000_000
     private(set) var descriptor: Int32
     private let identity: Identity
@@ -791,13 +793,22 @@ private final class ProcessTrackingToken: @unchecked Sendable {
         return information
     }
 
+    private static func kernelDescriptorLimitPerProcess() -> Int {
+        var limit: Int32 = 0
+        var size = MemoryLayout<Int32>.size
+        guard sysctlbyname("kern.maxfilesperproc", &limit, &size, nil, 0) == 0, size == MemoryLayout<Int32>.size,
+            limit > 0
+        else { return 0 }
+        return Int(limit)
+    }
+
     private static func fileDescriptors(of processIdentifier: pid_t) throws -> [proc_fdinfo]? {
         let stride = MemoryLayout<proc_fdinfo>.stride
         let requiredBytes = proc_pidinfo(processIdentifier, PROC_PIDLISTFDS, 0, nil, 0)
         guard requiredBytes > 0 else { return nil }
         var capacity = max(32, Int(requiredBytes) / stride + 16)
         guard capacity <= maximumDescriptorsPerProcess else {
-            throw SwiftPodsError("Command tracking process has too many open descriptors")
+            throw SwiftPodsError("Command tracking process \(processIdentifier) has too many open descriptors")
         }
         while capacity <= maximumDescriptorsPerProcess {
             var descriptors = [proc_fdinfo](repeating: proc_fdinfo(), count: capacity)
@@ -814,11 +825,11 @@ private final class ProcessTrackingToken: @unchecked Sendable {
                 return Array(descriptors.prefix(Int(byteCount) / stride))
             }
             guard capacity < maximumDescriptorsPerProcess else {
-                throw SwiftPodsError("Command tracking process has too many open descriptors")
+                throw SwiftPodsError("Command tracking process \(processIdentifier) has too many open descriptors")
             }
             capacity = min(capacity * 2, maximumDescriptorsPerProcess)
         }
-        throw SwiftPodsError("Command tracking process has too many open descriptors")
+        throw SwiftPodsError("Command tracking process \(processIdentifier) has too many open descriptors")
     }
 }
 
