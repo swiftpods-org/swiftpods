@@ -119,6 +119,8 @@ changes `Package.resolved`. A Podfile made only of
 explicit `git`, `path` and binary `url` declarations neither creates nor
 requires `SwiftPods.lock`.
 
+`install` rewrites each generated package, settings and scripts folder as a whole,
+so files written into one, such as build products, are removed.
 `deintegrate` removes only SwiftPods' generated packages, settings, scripts and
 ownership marker. Unknown files or directories inside `SwiftPods/` are preserved.
 

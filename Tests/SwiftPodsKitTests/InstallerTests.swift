@@ -223,6 +223,38 @@ final class InstallerTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("SwiftPods").path))
     }
 
+    func testInstallReplacesForeignBinaryContentOfAGeneratedPackage() throws {
+        // A build with a relative SYMROOT writes products, such as Clang modules, into the generated package.
+        let directory = try fixture(
+            """
+            target 'App' do
+              spm 'Networking', path: 'Modules/Networking'
+              settings 'OTHER_LDFLAGS' => '$(inherited) -ObjC'
+            end
+            """,
+            files: [
+                "Modules/Networking/Package.swift":
+                    "// swift-tools-version: 5.9\nimport PackageDescription\nlet package = Package(name: \"Networking\")\n",
+            ])
+        _ = try installer(directory).install(InstallOptions())
+        let package = directory.appendingPathComponent("SwiftPods/SwiftPodsDependencies", isDirectory: true)
+        let manifest = package.appendingPathComponent("Package.swift")
+        let generatedManifest = try Data(contentsOf: manifest)
+        let products = package.appendingPathComponent("build/SwiftExplicitPrecompiledModules", isDirectory: true)
+        try FileManager.default.createDirectory(at: products, withIntermediateDirectories: true)
+        try Data([0xFF, 0xFE, 0x00, 0x01]).write(to: products.appendingPathComponent("Module.pcm"))
+
+        _ = try installer(directory).install(InstallOptions())
+        XCTAssertFalse(FileManager.default.fileExists(atPath: package.appendingPathComponent("build").path))
+        XCTAssertEqual(try Data(contentsOf: manifest), generatedManifest)
+
+        // A generated file with binary content is stale content, not a reason to stop.
+        try Data([0xFF, 0xFE, 0x00, 0x01]).write(to: manifest)
+        _ = try installer(directory).install(InstallOptions())
+        XCTAssertEqual(try Data(contentsOf: manifest), generatedManifest)
+        XCTAssertEqual(try installer(directory).install(InstallOptions()).projects[0].changes, [])
+    }
+
     func testStaticLibraryPreparesLinkedAndCompileOnlyPackageModules() throws {
         let directory = try fixture(
             """

@@ -2328,7 +2328,9 @@ public struct Installer: Sendable {
             }
             stagedEntryCount += files.count
             let destination = generated.appendingPathComponent(name, isDirectory: true)
-            guard try Self.files(in: destination) != files else { return }
+            guard try !Self.generatedTree(at: destination, matches: Dictionary(uniqueKeysWithValues: encoded)) else {
+                return
+            }
             try staging.writeTree(named: name, files: encoded)
             staged.append(name)
         }
@@ -3422,17 +3424,19 @@ public struct Installer: Sendable {
         return platforms.first(where: { settings[$0.2] != nil })?.0
     }
 
-    /// Text files below `directory` by relative path; hidden files, such as Xcode's `.swiftpm`, are not SwiftPods'.
-    private static func files(in directory: URL) throws -> [String: String] {
-        guard let type = try entryType(at: directory) else { return [:] }
+    /// Whether `directory` holds exactly the `expected` files by relative path; hidden files, such as Xcode's
+    /// `.swiftpm`, are not SwiftPods'. Other files, such as build products written into a generated package, make
+    /// the tree differ without being read, so staging replaces them like any other stale content.
+    private static func generatedTree(at directory: URL, matches expected: [String: Data]) throws -> Bool {
+        guard let type = try entryType(at: directory) else { return expected.isEmpty }
         guard type == S_IFDIR else { throw SwiftPodsError("Generated path is not a directory: \(directory.path)") }
         var enumerationError: Error?
         guard let enumerator = FileManager.default.enumerator(
             at: directory, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles],
             errorHandler: { _, error in enumerationError = error; return false })
         else { throw SwiftPodsError("Cannot inspect generated directory \(directory.path)") }
-        var result: [String: String] = [:]
-        var totalBytes = 0
+        var matches = true
+        var matched = 0
         var entries = 0
         for case let url as URL in enumerator {
             entries += 1
@@ -3447,20 +3451,30 @@ public struct Installer: Sendable {
             guard type == S_IFDIR || type == S_IFREG else {
                 throw SwiftPodsError("Refusing symbolic link or special file inside the generated directory: \(url.path)")
             }
-            guard type == S_IFREG else { continue }
-            let text = try readBoundedRegularText(
-                url, maximumBytes: maximumGeneratedFileBytes, kind: "Generated file")
-            let size = text.utf8.count
-            guard size <= maximumGeneratedTextBytes - totalBytes else {
-                throw SwiftPodsError("Generated text exceeds the 128 MiB aggregate limit")
+            guard type == S_IFREG, matches else { continue }
+            guard let contents = expected[relative], try generatedFile(at: url, matches: contents) else {
+                matches = false
+                continue
             }
-            totalBytes += size
-            guard result.updateValue(text, forKey: relative) == nil else {
-                throw SwiftPodsError("Generated directory contains a duplicate path: \(relative)")
-            }
+            matched += 1
         }
         if let enumerationError { throw SwiftPodsError("Cannot inspect generated directory \(directory.path): \(enumerationError)") }
-        return result
+        return matches && matched == expected.count
+    }
+
+    /// Reads at most the expected size, so the comparison stays within the limits of the staged output.
+    private static func generatedFile(at url: URL, matches contents: Data) throws -> Bool {
+        let descriptor = url.path.withCString { open($0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK) }
+        guard descriptor >= 0 else {
+            throw SwiftPodsError("Cannot safely read generated file: \(String(cString: strerror(errno)))", file: url.path)
+        }
+        var information = stat()
+        guard fstat(descriptor, &information) == 0, information.st_size == contents.count else {
+            close(descriptor)
+            return false
+        }
+        return try readBoundedRegularData(
+            descriptor, maximumBytes: contents.count, kind: "Generated file", file: url.path) == contents
     }
 
     private static func isSafeGeneratedPath(_ path: String) -> Bool {
@@ -3816,29 +3830,6 @@ public struct Installer: Sendable {
             && left.st_mtimespec.tv_nsec == right.st_mtimespec.tv_nsec
             && left.st_ctimespec.tv_sec == right.st_ctimespec.tv_sec
             && left.st_ctimespec.tv_nsec == right.st_ctimespec.tv_nsec
-    }
-
-    private static func readBoundedRegularText(
-        _ file: URL, maximumBytes: Int, kind: String = "File list"
-    ) throws -> String {
-        let descriptor = file.path.withCString { open($0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK) }
-        guard descriptor >= 0 else {
-            throw SwiftPodsError("Cannot safely read \(kind.lowercased()): \(String(cString: strerror(errno)))", file: file.path)
-        }
-        return try readBoundedRegularText(
-            descriptor, maximumBytes: maximumBytes, kind: kind, file: file.path)
-    }
-
-    /// Consumes and closes `descriptor`.
-    private static func readBoundedRegularText(
-        _ descriptor: Int32, maximumBytes: Int, kind: String, file: String
-    ) throws -> String {
-        let data = try readBoundedRegularData(
-            descriptor, maximumBytes: maximumBytes, kind: kind, file: file)
-        guard let text = String(data: data, encoding: .utf8) else {
-            throw SwiftPodsError("\(kind) must be valid UTF-8", file: file)
-        }
-        return text
     }
 
     /// Consumes and closes `descriptor`.
