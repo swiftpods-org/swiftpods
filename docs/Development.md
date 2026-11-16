@@ -48,7 +48,10 @@ Xcode builds and the project corpus check are opt-in:
   builds a local SDK shared by an app and two static plugins in Simulator Debug/Release
   and unsigned iOS Release, with `-ObjC` and script sandboxing. It checks archive
   members and final symbols, then updates/removes the SDK and deintegrates without
-  cleaning DerivedData. It needs Xcode and iOS SDKs, but no network dependencies.
+  cleaning DerivedData. The archive regression also builds local static and dynamic
+  Swift frameworks, overrides plugin product directories, uses project and DerivedData
+  paths with spaces, and repeats device/simulator archives before and after relocating
+  public headers and removing integration. It needs Xcode and iOS SDKs, but no network dependencies.
 - `SWIFTPODS_PBX_CORPUS=/path/to/projects swift test --filter testCorpusRoundTrip`
   checks that real `project.pbxproj` files (any file names in that directory)
   round-trip byte for byte. Keep private projects outside the repository.

@@ -83,7 +83,7 @@ final class StaticPackageIntegrationTests: XCTestCase {
         }.joined()
     }
 
-    private func fixture() throws -> URL {
+    private func fixture(customProducts: Bool = false) throws -> URL {
         let directory = try Fixtures.directory(podfile: podfile(), files: packageFiles)
         var project = try XcodeProject(path: directory.appendingPathComponent("App.xcodeproj"))
         let app = project.nativeTargets.first { $0.name == "App" }!.id
@@ -128,6 +128,22 @@ final class StaticPackageIntegrationTests: XCTestCase {
                     settings["GENERATE_INFOPLIST_FILE"] = "YES"
                     settings["PRODUCT_BUNDLE_IDENTIFIER"] = "org.swiftpods.static-packages"
                     settings["OTHER_LDFLAGS"] = "$(inherited) -ObjC"
+                    if customProducts {
+                        // Unsigned builds cannot re-sign frameworks after stripping them during embedding.
+                        settings["COPY_PHASE_STRIP"] = "NO"
+                        // Keep the Release executable's symbol table for the archive duplicate-symbol checks.
+                        settings["STRIP_INSTALLED_PRODUCT"] = "NO"
+                        // The application's own static libraries use custom locations. Archive installs
+                        // SKIP_INSTALL products in UninstalledProducts regardless of CONFIGURATION_BUILD_DIR.
+                        settings["FIXTURE_PLUGIN_LIBRARY_PATHS_NO"] = .string(["Plugin", "PluginTwo"].map {
+                            "\"$(PROJECT_DIR)/Plugin Products/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)/\($0)\""
+                        }.joined(separator: " "))
+                        settings["FIXTURE_PLUGIN_LIBRARY_PATHS_YES"] = "\"$(OBJROOT)/UninstalledProducts/$(PLATFORM_NAME)\""
+                        settings["LIBRARY_SEARCH_PATHS"] = "$(inherited) $(FIXTURE_PLUGIN_LIBRARY_PATHS_$(DEPLOYMENT_LOCATION))"
+                    }
+                } else if customProducts {
+                    settings["CONFIGURATION_BUILD_DIR"] = "$(PROJECT_DIR)/Plugin Products/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)/$(TARGET_NAME)"
+                    settings["SKIP_INSTALL"] = "YES"
                 }
                 project[id]!["buildSettings"] = .dictionary(settings)
             }
@@ -310,6 +326,198 @@ final class StaticPackageIntegrationTests: XCTestCase {
         try build("Release", "iOS Simulator", sdk: false)
     }
 
+    private func addFrameworkSDKs(to directory: URL) throws {
+        let runner = ProcessRunner()
+        // Build a local static Swift XCFramework, including its Objective-C API, without network dependencies.
+        let source = directory.appendingPathComponent("Binary.swift")
+        try "import Foundation\n@objc(SPBinaryBridge) public final class BinaryBridge: NSObject { @objc public static func value() -> Int32 { 13 } }\n"
+            .write(to: source, atomically: true, encoding: .utf8)
+        var frameworks: [String] = []
+        for (sdk, triple) in [("iphoneos", "arm64-apple-ios15.0"), ("iphonesimulator", "arm64-apple-ios15.0-simulator")] {
+            let framework = directory.appendingPathComponent("BinaryBuild/\(sdk)/SDKBinary.framework")
+            let headers = framework.appendingPathComponent("Headers")
+            let modules = framework.appendingPathComponent("Modules")
+            try FileManager.default.createDirectory(at: headers, withIntermediateDirectories: true)
+            try FileManager.default.createDirectory(at: modules.appendingPathComponent("SDKBinary.swiftmodule"), withIntermediateDirectories: true)
+            let sdkPath = try runner.run("/usr/bin/xcrun", ["--sdk", sdk, "--show-sdk-path"], in: nil).trimmingCharacters(in: .whitespacesAndNewlines)
+            let moduleTriple = sdk == "iphoneos" ? "arm64-apple-ios" : "arm64-apple-ios-simulator"
+            _ = try runner.run("/usr/bin/xcrun", ["--sdk", sdk, "swiftc", "-warnings-as-errors", "-sdk", sdkPath,
+                "-target", triple, "-swift-version", "5", "-parse-as-library", "-emit-library", "-static", "-emit-module", "-module-name", "SDKBinary",
+                "-enable-library-evolution", "-emit-module-interface-path", modules.appendingPathComponent("SDKBinary.swiftmodule/\(moduleTriple).swiftinterface").path,
+                "-emit-module-path", modules.appendingPathComponent("SDKBinary.swiftmodule/\(moduleTriple).swiftmodule").path,
+                "-emit-objc-header-path", headers.appendingPathComponent("SDKBinary-Swift.h").path,
+                source.path, "-o", framework.appendingPathComponent("SDKBinary").path], in: directory)
+            try "framework module SDKBinary { header \"SDKBinary-Swift.h\" export * }\n"
+                .write(to: modules.appendingPathComponent("module.modulemap"), atomically: true, encoding: .utf8)
+            try PropertyListSerialization.data(fromPropertyList: ["CFBundleIdentifier": "org.swiftpods.sdk-binary",
+                "CFBundleExecutable": "SDKBinary", "CFBundleName": "SDKBinary", "CFBundlePackageType": "FMWK"], format: .xml, options: 0)
+                .write(to: framework.appendingPathComponent("Info.plist"))
+            frameworks += ["-framework", framework.path]
+        }
+        _ = try runner.run("/usr/bin/xcrun", ["xcodebuild", "-create-xcframework"] + frameworks + ["-output",
+            directory.appendingPathComponent("Modules/SharedSDK/SDKBinary.xcframework").path], in: directory)
+        let manifest = directory.appendingPathComponent("Modules/SharedSDK/Package.swift")
+        try String(contentsOf: manifest, encoding: .utf8)
+            .replacingOccurrences(of: "[\"SDKInternal\", .product", with: "[\"SDKBinary\", \"SDKInternal\", .product")
+            .replacingOccurrences(of: ".library(name: \"SharedSDK\", targets: [\"SDKBridge\"])",
+                with: ".library(name: \"SharedSDK\", targets: [\"SDKBridge\"]), .library(name: \"SDKDynamic\", type: .dynamic, targets: [\"SDKDynamic\"])")
+            .replacingOccurrences(of: ".target(name: \"SDKInternal\")",
+                with: ".target(name: \"SDKInternal\"), .binaryTarget(name: \"SDKBinary\", path: \"SDKBinary.xcframework\"), .target(name: \"SDKDynamic\")")
+            .write(to: manifest, atomically: true, encoding: .utf8)
+        let dynamic = directory.appendingPathComponent("Modules/SharedSDK/Sources/SDKDynamic/Dynamic.swift")
+        try FileManager.default.createDirectory(at: dynamic.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "import Foundation\n@objc(SPDynamicBridge) public final class DynamicBridge: NSObject { @objc public static func value() -> Int32 { 17 } }\n"
+            .write(to: dynamic, atomically: true, encoding: .utf8)
+        try podfile().replacingOccurrences(of: "['SharedSDK']", with: "['SharedSDK', 'SDKDynamic']")
+            .write(to: directory.appendingPathComponent("Podfile"), atomically: true, encoding: .utf8)
+        let consumer = directory.appendingPathComponent("plugin.m")
+        try String(contentsOf: consumer, encoding: .utf8)
+            .replacingOccurrences(of: "@import SDKBridge;", with: "@import SDKBridge;\n@import SDKBinary;\n@import SDKDynamic;")
+            .replacingOccurrences(of: "return [SPSharedBridge value]", with: "return [SPBinaryBridge value] + [SPDynamicBridge value] + [SPSharedBridge value]")
+            .write(to: consumer, atomically: true, encoding: .utf8)
+    }
+
+    private func embedDynamicSDK(in directory: URL) throws -> Set<String> {
+        // A regular Copy Files phase embeds the dynamic product. All compiler search paths
+        // still come exclusively from SwiftPods, with no Podfile path overrides.
+        var project = try XcodeProject(path: directory.appendingPathComponent("App.xcodeproj"))
+        let app = try XCTUnwrap(project.nativeTargets.first { $0.name == "App" })
+        let product = try XCTUnwrap(project[app.id]!.strings("packageProductDependencies").first {
+            project[$0]?.string("productName") == "SDKDynamic"
+        })
+        let file = project.put("fixture:embed-dynamic-framework", ["isa": "PBXBuildFile", "productRef": .string(product),
+            "settings": ["ATTRIBUTES": ["RemoveHeadersOnCopy"]]])
+        let phase = project.put("fixture:embed-dynamic-frameworks", ["isa": "PBXCopyFilesBuildPhase", "buildActionMask": "2147483647",
+            "dstPath": "", "dstSubfolderSpec": "10", "files": .array([.string(file)]), "name": "Embed SDKDynamic", "runOnlyForDeploymentPostprocessing": "0"])
+        project.append(phase, to: "buildPhases", of: app.id)
+        _ = try project.save()
+        return [file, phase]
+    }
+
+    func testXcodeArchivesWithCustomPluginProductsAndSpacedPaths() throws {
+        guard ProcessInfo.processInfo.environment["SWIFTPODS_E2E"] == "1" else { throw XCTSkip("Set SWIFTPODS_E2E=1 to build with Xcode") }
+        let packageRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let root = packageRoot.appendingPathComponent(".build/archive-package-integration-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let directory = root.appendingPathComponent("Project With Spaces", isDirectory: true)
+        try FileManager.default.moveItem(at: fixture(customProducts: true), to: directory)
+        let derived = root.appendingPathComponent("Derived Data With Spaces", isDirectory: true)
+        let original = try XcodeProject(path: directory.appendingPathComponent("App.xcodeproj")).objects
+        try addFrameworkSDKs(to: directory)
+        let installer = Installer(directory: directory, cache: directory.appendingPathComponent(".cache"))
+        _ = try installer.install(InstallOptions())
+        let embeddedFramework = try embedDynamicSDK(in: directory)
+        _ = try installer.install(InstallOptions())
+        XCTAssertEqual(try installer.install(InstallOptions()).projects.flatMap(\.changes), [])
+        try assertBuildDependencies(directory, linked: false)
+        try assertBuildDependencies(directory, linked: false, product: "SDKDynamic")
+        let runner = ProcessRunner()
+        var publicHeaders = "Modules/CSupport/Sources/SDKC/include"
+        func build(_ action: String, _ configuration: String, _ platform: String, sdk: Bool = true) throws {
+            let platformName = platform == "iOS" ? "iphoneos" : "iphonesimulator"
+            let configurationName = configuration + "-" + platformName
+            let archive = derived.appendingPathComponent(configurationName + ".xcarchive")
+            let log: String
+            do {
+                // SwiftPM's test host can export a macOS SDKROOT; Xcode must select the target SDK.
+                log = try runner.run("/usr/bin/env", ["-u", "SDKROOT", "/usr/bin/xcrun", "xcodebuild", action,
+                    "-sdk", platformName, "-project", "App.xcodeproj", "-scheme", "App",
+                    "-configuration", configuration, "-destination", "generic/platform=\(platform)", "-derivedDataPath", derived.path,
+                    "-archivePath", archive.path, "ARCHS=arm64"], in: directory)
+            } catch let error as SwiftPodsError {
+                if let output = error.commandFailure?.output { print(String(decoding: output, as: UTF8.self)) }
+                throw error
+            }
+            XCTAssertTrue(log.contains("** \(action.uppercased()) SUCCEEDED **"), log)
+            XCTAssertFalse(log.contains("warning:"), log)
+            if sdk { XCTAssertTrue(log.contains("/usr/bin/sandbox-exec"), log) }
+            let intermediates = derived.appendingPathComponent("Build/Intermediates.noindex")
+            let objectRoot = action == "archive"
+                ? intermediates.appendingPathComponent("ArchiveIntermediates/App/IntermediateBuildFilesPath") : intermediates
+            for plugin in ["Plugin", "PluginTwo"] {
+                let library = action == "archive"
+                    ? objectRoot.appendingPathComponent("UninstalledProducts/\(platformName)/lib\(plugin).a")
+                    : directory.appendingPathComponent("Plugin Products/\(configurationName)/\(plugin)/lib\(plugin).a")
+                let members = try runner.run("/usr/bin/xcrun", ["ar", "-t", library.path], in: nil)
+                let objects = members.split(separator: "\n").filter { $0.hasSuffix(".o") }
+                XCTAssertFalse(objects.isEmpty, members)
+                XCTAssertTrue(objects.allSatisfy { $0.lowercased().hasPrefix("plugin") }, members)
+                let definitions = try runner.run("/usr/bin/xcrun", ["nm", "-gU", library.path], in: nil)
+                for name in ["SPSharedBridge", "SPInternalBridge", "SPBinaryBridge", "SPDynamicBridge"] {
+                    XCTAssertFalse(definitions.contains("_OBJC_CLASS_$_" + name), definitions)
+                }
+                if sdk {
+                    let flags = try String(contentsOf: objectRoot.appendingPathComponent(
+                        "App.build/\(configurationName)/\(plugin).build/DerivedSources/SwiftPodsPackageModules/clang.rsp"), encoding: .utf8)
+                    XCTAssertTrue(flags.contains(directory.appendingPathComponent(publicHeaders).path), flags)
+                    if publicHeaders.hasSuffix("Public Headers") {
+                        XCTAssertFalse(flags.contains(directory.appendingPathComponent("Modules/CSupport/Sources/SDKC/include").path), flags)
+                    }
+                }
+                print("\(action) \(configurationName) \(plugin): \(objects.joined(separator: ", "))")
+            }
+            let app = action == "archive" ? archive.appendingPathComponent("Products/Applications/App.app")
+                : derived.appendingPathComponent("Build/Products/\(configurationName)/App.app")
+            let debugLibrary = app.appendingPathComponent("App.debug.dylib")
+            let executable = FileManager.default.fileExists(atPath: debugLibrary.path) ? debugLibrary : app.appendingPathComponent("App")
+            let definitions = try runner.run("/usr/bin/xcrun", ["nm", "-gU", executable.path], in: nil)
+            for symbol in ["_OBJC_CLASS_$_SPSharedBridge", "_OBJC_CLASS_$_SPInternalBridge", "_OBJC_CLASS_$_SPBinaryBridge", "_sdk_value", "_sdk_base"] {
+                XCTAssertEqual(definitions.split(separator: "\n").filter { $0.hasSuffix(" " + symbol) }.count, sdk ? 1 : 0, definitions)
+            }
+            let libraries = try runner.run("/usr/bin/xcrun", ["otool", "-L", executable.path], in: nil)
+            XCTAssertEqual(libraries.split(separator: "\n").filter { $0.contains("@rpath/SDKDynamic.framework/SDKDynamic ") }.count, sdk ? 1 : 0, libraries)
+            if sdk {
+                let dynamic = try runner.run("/usr/bin/xcrun", ["nm", "-gU", app.appendingPathComponent("Frameworks/SDKDynamic.framework/SDKDynamic").path], in: nil)
+                XCTAssertEqual(dynamic.split(separator: "\n").filter { $0.hasSuffix(" _OBJC_CLASS_$_SPDynamicBridge") }.count, 1, dynamic)
+            }
+            print("\(action) \(configurationName): SDK definitions and dynamic linkage verified (expected \(sdk ? 1 : 0))")
+        }
+        for (action, configuration, platform) in [
+            ("build", "Release", "iOS Simulator"), ("build", "Release", "iOS"),
+            ("archive", "Release", "iOS"), ("archive", "Release", "iOS Simulator"), ("build", "Debug", "iOS Simulator"),
+            ("build", "Release", "iOS Simulator"), ("archive", "Release", "iOS"),
+        ] {
+            try build(action, configuration, platform)
+            XCTAssertEqual(try installer.install(InstallOptions()).projects.flatMap(\.changes), [])
+        }
+        // Leave both old package PIF records and archive descriptions in place. Only the live
+        // description may select public headers after their location changes.
+        let cSupport = directory.appendingPathComponent("Modules/CSupport")
+        try FileManager.default.moveItem(at: cSupport.appendingPathComponent("Sources/SDKC/include"),
+            to: cSupport.appendingPathComponent("Sources/SDKC/Public Headers"))
+        let manifest = cSupport.appendingPathComponent("Package.swift")
+        try String(contentsOf: manifest, encoding: .utf8).replacingOccurrences(
+            of: ".target(name: \"SDKC\", dependencies: [\"SDKBase\"])",
+            with: ".target(name: \"SDKC\", dependencies: [\"SDKBase\"], publicHeadersPath: \"Public Headers\")")
+            .write(to: manifest, atomically: true, encoding: .utf8)
+        publicHeaders = "Modules/CSupport/Sources/SDKC/Public Headers"
+        XCTAssertEqual(try installer.install(InstallOptions()).projects.flatMap(\.changes), [])
+        try build("archive", "Release", "iOS")
+        try build("build", "Release", "iOS Simulator")
+        // Remove integration and rebuild/archive without cleaning any build or module caches.
+        var project = try XcodeProject(path: directory.appendingPathComponent("App.xcodeproj"))
+        project.remove(embeddedFramework)
+        _ = try project.save()
+        for (path, text) in [
+            "main.swift": "import AppIntents\n@_silgen_name(\"plugin_one\") func one() -> Int32\n@_silgen_name(\"plugin_two\") func two() -> Int32\n@_silgen_name(\"plugin_three\") func three() -> Int32\nprint(one() + two() + three())\n",
+            "plugin.swift": "@_cdecl(\"plugin_one\") public func pluginOne() -> Int32 { 1 }\n",
+            "plugin.m": "int plugin_two(void) { return 2; }\n",
+            "plugin.mm": "extern \"C\" int plugin_three(void) { return 3; }\n",
+            "Podfile": "target 'App' do\nend\ntarget 'Plugin' do\nend\ntarget 'PluginTwo' do\nend\n",
+        ] {
+            try text.write(to: directory.appendingPathComponent(path), atomically: true, encoding: .utf8)
+        }
+        _ = try installer.install(InstallOptions())
+        XCTAssertEqual(try installer.install(InstallOptions()).projects.flatMap(\.changes), [])
+        try build("build", "Release", "iOS Simulator", sdk: false)
+        try build("archive", "Release", "iOS", sdk: false)
+        _ = try installer.deintegrate()
+        XCTAssertEqual(try XcodeProject(path: directory.appendingPathComponent("App.xcodeproj")).objects, original)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("SwiftPods").path))
+        try build("archive", "Release", "iOS", sdk: false)
+    }
+
     func testModuleBridgeUsesTheCurrentClosureAndSourceModuleMaps() throws {
         let directory = try Fixtures.directory()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -377,6 +585,46 @@ final class StaticPackageIntegrationTests: XCTestCase {
         XCTAssertTrue(flags.contains("Custom SDK/include"), flags)
         XCTAssertTrue(flags.contains("-I\"\(publicRoot.path)\""), flags)
         XCTAssertFalse(flags.contains("Old SDK"), flags)
+        // Archive has a separate live manifest and uses the shared PIF cache above ArchiveIntermediates.
+        let intermediates = directory.appendingPathComponent("Archive/Intermediates.noindex")
+        let archiveData = intermediates.appendingPathComponent("ArchiveIntermediates/App/IntermediateBuildFilesPath/XCBuildData")
+        let sharedData = intermediates.appendingPathComponent("XCBuildData")
+        try FileManager.default.createDirectory(at: archiveData.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: sharedData, withIntermediateDirectories: true)
+        try FileManager.default.copyItem(at: directory.appendingPathComponent("Cache"), to: archiveData)
+        try FileManager.default.moveItem(at: archiveData.appendingPathComponent("PIFCache"), to: sharedData.appendingPathComponent("PIFCache"))
+        _ = try runner.run(executable.path, [directory.appendingPathComponent("Maps").path, output.path,
+            current.path, dynamic.path, archiveData.path], in: nil)
+        let archiveFlags = try String(contentsOf: output.appendingPathComponent("clang.rsp"), encoding: .utf8)
+        XCTAssertTrue(archiveFlags.contains("-I\"\(publicRoot.path)\""), archiveFlags)
+        XCTAssertFalse(archiveFlags.contains("Old SDK"), archiveFlags)
+        let consumer = try write("consumer.m", "#include <SDK_Base/SDKBase.h>\nint consume(void) { return sdk_base(); }\n")
+        _ = try runner.run("/usr/bin/xcrun", ["--sdk", "macosx", "clang", "-fsyntax-only", "-Werror",
+            "@" + output.appendingPathComponent("clang.rsp").path, consumer.path], in: nil)
+        // An existing archive-local cache must not hide current records in the shared cache.
+        let localCache = archiveData.appendingPathComponent("PIFCache/target")
+        try FileManager.default.createDirectory(at: localCache, withIntermediateDirectories: true)
+        try JSONSerialization.data(withJSONObject: staleRecord).write(to: localCache.appendingPathComponent("TARGET-stale-json"))
+        _ = try runner.run(executable.path, [directory.appendingPathComponent("Maps").path, output.path,
+            current.path, dynamic.path, archiveData.path], in: nil)
+        let combinedFlags = try String(contentsOf: output.appendingPathComponent("clang.rsp"), encoding: .utf8)
+        XCTAssertTrue(combinedFlags.contains("-I\"\(publicRoot.path)\""), combinedFlags)
+        XCTAssertTrue(combinedFlags.contains(originalMap.deletingLastPathComponent().path), combinedFlags)
+        XCTAssertFalse(combinedFlags.contains("Old SDK"), combinedFlags)
+        // The shared intermediates root need not have Xcode's default Intermediates.noindex name.
+        let custom = directory.appendingPathComponent("Custom Intermediates")
+        try FileManager.default.copyItem(at: intermediates, to: custom)
+        _ = try runner.run(executable.path, [directory.appendingPathComponent("Maps").path, output.path,
+            current.path, dynamic.path, custom.appendingPathComponent("ArchiveIntermediates/App/IntermediateBuildFilesPath/XCBuildData").path], in: nil)
+        XCTAssertEqual(try String(contentsOf: output.appendingPathComponent("clang.rsp"), encoding: .utf8), combinedFlags)
+        // The current archive description can change while every cached record remains present.
+        try (signature + "\n" + oldSignature + "\n")
+            .write(to: archiveData.appendingPathComponent("prior-build-descriptions.txt"), atomically: true, encoding: .utf8)
+        _ = try runner.run(executable.path, [directory.appendingPathComponent("Maps").path, output.path,
+            current.path, dynamic.path, archiveData.path], in: nil)
+        let archiveMap = try String(contentsOf: output.appendingPathComponent("module.modulemap"), encoding: .utf8)
+        XCTAssertTrue(archiveMap.contains(staleMap.path), archiveMap)
+        XCTAssertFalse(archiveMap.contains(originalMap.path), archiveMap)
         // Switch between cached build descriptions without cleaning, regardless of their timestamps.
         try (signature + "\n" + oldSignature + "\n")
             .write(to: directory.appendingPathComponent("Cache/prior-build-descriptions.txt"), atomically: true, encoding: .utf8)

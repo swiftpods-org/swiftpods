@@ -164,6 +164,7 @@ enum TargetScripts {
             "$(TEMP_DIR)/$(PRODUCT_NAME).DependencyStaticMetadataFileList",
             "$(TEMP_DIR)/$(PRODUCT_NAME).DependencyMetadataFileList",
             "$(OBJROOT)/XCBuildData",
+            "$(OBJROOT)/$(SWIFTPODS_PIF_CACHE_PREFIX_$(OBJROOT:file))XCBuildData/PIFCache",
             sourceRootFileListPath(join(paths.target, "package-modules.swift")),
         ] : (packageModules.isEmpty ? [] : [generatedPackageModuleMaps])
         let moduleMapOutputs = compileOnlyPackages ? [packageModuleSearchPath, packageModuleSearchPath + "/module.modulemap", packageModuleSearchPath + "/clang.rsp"] : (

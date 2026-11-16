@@ -104,10 +104,16 @@ enum PackageModuleBridge {
                 text.first == "-" || text.hasPrefix("'-") || text.hasPrefix("\"-") else { continue }
             collect(try words(text))
         }
-        let cache = buildData.appendingPathComponent("PIFCache/target", isDirectory: true)
+        var caches = [buildData.appendingPathComponent("PIFCache/target", isDirectory: true)]
+        // Archive writes its live manifest below ArchiveIntermediates but shares the normal PIF cache.
+        // Inspect both locations: an archive-local cache can exist and contain only stale records.
+        if let index = buildData.pathComponents.lastIndex(of: "ArchiveIntermediates") {
+            let intermediates = URL(fileURLWithPath: NSString.path(withComponents: Array(buildData.pathComponents[..<index])), isDirectory: true)
+            caches.append(intermediates.appendingPathComponent("XCBuildData/PIFCache/target", isDirectory: true))
+        }
         var recordedMaps: [String: Set<String>] = [:]
         var publicIncludes: [String: Set<String>] = [:]
-        if FileManager.default.fileExists(atPath: cache.path) {
+        for cache in caches where FileManager.default.fileExists(atPath: cache.path) {
             let records = try FileManager.default.contentsOfDirectory(at: cache, includingPropertiesForKeys: [.fileSizeKey])
             guard records.count <= 20_000 else { throw NSError(domain: "SwiftPods package target cache is too large", code: 1) }
             for record in records where record.lastPathComponent.hasSuffix("-json") {

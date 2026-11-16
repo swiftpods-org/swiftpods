@@ -183,6 +183,18 @@ targets remain build dependencies, avoiding empty archive-member warnings.
 Compile-only targets enable recursive script inputs so the declared module-map
 and XCBuildData directories also grant read access to their contents.
 
+Compile-only framework and Swift module searches use the shared package products
+at `$(BUILD_DIR)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)` and its
+`PackageFrameworks` directory. Static plugins may override
+`CONFIGURATION_BUILD_DIR`, so their `BUILT_PRODUCTS_DIR` is insufficient during
+archive. Generated search paths retain inherited values and quote each path.
+Archive's live XCBuildData remains the source of truth even when PIF records
+reside in the shared intermediates directory above `ArchiveIntermediates`.
+Both caches are filtered against that live description, including when a stale
+archive-local cache exists. Prepare declares the shared PIF cache separately for
+script sandboxing; its path follows `OBJROOT`, including custom intermediates
+locations, rather than assuming the default DerivedData directory.
+
 The project also references `SwiftPods/SwiftPodsDependencies` by a file
 reference and each target links its stable binary-container product
 `SwiftPods-<Target>`. Each target has a generated settings file and the phases

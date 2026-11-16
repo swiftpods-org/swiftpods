@@ -271,7 +271,7 @@ final class InstallerTests: XCTestCase {
         _ = try installer(directory).install(InstallOptions())
 
         let settings = try generated(directory, "Settings/App/Plugin.xcconfig")
-        XCTAssertTrue(settings.contains("HEADER_SEARCH_PATHS = $(inherited) $(DERIVED_FILE_DIR)/SwiftPodsPackageModules"), settings)
+        XCTAssertTrue(settings.contains("HEADER_SEARCH_PATHS = $(inherited) \"$(DERIVED_FILE_DIR)/SwiftPodsPackageModules\""), settings)
         XCTAssertFalse(settings.contains("LD_RUNPATH_SEARCH_PATHS"), settings)
         let prepare = try generated(directory, "Scripts/App/Plugin/prepare.sh")
         XCTAssertTrue(prepare.contains("package-modules.swift"), prepare)
@@ -280,12 +280,17 @@ final class InstallerTests: XCTestCase {
         XCTAssertTrue(bridge.contains("extern module"), bridge)
         XCTAssertTrue(settings.contains("OTHER_SWIFT_FLAGS = $(inherited) -Xcc"), settings)
         XCTAssertTrue(settings.contains("USE_RECURSIVE_SCRIPT_INPUTS_IN_SCRIPT_PHASES = YES"), settings)
+        XCTAssertTrue(settings.contains("FRAMEWORK_SEARCH_PATHS = $(inherited) \"$(BUILD_DIR)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)\" \"$(BUILD_DIR)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)/PackageFrameworks\" \"$(BUILT_PRODUCTS_DIR)/PackageFrameworks\""), settings)
+        XCTAssertTrue(settings.contains("SWIFT_INCLUDE_PATHS = $(inherited) \"$(BUILD_DIR)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)\""), settings)
         XCTAssertTrue(
             try generated(directory, "Scripts/App/Plugin/prepare.inputs.xcfilelist")
                 .contains("GeneratedModuleMaps$(EFFECTIVE_PLATFORM_NAME)"))
         XCTAssertTrue(
             try generated(directory, "Scripts/App/Plugin/prepare.inputs.xcfilelist")
                 .contains("$(OBJROOT)/XCBuildData\n"))
+        XCTAssertTrue(
+            try generated(directory, "Scripts/App/Plugin/prepare.inputs.xcfilelist")
+                .contains("$(OBJROOT)/$(SWIFTPODS_PIF_CACHE_PREFIX_$(OBJROOT:file))XCBuildData/PIFCache\n"))
         XCTAssertTrue(
             try generated(directory, "Scripts/App/Plugin/prepare.outputs.xcfilelist")
                 .contains("$(DERIVED_FILE_DIR)/SwiftPodsPackageModules/module.modulemap"))

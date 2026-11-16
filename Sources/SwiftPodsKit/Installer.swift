@@ -3388,15 +3388,22 @@ public struct Installer: Sendable {
             }
         }
         if packageModuleBridge || compileOnlyPackages {
-            lines.append("HEADER_SEARCH_PATHS = $(inherited) \(TargetScripts.packageModuleSearchPath)")
+            lines.append("HEADER_SEARCH_PATHS = $(inherited) \"\(TargetScripts.packageModuleSearchPath)\"")
         }
         if compileOnlyPackages {
             let arguments = TargetScripts.packageCompilerArguments
             lines.append("USE_RECURSIVE_SCRIPT_INPUTS_IN_SCRIPT_PHASES = YES")
+            // Archive redirects OBJROOT below ArchiveIntermediates/<scheme>/IntermediateBuildFilesPath.
+            // Resolve its shared PIF cache without assuming a DerivedData location or an ACTION value.
+            lines.append("SWIFTPODS_PIF_CACHE_PREFIX_IntermediateBuildFilesPath = ../../../")
             lines.append("OTHER_CFLAGS = $(inherited) \(arguments)")
             lines.append("OTHER_CPLUSPLUSFLAGS = $(inherited) \(arguments)")
             lines.append("OTHER_SWIFT_FLAGS = $(inherited) -Xcc \(arguments)")
-            lines.append("FRAMEWORK_SEARCH_PATHS = $(inherited) $(BUILT_PRODUCTS_DIR)/PackageFrameworks")
+            // CONFIGURATION_BUILD_DIR can point at a static plugin's own library directory,
+            // especially during archive. SwiftPM products remain in the shared build directory.
+            let packageProducts = "$(BUILD_DIR)/$(CONFIGURATION)$(EFFECTIVE_PLATFORM_NAME)"
+            lines.append("FRAMEWORK_SEARCH_PATHS = $(inherited) \"\(packageProducts)\" \"\(packageProducts)/PackageFrameworks\" \"$(BUILT_PRODUCTS_DIR)/PackageFrameworks\"")
+            lines.append("SWIFT_INCLUDE_PATHS = $(inherited) \"\(packageProducts)\"")
         }
         return lines.joined(separator: "\n") + "\n"
     }
