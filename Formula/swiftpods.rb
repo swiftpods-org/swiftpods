@@ -2,13 +2,13 @@ class Swiftpods < Formula
   desc "Dependency manager for Apple platform projects"
   homepage "https://swiftpods.org"
   if Hardware::CPU.arm?
-    url "https://github.com/swiftpods-org/swiftpods/releases/download/v0.3.15/swiftpods-0.3.15-macos-13.0-arm64.zip"
-    sha256 "d02079019ded4a6e764853070dc4c60d0de6b3d68a9dc7c14804d98101daab66"
+    url "https://github.com/swiftpods-org/swiftpods/releases/download/v0.3.16/swiftpods-0.3.16-macos-13.0-arm64.zip"
+    sha256 "e7a01421fa26a2d9cdd0e821a237239e825d9e7ba9a2f6e43c52ff801c8e2145"
   else
-    url "https://github.com/swiftpods-org/swiftpods/releases/download/v0.3.15/swiftpods-0.3.15-macos-13.0-x86_64.zip"
-    sha256 "da12ad7fd08d58006595c5cb40fe39a112bbe5bd4be9fbedf8a79c0ae48c6826"
+    url "https://github.com/swiftpods-org/swiftpods/releases/download/v0.3.16/swiftpods-0.3.16-macos-13.0-x86_64.zip"
+    sha256 "916adce0f44fdcf6862ef604d3c465d25107c944cf25d3b1bc5b342d834dc38a"
   end
-  version "0.3.15"
+  version "0.3.16"
   license "MIT"
 
   depends_on :macos
