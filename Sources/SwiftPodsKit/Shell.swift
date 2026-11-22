@@ -312,7 +312,8 @@ private final class TerminalSignalRelay {
             posix_spawnattr_setsigdefault(&attributes, &set)
             sigemptyset(&set)
             posix_spawnattr_setsigmask(&attributes, &set)
-            let argv = ["sh", "-c", script].map { strdup($0) } + [nil]
+            let arguments = ["sh", "-c", script]
+            let argv = arguments.map { strdup($0) } + [nil]
             defer { argv.forEach { free($0) } }
             let result = posix_spawn(&started, "/bin/sh", &actions, &attributes, argv, [nil])
             guard result == 0 else {
