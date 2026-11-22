@@ -43,12 +43,13 @@ struct PBXDocument: Sendable {
         }
         value = try PBXValue(propertyList: list)
         guard value.dictionary != nil else { throw XcodeError("A project file must contain a dictionary") }
-        try Self.validate(root, value: value)
+        try Self.validate(root, value: value, bytes: bytes)
     }
 
     /// Every concrete entry must map one-to-one to Foundation's decoded value. This rejects duplicate keys and
-    /// uncommon escaped spellings that the minimal-diff parser cannot safely associate with the decoded dictionary.
-    private static func validate(_ node: Node, value: PBXValue) throws(XcodeError) {
+    /// uncommon escaped spellings that the minimal-diff parser cannot safely associate with the decoded dictionary,
+    /// and any unquoted scalar the parser delimited differently from Foundation.
+    private static func validate(_ node: Node, value: PBXValue, bytes: [UInt8]) throws(XcodeError) {
         switch node.contents {
         case .dictionary(let entries):
             guard let dictionary = value.dictionary, entries.count == dictionary.count,
@@ -59,15 +60,19 @@ struct PBXDocument: Sendable {
                 guard let child = dictionary[entry.key] else {
                     throw XcodeError("Project dictionary key cannot be decoded safely")
                 }
-                try validate(entry.value, value: child)
+                try validate(entry.value, value: child, bytes: bytes)
             }
         case .array(let nodes, _):
             guard let values = value.array, nodes.count == values.count else {
                 throw XcodeError("Project array syntax does not match its decoded values")
             }
-            for (child, value) in zip(nodes, values) { try validate(child, value: value) }
+            for (child, value) in zip(nodes, values) { try validate(child, value: value, bytes: bytes) }
         case .scalar:
-            break
+            // An unquoted string is its own spelling. Quoted strings and data are decoded by Foundation alone.
+            guard let first = bytes[node.range].first, first != 34, first != 60 else { return }
+            guard value.string == String(decoding: bytes[node.range], as: UTF8.self) else {
+                throw XcodeError("Project value syntax does not match its decoded value")
+            }
         }
     }
 
@@ -82,7 +87,11 @@ struct PBXDocument: Sendable {
         }) {
             result.replaceSubrange(edit.range, with: edit.replacement.utf8)
         }
-        return Self.removingEmptySections(String(decoding: result, as: UTF8.self), keeping: text(0..<bytes.count))
+        let updated = Self.removingEmptySections(String(decoding: result, as: UTF8.self), keeping: text(0..<bytes.count))
+        // The minimal-diff text must read back as exactly `new`. Should an unusual spelling defeat that, write the
+        // whole file in the conventional format rather than a file Xcode cannot open.
+        if edits.isEmpty || (try? PBXDocument(updated))?.value == new { return updated }
+        return "// !$*UTF8*$!" + newline + formatted(new, indent: "") + newline
     }
 
     /// Xcode writes no empty object sections; drop those left by removed objects.
@@ -320,8 +329,8 @@ struct PBXDocument: Sendable {
             }
             while cursor < bytes.count {
                 let byte = bytes[cursor]
+                // As in Foundation, `//` and `/*` inside an unquoted string are part of it, not a comment.
                 if [9, 10, 13, 32, 40, 41, 44, 59, 61, 123, 125].contains(byte) { break }
-                if byte == 47 && cursor + 1 < bytes.count && [42, 47].contains(bytes[cursor + 1]) { break }
                 cursor += 1
             }
             guard cursor > start else { throw invalid() }

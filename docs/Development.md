@@ -24,7 +24,7 @@ See [Design](Design.md) for the decisions behind them.
 
 ```sh
 swift test -Xswiftc -warnings-as-errors
-swift test -c release -Xswiftc -DDEBUG -Xswiftc -warnings-as-errors
+swift test -c release -Xswiftc -warnings-as-errors
 python3 -m unittest discover -s Tests/Tooling -t . -p '*_tests.py'
 bundle exec ruby Tests/FastlanePlugin/run.rb
 ```
@@ -35,10 +35,8 @@ It does not run test suites or runtime smoke tests. After publication, test
 the downloaded release through a verified installation.
 
 Use the consumer's Xcode toolchain for both test configurations.
-The optimized unit suite retains `DEBUG` for test-host archive-worker discovery;
-the distribution is built without that test hook and checked through its CLI.
 Consumer checks must cover a fresh `install --resolve` and an unchanged repeat
-install; optimized builds can expose descriptor-lifetime errors absent in Debug.
+install.
 
 Xcode builds and the project corpus check are opt-in:
 

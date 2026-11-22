@@ -200,7 +200,12 @@ final class CatalogTests: XCTestCase {
         XCTAssertEqual(try requirement("'3.8.0.0.0'"), .exact(Version(308_000_000, 0, 0)))
         XCTAssertEqual(try requirement("exact: '11.4.1.2'"), .exact(Version(11_040_102, 0, 0)))
         XCTAssertEqual(try requirement("'~> 13.9.0.0'"), .range(Version(13_090_000, 0, 0), Version(13_090_100, 0, 0)))
-        XCTAssertEqual(try requirement("'~> 13.9'"), .range(Version(1_309, 0, 0), Version(1_400, 0, 0)))
+        XCTAssertTrue(
+            error("target 'App' do\n  spm 'AppLovinMediationGoogleAdapter', '~> 13.9'\nend\n")?.hint?.contains("13.9.0.0") == true,
+            "A shortened packed version would pack into different units than the published versions")
+        XCTAssertTrue(
+            error("target 'App' do\n  spm 'AppLovinMediationGoogleAdapter', exact: '~> 13.9.0.0'\nend\n")?.message
+                .contains("`exact` takes a version") == true)
         XCTAssertEqual(try requirement("'>= 13.9.0.0', '< 14.0.0.0'"), .range(Version(13_090_000, 0, 0), Version(14_000_000, 0, 0)))
         XCTAssertTrue(error("target 'App' do\n  spm 'AppLovinMediationGoogleAdapter', from: '13.9.0.0'\nend\n")?.message.contains("packed") == true)
         XCTAssertTrue(error("target 'App' do\n  spm 'AppLovinMediationGoogleAdapter', '13.100.0.0'\nend\n")?.message.contains("is not a version") == true)

@@ -12,89 +12,36 @@ public struct ManifestReader: Sendable {
         let text: String
         /// Stable path spelling used in diagnostics and generated freshness files.
         let path: String
-        /// Physical identity derived by the same resolution that selected the bytes.
+        /// The resolved path, which detects include cycles through links.
         let identity: String
-        /// Keeps the selected inode alive until the complete include graph has been evaluated.
-        let verification: SnapshotVerification?
-    }
-
-    fileprivate final class SnapshotVerification: @unchecked Sendable {
-        private let descriptor: Int32
-        private let requestedPath: String
-        private let identity: PathIdentity
-
-        init(descriptor: Int32, requestedPath: String, identity: PathIdentity) {
-            self.descriptor = descriptor
-            self.requestedPath = requestedPath
-            self.identity = identity
-        }
-
-        deinit { close(descriptor) }
-
-        func verify() throws {
-            var opened = stat()
-            guard fstat(descriptor, &opened) == 0, PathIdentity(opened) == identity else {
-                throw SnapshotError.pathChanged
-            }
-            var linked = stat()
-            guard requestedPath.withCString({ lstat($0, &linked) }) == 0,
-                PathIdentity(linked) == identity
-            else { throw SnapshotError.pathChanged }
-        }
-    }
-
-    fileprivate enum SnapshotError: LocalizedError {
-        case symbolicLink
-        case nonRegular
-        case tooLarge
-        case pathChanged
-        case unsafeCanonicalPath
-
-        var errorDescription: String? {
-            switch self {
-            case .symbolicLink: "Refusing a symbolic link manifest file"
-            case .nonRegular: "Refusing a non-regular manifest file"
-            case .tooLarge: "Manifest file is too large"
-            case .pathChanged: "Manifest path changed while it was being read"
-            case .unsafeCanonicalPath: "A canonical manifest path cannot contain control characters or backslashes"
-            }
-        }
     }
 
     private let read: @Sendable (String) throws -> Snapshot
     private let catalog: (any PackageCatalog)?
 
-    /// Reads manifests through a descriptor-anchored component walk. Symlink aliases are resolved once, then every
-    /// directory edge is kept open and checked again after the read so an ancestor A -> B -> A swap cannot attribute
-    /// B's bytes to A's canonical path.
     public init(catalog: (any PackageCatalog)? = nil) {
-        read = { try Self.secureSnapshot($0) }
+        read = { path in
+            let data = try Data(contentsOf: URL(fileURLWithPath: path))
+            guard data.count <= Self.maximumFileBytes else {
+                throw ManifestError("\(path) exceeds the \(Self.maximumFileBytes / 1_024 / 1_024) MiB limit", at: nil)
+            }
+            guard let text = String(data: data, encoding: .utf8) else { throw CocoaError(.fileReadInapplicableStringEncoding) }
+            return Snapshot(
+                text: text, path: standardizedManifestPath(path),
+                identity: physicalManifestPath(path) ?? canonicalManifestPath(path))
+        }
         self.catalog = catalog
     }
 
-    /// Test seam for deterministic filesystem-race coverage. Production callers use `init(catalog:)` above.
-    init(
-        catalog: (any PackageCatalog)? = nil,
-        beforeAncestorVerification: @escaping @Sendable () throws -> Void
-    ) {
-        read = { try Self.secureSnapshot($0, beforeAncestorVerification: beforeAncestorVerification) }
-        self.catalog = catalog
-    }
-
-    /// Injects a reader for tests and virtual filesystems. The injected reader is a trusted boundary and is responsible
-    /// for providing stable bytes; filesystem callers should use `init(catalog:)` above.
+    /// Injects a reader for tests and virtual filesystems.
     public init(
         read: @escaping @Sendable (String) throws -> String,
         catalog: (any PackageCatalog)? = nil
     ) {
         self.read = { path in
-            let before = physicalManifestPath(path) ?? canonicalManifestPath(path)
-            let display = standardizedManifestPath(path)
-            let text = try read(path)
-            guard (physicalManifestPath(path) ?? canonicalManifestPath(path)) == before else {
-                throw SnapshotError.pathChanged
-            }
-            return Snapshot(text: text, path: display, identity: before, verification: nil)
+            Snapshot(
+                text: try read(path), path: standardizedManifestPath(path),
+                identity: physicalManifestPath(path) ?? canonicalManifestPath(path))
         }
         self.catalog = catalog
     }
@@ -111,20 +58,16 @@ public struct ManifestReader: Sendable {
         guard isSafeManifestPath(snapshot.path), isSafeManifestPath(snapshot.identity) else {
             throw ManifestError("A canonical manifest path cannot contain control characters or backslashes", at: nil)
         }
-        return try evaluate(
-            snapshot.text, file: snapshot.path, identity: snapshot.identity,
-            verification: snapshot.verification)
+        return try evaluate(snapshot.text, file: snapshot.path, identity: snapshot.identity)
     }
 
     /// Evaluates Podfile text; includes resolve against the directory of `file`.
     public func evaluate(_ text: String, file: String) throws(ManifestError) -> Manifest {
         let file = canonicalManifestPath(file)
-        return try evaluate(text, file: file, identity: file, verification: nil)
+        return try evaluate(text, file: file, identity: file)
     }
 
-    private func evaluate(
-        _ text: String, file: String, identity: String, verification: SnapshotVerification?
-    ) throws(ManifestError) -> Manifest {
+    private func evaluate(_ text: String, file: String, identity: String) throws(ManifestError) -> Manifest {
         guard isSafeManifestPath(file), isSafeManifestPath(identity) else {
             throw ManifestError("A canonical manifest path cannot contain control characters or backslashes", at: nil)
         }
@@ -134,175 +77,13 @@ public struct ManifestReader: Sendable {
         let parserBudget = Parser.Budget()
         let rootStatements = try Parser.statements(text, file: file, budget: parserBudget)
         var evaluator = Evaluator(
-            read: read, catalog: catalog, file: file, rootIdentity: identity, rootVerification: verification,
+            read: read, catalog: catalog, file: file, rootIdentity: identity,
             rootContents: Data(text.utf8), bytesRead: text.utf8.count,
             maximumFileBytes: Self.maximumFileBytes, maximumTotalBytes: Self.maximumTotalBytes,
             maximumIncludeDepth: Self.maximumIncludeDepth, maximumManifestFiles: Self.maximumManifestFiles,
             parserBudget: parserBudget)
         try evaluator.readRoot(rootStatements)
         return try evaluator.manifest()
-    }
-
-    fileprivate struct PathIdentity: Equatable {
-        let device: UInt64
-        let inode: UInt64
-        let mode: UInt32
-        let links: UInt64
-        let size: Int64
-        let modifiedSeconds: Int64
-        let modifiedNanoseconds: Int64
-        let changedSeconds: Int64
-        let changedNanoseconds: Int64
-
-        init(_ status: stat) {
-            device = UInt64(status.st_dev)
-            inode = UInt64(status.st_ino)
-            mode = UInt32(status.st_mode)
-            links = UInt64(status.st_nlink)
-            size = status.st_size
-            modifiedSeconds = Int64(status.st_mtimespec.tv_sec)
-            modifiedNanoseconds = Int64(status.st_mtimespec.tv_nsec)
-            changedSeconds = Int64(status.st_ctimespec.tv_sec)
-            changedNanoseconds = Int64(status.st_ctimespec.tv_nsec)
-        }
-    }
-
-    /// A directory's contents may legitimately change while a manifest is read. Only the stable object identity and
-    /// file type are relevant when proving that an opened descriptor is still bound through the same parent edge.
-    private struct DirectoryIdentity: Equatable {
-        let device: UInt64
-        let inode: UInt64
-        let type: UInt32
-
-        init(_ status: stat) {
-            device = UInt64(status.st_dev)
-            inode = UInt64(status.st_ino)
-            type = UInt32(status.st_mode & S_IFMT)
-        }
-    }
-
-    private static func secureSnapshot(
-        _ requested: String, beforeAncestorVerification: (@Sendable () throws -> Void)? = nil
-    ) throws -> Snapshot {
-        var requestedInitial = stat()
-        guard requested.withCString({ lstat($0, &requestedInitial) }) == 0 else {
-            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
-        }
-        if requestedInitial.st_mode & S_IFMT == S_IFLNK { throw SnapshotError.symbolicLink }
-        guard requestedInitial.st_mode & S_IFMT == S_IFREG else {
-            throw SnapshotError.nonRegular
-        }
-        let requestedIdentity = PathIdentity(requestedInitial)
-        guard let pointer = requested.withCString({ realpath($0, nil) }) else {
-            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
-        }
-        defer { free(pointer) }
-        // Walk the physical path selected by this exact realpath call. Keep the caller's lexical spelling separately
-        // for diagnostics and freshness files; physical identity, rather than a second resolution, drives cycles.
-        let physical = String(cString: pointer)
-        let display = standardizedManifestPath(requested)
-        guard isSafeManifestPath(physical), physical.hasPrefix("/"), isSafeManifestPath(display) else {
-            throw SnapshotError.unsafeCanonicalPath
-        }
-        let components = URL(fileURLWithPath: physical).pathComponents.dropFirst()
-        guard let fileName = components.last, !fileName.isEmpty else {
-            throw CocoaError(.fileReadUnsupportedScheme)
-        }
-
-        let root = open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NONBLOCK)
-        guard root >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
-        var descriptors = [root]
-        var identities: [DirectoryIdentity] = []
-        defer { for descriptor in descriptors.reversed() { close(descriptor) } }
-        var rootStatus = stat()
-        guard fstat(root, &rootStatus) == 0 else { throw CocoaError(.fileReadUnknown) }
-        identities.append(DirectoryIdentity(rootStatus))
-
-        for component in components.dropLast() {
-            let descriptor = component.withCString {
-                openat(descriptors.last!, $0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
-            }
-            guard descriptor >= 0 else {
-                let code = errno
-                throw NSError(
-                    domain: NSPOSIXErrorDomain, code: Int(code),
-                    userInfo: [NSLocalizedDescriptionKey: "Cannot securely open directory component \(component): "
-                        + String(cString: strerror(code))])
-            }
-            var status = stat()
-            guard fstat(descriptor, &status) == 0, status.st_mode & S_IFMT == S_IFDIR else {
-                close(descriptor)
-                throw CocoaError(.fileReadUnsupportedScheme)
-            }
-            descriptors.append(descriptor)
-            identities.append(DirectoryIdentity(status))
-        }
-
-        let descriptor = fileName.withCString {
-            openat(descriptors.last!, $0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
-        }
-        guard descriptor >= 0 else {
-            if errno == ELOOP { throw CocoaError(.fileReadUnsupportedScheme) }
-            let code = errno
-            throw NSError(
-                domain: NSPOSIXErrorDomain, code: Int(code),
-                userInfo: [NSLocalizedDescriptionKey: "Cannot securely open manifest file \(fileName): "
-                    + String(cString: strerror(code))])
-        }
-        descriptors.append(descriptor)
-        var initial = stat()
-        guard fstat(descriptor, &initial) == 0, initial.st_mode & S_IFMT == S_IFREG else {
-            throw CocoaError(.fileReadUnsupportedScheme)
-        }
-        guard initial.st_size >= 0, initial.st_size <= maximumFileBytes else {
-            throw SnapshotError.tooLarge
-        }
-        let initialIdentity = PathIdentity(initial)
-        guard initialIdentity == requestedIdentity else { throw SnapshotError.pathChanged }
-        let reader = fcntl(descriptor, F_DUPFD_CLOEXEC, 0)
-        guard reader >= 0 else { throw CocoaError(.fileReadUnknown) }
-        let handle = FileHandle(fileDescriptor: reader, closeOnDealloc: true)
-        defer { try? handle.close() }
-        var data = Data()
-        while let chunk = try handle.read(upToCount: min(1 << 20, maximumFileBytes + 1 - data.count)), !chunk.isEmpty {
-            data.append(chunk)
-            guard data.count <= maximumFileBytes else { throw SnapshotError.tooLarge }
-        }
-        var final = stat()
-        guard fstat(descriptor, &final) == 0, PathIdentity(final) == initialIdentity,
-            data.count == Int(initial.st_size)
-        else { throw SnapshotError.pathChanged }
-        try beforeAncestorVerification?()
-        for index in identities.indices {
-            var opened = stat()
-            guard fstat(descriptors[index], &opened) == 0, DirectoryIdentity(opened) == identities[index] else {
-                throw SnapshotError.pathChanged
-            }
-            if index + 1 < identities.count {
-                var linked = stat()
-                let component = components[components.index(components.startIndex, offsetBy: index)]
-                guard component.withCString({ fstatat(descriptors[index], $0, &linked, AT_SYMLINK_NOFOLLOW) }) == 0,
-                    DirectoryIdentity(linked) == identities[index + 1]
-                else { throw SnapshotError.pathChanged }
-            }
-        }
-        var linkedFile = stat()
-        guard fileName.withCString({ fstatat(descriptors[descriptors.count - 2], $0, &linkedFile, AT_SYMLINK_NOFOLLOW) }) == 0,
-            PathIdentity(linkedFile) == initialIdentity
-        else { throw SnapshotError.pathChanged }
-        var requestedFinal = stat()
-        guard requested.withCString({ lstat($0, &requestedFinal) }) == 0,
-            PathIdentity(requestedFinal) == requestedIdentity
-        else { throw SnapshotError.pathChanged }
-        guard let text = String(data: data, encoding: .utf8) else {
-            throw CocoaError(.fileReadInapplicableStringEncoding)
-        }
-        let retained = fcntl(descriptor, F_DUPFD_CLOEXEC, 0)
-        guard retained >= 0 else { throw CocoaError(.fileReadUnknown) }
-        return Snapshot(
-            text: text, path: display, identity: physical,
-            verification: SnapshotVerification(
-                descriptor: retained, requestedPath: display, identity: initialIdentity))
     }
 }
 
@@ -447,7 +228,6 @@ private struct Evaluator {
     var expanded: [ExpansionKey: Expanded] = [:]
     let catalogLookups = CatalogLookupCache()
     var files: [ManifestFile]
-    var snapshotVerifications: [ManifestReader.SnapshotVerification]
     var bytesRead: Int
     var groupExpansionWork = 0
     let maximumFileBytes: Int
@@ -458,7 +238,7 @@ private struct Evaluator {
 
     init(
         read: @escaping @Sendable (String) throws -> ManifestReader.Snapshot, catalog: (any PackageCatalog)?, file: String,
-        rootIdentity: String, rootVerification: ManifestReader.SnapshotVerification?,
+        rootIdentity: String,
         rootContents: Data, bytesRead: Int,
         maximumFileBytes: Int, maximumTotalBytes: Int, maximumIncludeDepth: Int,
         maximumManifestFiles: Int, parserBudget: Parser.Budget
@@ -467,7 +247,6 @@ private struct Evaluator {
         self.catalog = catalog
         self.file = file
         files = [ManifestFile(path: file, contents: rootContents)]
-        snapshotVerifications = rootVerification.map { [$0] } ?? []
         self.bytesRead = bytesRead
         self.maximumFileBytes = maximumFileBytes
         self.maximumTotalBytes = maximumTotalBytes
@@ -599,8 +378,6 @@ private struct Evaluator {
         let snapshot: ManifestReader.Snapshot
         do {
             snapshot = try read(requestedPath)
-        } catch ManifestReader.SnapshotError.pathChanged {
-            throw ManifestError("Included path changed while it was being read", at: statement.location)
         } catch {
             throw ManifestError("Cannot read included file \(requestedPath): \(error.localizedDescription)", at: statement.location)
         }
@@ -617,7 +394,6 @@ private struct Evaluator {
                 "Podfile and its includes exceed the \(maximumManifestFiles)-file limit", at: statement.location)
         }
         included.insert(snapshot.identity)
-        if let verification = snapshot.verification { snapshotVerifications.append(verification) }
         let text = snapshot.text
         guard text.utf8.count <= maximumFileBytes else {
             throw ManifestError("Included file \(path) exceeds the \(maximumFileBytes / 1_024 / 1_024) MiB limit", at: statement.location)
@@ -1026,7 +802,7 @@ private struct Evaluator {
                         "`\(key)` is not available for `\(name)`, whose versions are packed", at: node.location,
                         hint: "Write the version as the vendor does: '13.9.0.0' or '~> 13.9.0.0'")
                 }
-                requirements.append(try Requirement.parsePacked([(try Convert.versionText(node, "`exact`"), node.location)]))
+                requirements.append(try Requirement.parsePackedExact(try Convert.versionText(node, "`exact`"), at: node.location))
             } else {
                 requirements.append(try Self.requirement(key, node))
             }
@@ -1047,7 +823,7 @@ private struct Evaluator {
                 throw ManifestError("A package path must be relative and cannot contain ambiguous path components", at: pathNode.location)
             }
             location = .local(path: path)
-            identity = PackageLocation.identity(path)
+            identity = PackageLocation.localIdentity(path, relativeTo: (file as NSString).deletingLastPathComponent)
         } else {
             guard let url else { preconditionFailure("set above") }
             guard PackageLocation.isSafeRemote(url) else {
@@ -1289,11 +1065,31 @@ private struct Evaluator {
             throw ManifestError("`settings` needs at least one 'KEY' => 'value'", at: statement.location)
         }
         var result: [BuildSetting] = []
-        for (key, node) in arguments.settings {
-            guard safeText(key, maximumBytes: 4_096), !key.contains("\\"),
-                key.range(of: #"\A[A-Za-z_][A-Za-z0-9_]*(\[[^\[\]=]+=[^\[\]]+\])*\z"#, options: .regularExpression) != nil
+        for (spelledKey, node) in arguments.settings {
+            guard safeText(spelledKey, maximumBytes: 4_096), !spelledKey.contains("\\"),
+                spelledKey.range(of: #"\A[A-Za-z_][A-Za-z0-9_]*(\[[^\[\]=]+=[^\[\]]+\])*\z"#, options: .regularExpression) != nil
             else {
-                throw ManifestError("'\(key)' is not a build setting name", at: node.location)
+                throw ManifestError("'\(spelledKey)' is not a build setting name", at: node.location)
+            }
+            // `KEY[config=Debug]` means `configurations: ['Debug']`. Reading it that way lets two declarations of one
+            // setting for one configuration be compared, instead of both reaching the xcconfig.
+            var key = spelledKey
+            var selected: [String] = []
+            while let range = key.range(of: #"\[config=[^\[\]]+\]"#, options: .regularExpression) {
+                selected.append(String(key[range].dropFirst("[config=".count).dropLast()))
+                key.removeSubrange(range)
+            }
+            var settingConfigurations = configurations
+            if !selected.isEmpty {
+                guard configurations == nil, selected.count == 1 else {
+                    throw ManifestError(
+                        "'\(spelledKey)' restricts its configurations twice", at: node.location,
+                        hint: "Use either one [config=…] selector or `configurations:`")
+                }
+                guard !selected[0].contains("="), safeText(selected[0], maximumBytes: 4_096) else {
+                    throw ManifestError("'\(selected[0])' is not a configuration name", at: node.location)
+                }
+                settingConfigurations = selected
             }
             let value: String
             switch node.value {
@@ -1318,7 +1114,7 @@ private struct Evaluator {
             guard safeText(value) else {
                 throw ManifestError("A setting value cannot contain control characters or exceed 65536 bytes", at: node.location)
             }
-            result.append(BuildSetting(key: key, value: value, configurations: configurations, declaredAt: statement.location))
+            result.append(BuildSetting(key: key, value: value, configurations: settingConfigurations, declaredAt: statement.location))
         }
         return result
     }
@@ -1473,27 +1269,42 @@ private struct Evaluator {
                     at: binary.declaredAt)
             }
         }
+        try Self.rejectBinaryDependencyCycles(collector.binaries)
         guard !collector.targets.isEmpty else {
             throw ManifestError("The Podfile declares no targets", at: SourceLocation(file: file, line: 1, column: 1),
                 hint: "Add `target 'MyApp' do … end`")
         }
-        // Every file read was individually stable, but the graph must also describe one filesystem generation.
-        // Retained descriptors make an A -> B -> A directory swap observable after all includes are evaluated.
-        do {
-            for verification in snapshotVerifications { try verification.verify() }
-            for verification in snapshotVerifications.reversed() { try verification.verify() }
-        } catch {
-            throw ManifestError(
-                "Podfile or an included path changed while the manifest graph was being read", at: nil)
-        }
-        let verifications = snapshotVerifications
         return Manifest(
             file: file, files: files, includes: files.dropFirst().map(\.path), sources: sources, packages: collector.packages,
-            binaries: collector.binaries, targets: collector.targets,
-            verifyFileSnapshots: {
-                for verification in verifications { try verification.verify() }
-                for verification in verifications.reversed() { try verification.verify() }
-            })
+            binaries: collector.binaries, targets: collector.targets)
+    }
+
+    /// SwiftPM would reject a cyclic target graph only later and without naming the Podfile declarations.
+    private static func rejectBinaryDependencyCycles(_ binaries: [Binary]) throws(ManifestError) {
+        let byName = Dictionary(binaries.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+        var finished = Set<String>()
+        for root in binaries where !finished.contains(root.name) {
+            // Iterative depth-first search; `path` holds the binaries on the current branch.
+            var path: [String] = [root.name]
+            var pending: [[String]] = [byName[root.name]?.dependencies ?? []]
+            while let last = pending.indices.last {
+                guard let dependency = pending[last].first else {
+                    finished.insert(path.removeLast())
+                    pending.removeLast()
+                    continue
+                }
+                pending[last].removeFirst()
+                if finished.contains(dependency) { continue }
+                if let start = path.firstIndex(of: dependency) {
+                    let cycle = (path[start...] + [dependency]).map { "`\($0)`" }.joined(separator: " → ")
+                    throw ManifestError(
+                        "Binary dependencies form a cycle: \(cycle)", at: byName[dependency]?.declaredAt,
+                        hint: "Remove one of these `dependencies:` entries")
+                }
+                path.append(dependency)
+                pending.append(byName[dependency]?.dependencies ?? [])
+            }
+        }
     }
 
     private mutating func walk(_ node: TargetNode, _ parent: Context, _ collector: inout Collector) throws(ManifestError) {
@@ -1531,7 +1342,6 @@ private struct Evaluator {
         }
 
         private struct SettingLookup {
-            var first: Int?
             var unrestricted: Int?
             var configurations: [String: Int] = [:]
         }
@@ -1667,9 +1477,11 @@ private struct Evaluator {
             for setting in shared.settings {
                 try consumeTargetItems(setting.configurations?.count ?? 0, at: node.location)
                 var lookup = settingLookup[setting.key] ?? SettingLookup()
+                // A value for some configurations refines the one for all of them, as `KEY[config=Debug]` does in an
+                // xcconfig; two values for one configuration, or two for all of them, conflict.
                 let overlapping: Int?
                 if let configurations = setting.configurations {
-                    var candidate = lookup.unrestricted
+                    var candidate: Int?
                     for configuration in configurations {
                         if let index = lookup.configurations[configuration], candidate.map({ index < $0 }) ?? true {
                             candidate = index
@@ -1677,7 +1489,7 @@ private struct Evaluator {
                     }
                     overlapping = candidate
                 } else {
-                    overlapping = lookup.first
+                    overlapping = lookup.unrestricted
                 }
                 if let index = overlapping {
                     let other = settings[index]
@@ -1688,7 +1500,6 @@ private struct Evaluator {
                 }
                 let index = settings.count
                 settings.append(setting)
-                if lookup.first == nil { lookup.first = index }
                 if let configurations = setting.configurations {
                     for configuration in configurations where lookup.configurations[configuration] == nil {
                         lookup.configurations[configuration] = index

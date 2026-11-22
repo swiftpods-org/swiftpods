@@ -77,6 +77,10 @@ struct Lexer {
             } else if scalar == "\\" && peek() == "\n" {
                 advance()
                 advance()
+            } else if scalar == "\\" && peek() == "\r" && peek(2) == "\n" {
+                advance()
+                advance()
+                advance()
             } else {
                 break
             }
@@ -167,6 +171,27 @@ struct Lexer {
         return String(text)
     }
 
+    /// Whether the `#` at the current position of a double-quoted string starts Ruby interpolation: `#{expr}`, or
+    /// `#$` and `#@` before what Ruby's lexer reads as a variable name. Any other `#` is literal, as in `"#$(VAR)"`.
+    private func startsInterpolation() -> Bool {
+        func startsName(_ scalar: Unicode.Scalar?) -> Bool {
+            guard let scalar else { return false }
+            return !scalar.isASCII || scalar == "_" || ("a"..."z").contains(scalar) || ("A"..."Z").contains(scalar)
+        }
+        switch peek() {
+        case "{":
+            return true
+        case "@":
+            return startsName(peek(2) == "@" ? peek(3) : peek(2))
+        case "$":
+            guard let name = peek(2) else { return false }
+            if name == "-" { return startsName(peek(3)) }
+            return "~*$?!@/\\;,.=:<>\"&`'+0123456789".unicodeScalars.contains(name) || startsName(name)
+        default:
+            return false
+        }
+    }
+
     private mutating func string(quote: Unicode.Scalar) throws(ManifestError) -> String {
         let start = location
         advance()
@@ -195,10 +220,10 @@ struct Lexer {
                 advance()
                 continue
             }
-            if quote == "\"" && scalar == "#" && peek() == "{" {
+            if quote == "\"" && scalar == "#", startsInterpolation() {
                 throw error(
                     "String interpolation is not supported", at: location,
-                    hint: "Podfiles are read as data; write the value, or use single quotes for a literal #{")
+                    hint: "Podfiles are read as data; write the value, use single quotes, or escape it as \\#\(Character(peek()!))")
             }
             text.append(scalar)
             advance()
@@ -225,6 +250,11 @@ struct Lexer {
         var word = String.UnicodeScalarView()
         while true {
             guard let scalar = current else { throw error("Unterminated %\(Character(kind)) literal", at: start) }
+            if scalar == "\\" {
+                throw error(
+                    "Escapes are not supported in %\(Character(kind)) literals", at: location,
+                    hint: "Use a quoted array instead, for example ['A B', 'C']")
+            }
             advance()
             if scalar == closing || scalar.properties.isWhitespace {
                 if !word.isEmpty {

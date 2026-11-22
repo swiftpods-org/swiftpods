@@ -1,3 +1,5 @@
+import Foundation
+
 /// A semantic version as Swift Package Manager accepts it.
 public struct Version: Sendable, Hashable, Comparable, Codable, CustomStringConvertible {
     public let major: Int
@@ -142,26 +144,44 @@ public enum Requirement: Sendable, Hashable, Codable, CustomStringConvertible {
         }
     }
 
-    /// Whether a resolved version satisfies the requirement. Branches and revisions are checked by the caller.
+    /// Whether a resolved version satisfies the requirement, as Swift Package Manager decides it. Branches and
+    /// revisions are checked by the caller.
     public func allows(_ version: Version) -> Bool {
         switch self {
         case .exact(let required): return version == required
         case .upToNextMajor(let lower):
             let (upperMajor, overflow) = lower.major.addingReportingOverflow(1)
-            return version >= lower && (overflow || version < Version(upperMajor, 0, 0))
+            return Self.range(lower, overflow ? nil : Version(upperMajor, 0, 0), allows: version)
+                && (!overflow || version.major == lower.major)
         case .upToNextMinor(let lower):
             let (upperMinor, overflow) = lower.minor.addingReportingOverflow(1)
-            return version >= lower && (overflow ? version.major == lower.major : version < Version(lower.major, upperMinor, 0))
-        case .range(let lower, let upper): return version >= lower && version < upper
+            return Self.range(lower, overflow ? nil : Version(lower.major, upperMinor, 0), allows: version)
+                && (!overflow || (version.major, version.minor) == (lower.major, lower.minor))
+        case .range(let lower, let upper): return Self.range(lower, upper, allows: version)
         case .branch, .revision: return false
         }
+    }
+
+    /// SwiftPM's rule for `lower..<upper`: a prerelease is selected only when a bound names a prerelease, and
+    /// `X.0.0-alpha` is never selected by an upper bound of `X.0.0`. A nil upper bound is unbounded.
+    private static func range(_ lower: Version, _ upper: Version?, allows version: Version) -> Bool {
+        guard version >= lower, upper.map({ version < $0 }) ?? true else { return false }
+        guard !version.prerelease.isEmpty else { return true }
+        let upperHasPrerelease = upper.map { !$0.prerelease.isEmpty } ?? false
+        if lower.prerelease.isEmpty && !upperHasPrerelease { return false }
+        if let upper, upper.prerelease.isEmpty,
+            (upper.major, upper.minor, upper.patch) == (version.major, version.minor, version.patch)
+        {
+            return false
+        }
+        return true
     }
 
     /// Reads CocoaPods-style requirement strings: `'1.2.3'`, `'= 1.2.3'`, `'~> 1.2'`, `'~> 1.2.3'`,
     /// or a `'>= …'` and `'< …'` pair.
     static func parse(_ texts: [(String, SourceLocation)]) throws(ManifestError) -> Requirement {
         func version(_ text: Substring, at location: SourceLocation) throws(ManifestError) -> (Version, Int) {
-            let trimmed = text.trimmingCharacters(in: " ")
+            let trimmed = text.trimmingCharacters(in: Self.spaces)
             guard let version = Version(trimmed) else {
                 throw ManifestError(
                     "'\(trimmed)' is not a version Swift Package Manager accepts", at: location,
@@ -171,7 +191,7 @@ public enum Requirement: Sendable, Hashable, Codable, CustomStringConvertible {
             return (version, core.split(separator: ".").count)
         }
         func split(_ text: String) -> (String, Substring) {
-            let trimmed = Substring(text.trimmingCharacters(in: " "))
+            let trimmed = Substring(text.trimmingCharacters(in: Self.spaces))
             for op in ["~>", ">=", "<=", "!=", "=", ">", "<"] where trimmed.hasPrefix(op) {
                 return (op, trimmed.dropFirst(op.count))
             }
@@ -219,66 +239,52 @@ public enum Requirement: Sendable, Hashable, Codable, CustomStringConvertible {
 }
 
 extension Requirement {
+    private static let spaces = CharacterSet(charactersIn: " ")
+
+    /// The fewest components a packed version has: the vendor's major plus at least three padded components, as in
+    /// AppLovin's 13.9.0.0. Shorter spellings would pack into different units than the published versions.
+    static let minimumPackedComponents = 4
+
     /// Reads requirements for packages with packed versions (see `CatalogEntry.VersionFormat.packed`):
-    /// `'13.9.0.0'` is exactly 13090000.0.0, and `'~> 13.9.0.0'` is 13090000.0.0 ..< 13090100.0.0.
+    /// `'13.9.0.0'` is exactly 13090000.0.0, and `'~> 13.9.0.0'` is 13090000.0.0 ..< 13090100.0.0. Every version
+    /// is written with all of the vendor's components, so both bounds of a requirement pack into the same units.
     static func parsePacked(_ texts: [(String, SourceLocation)]) throws(ManifestError) -> Requirement {
-        func components(_ text: Substring, at location: SourceLocation) throws(ManifestError) -> [Int] {
-            let parts = text.trimmingCharacters(in: " ").split(separator: ".", omittingEmptySubsequences: false)
-            let values = parts.compactMap { part in part.allSatisfy(\.isNumber) ? Int(part) : nil }
-            guard !parts.isEmpty, values.count == parts.count, values.dropFirst().allSatisfy({ $0 < 100 }), parts.count <= 9 else {
-                throw ManifestError(
-                    "'\(text.trimmingCharacters(in: " "))' is not a version this package publishes", at: location,
-                    hint: "Write the version as the vendor does, for example 13.9.0.0")
-            }
-            return values
-        }
-        func pack(_ values: [Int], at location: SourceLocation) throws(ManifestError) -> Version {
-            guard let first = values.first else {
-                throw ManifestError("A packed version needs at least one component", at: location)
-            }
-            let text = String(first) + values.dropFirst().map { $0 < 10 ? "0\($0)" : "\($0)" }.joined()
-            guard let packed = Int(text) else {
-                throw ManifestError("The packed version is too large to represent", at: location)
-            }
-            return Version(packed, 0, 0)
-        }
-        func increment(_ value: Int, at location: SourceLocation) throws(ManifestError) -> Int {
-            let (incremented, overflow) = value.addingReportingOverflow(1)
-            guard !overflow else {
-                throw ManifestError("The packed version's upper bound is too large to represent", at: location)
-            }
-            return incremented
-        }
-        func split(_ text: String) -> (String, Substring) {
-            let trimmed = Substring(text.trimmingCharacters(in: " "))
-            for op in ["~>", ">=", "<=", "!=", "=", ">", "<"] where trimmed.hasPrefix(op) {
-                return (op, trimmed.dropFirst(op.count))
-            }
-            return ("", trimmed)
-        }
         if texts.count == 1 {
             let (text, location) = texts[0]
-            let (op, rest) = split(text)
-            let values = try components(rest, at: location)
+            let (op, rest) = splitPackedOperator(text)
+            let values = try packedComponents(rest, at: location)
             switch op {
             case "", "=": return .exact(try pack(values, at: location))
             case "~>":
-                // As in CocoaPods: the last written component may grow, the one before it may not.
-                var upper = Array(values.dropLast())
-                if upper.isEmpty {
-                    upper = [try increment(values[0], at: location)]
-                } else {
-                    upper[upper.count - 1] = try increment(upper[upper.count - 1], at: location)
+                // As in CocoaPods: the last written component may grow, the one before it may not. Padded
+                // components stay below 100, so 13.9.99.0 is followed by 13.10.0.0.
+                var upper = Array(values.dropLast()) + [0]
+                var position = upper.count - 2
+                while true {
+                    let (next, overflow) = upper[position].addingReportingOverflow(1)
+                    guard !overflow else {
+                        throw ManifestError("The packed version's upper bound is too large to represent", at: location)
+                    }
+                    upper[position] = next
+                    guard position > 0, next >= 100 else { break }
+                    upper[position] = 0
+                    position -= 1
                 }
-                upper += Array(repeating: 0, count: values.count - upper.count)
                 return .range(try pack(values, at: location), try pack(upper, at: location))
             default: break
             }
         } else if texts.count == 2 {
-            let parts = texts.map { (split($0.0), $0.1) }
+            let parts = texts.map { (splitPackedOperator($0.0), $0.1) }
             if let lower = parts.first(where: { $0.0.0 == ">=" }), let upper = parts.first(where: { $0.0.0 == "<" }) {
-                let low = try pack(try components(lower.0.1, at: lower.1), at: lower.1)
-                let high = try pack(try components(upper.0.1, at: upper.1), at: upper.1)
+                let lowValues = try packedComponents(lower.0.1, at: lower.1)
+                let highValues = try packedComponents(upper.0.1, at: upper.1)
+                guard lowValues.count == highValues.count else {
+                    throw ManifestError(
+                        "Both bounds must have the same number of components", at: upper.1,
+                        hint: "Write both versions as the vendor does, for example '>= 13.9.0.0', '< 14.0.0.0'")
+                }
+                let low = try pack(lowValues, at: lower.1)
+                let high = try pack(highValues, at: upper.1)
                 guard low < high else { throw ManifestError("The lower bound must be below the upper bound", at: lower.1) }
                 return .range(low, high)
             }
@@ -287,13 +293,48 @@ extension Requirement {
             "Unsupported version requirement for a package with packed versions", at: texts.first?.1,
             hint: "Use an exact version such as '13.9.0.0', '~> 13.9.0.0', or a '>= x' and '< y' pair")
     }
-}
 
-extension StringProtocol {
-    func trimmingCharacters(in character: Character) -> String {
-        var slice = Substring(self)
-        while slice.first == character { slice = slice.dropFirst() }
-        while slice.last == character { slice = slice.dropLast() }
-        return String(slice)
+    /// Reads `exact:` for a package with packed versions; operators belong in a positional requirement.
+    static func parsePackedExact(_ text: String, at location: SourceLocation) throws(ManifestError) -> Requirement {
+        let (op, rest) = splitPackedOperator(text)
+        guard op.isEmpty else {
+            throw ManifestError(
+                "`exact` takes a version, not '\(op)'", at: location,
+                hint: "Write exact: '13.9.0.0', or pass '\(text.trimmingCharacters(in: Self.spaces))' as a positional requirement")
+        }
+        return .exact(try pack(try packedComponents(rest, at: location), at: location))
+    }
+
+    private static func splitPackedOperator(_ text: String) -> (String, Substring) {
+        let trimmed = Substring(text.trimmingCharacters(in: Self.spaces))
+        for op in ["~>", ">=", "<=", "!=", "=", ">", "<"] where trimmed.hasPrefix(op) {
+            return (op, trimmed.dropFirst(op.count))
+        }
+        return ("", trimmed)
+    }
+
+    private static func packedComponents(_ text: Substring, at location: SourceLocation) throws(ManifestError) -> [Int] {
+        let trimmed = text.trimmingCharacters(in: Self.spaces)
+        let parts = trimmed.split(separator: ".", omittingEmptySubsequences: false)
+        let values = parts.compactMap { part in part.allSatisfy({ $0.isASCII && $0.isNumber }) ? Int(part) : nil }
+        guard values.count == parts.count, values.dropFirst().allSatisfy({ $0 < 100 }), parts.count <= 9 else {
+            throw ManifestError(
+                "'\(trimmed)' is not a version this package publishes", at: location,
+                hint: "Write the version as the vendor does, for example 13.9.0.0")
+        }
+        guard values.count >= minimumPackedComponents else {
+            throw ManifestError(
+                "'\(trimmed)' is not a complete version of this package", at: location,
+                hint: "Its versions are packed; write every component as the vendor does, for example 13.9.0.0")
+        }
+        return values
+    }
+
+    private static func pack(_ values: [Int], at location: SourceLocation) throws(ManifestError) -> Version {
+        let text = String(values[0]) + values.dropFirst().map { $0 < 10 ? "0\($0)" : "\($0)" }.joined()
+        guard let packed = Int(text) else {
+            throw ManifestError("The packed version is too large to represent", at: location)
+        }
+        return Version(packed, 0, 0)
     }
 }

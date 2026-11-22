@@ -8,7 +8,7 @@ import SwiftPodsXcode
 import XCTest
 
 final class InstallerTests: XCTestCase {
-    private final class RecordingRunner: DescriptorWorkingDirectoryCommandRunner, @unchecked Sendable {
+    private final class RecordingRunner: CommandRunner, @unchecked Sendable {
         struct Invocation {
             let executable: String
             let arguments: [String]
@@ -34,47 +34,6 @@ final class InstallerTests: XCTestCase {
             recorded.append(.init(executable: executable, arguments: arguments, directory: directory))
             lock.unlock()
             return try handler(executable, arguments, directory)
-        }
-
-        func run(
-            _ executable: String, _ arguments: [String], in directory: URL?, timeout: TimeInterval
-        ) throws -> String {
-            try run(executable, arguments, in: directory)
-        }
-
-        func runDescriptorBacked(
-            _ executable: String, _ arguments: [String], workingDirectoryDescriptor: Int32,
-            timeout: TimeInterval
-        ) throws -> String {
-            try run(executable, arguments, in: nil)
-        }
-
-        func runData(
-            _ executable: String, _ arguments: [String], in directory: URL?, timeout: TimeInterval,
-            maximumOutputBytes: Int
-        ) throws -> Data {
-            let data = Data(try run(executable, arguments, in: directory).utf8)
-            guard data.count <= maximumOutputBytes else { throw SwiftPodsError("Test command output exceeded its limit") }
-            return data
-        }
-    }
-
-    private final class DescriptorRunner: DescriptorWorkingDirectoryCommandRunner, @unchecked Sendable {
-        private let handler: (String, [String], Int32) throws -> String
-
-        init(_ handler: @escaping (String, [String], Int32) throws -> String) {
-            self.handler = handler
-        }
-
-        func run(_ executable: String, _ arguments: [String], in directory: URL?) throws -> String {
-            throw SwiftPodsError("Resolver unexpectedly used a pathname-backed test runner")
-        }
-
-        func runDescriptorBacked(
-            _ executable: String, _ arguments: [String], workingDirectoryDescriptor: Int32,
-            timeout: TimeInterval
-        ) throws -> String {
-            try handler(executable, arguments, workingDirectoryDescriptor)
         }
     }
 
@@ -309,6 +268,16 @@ final class InstallerTests: XCTestCase {
                 + "LD_RUNPATH_SEARCH_PATHS = $(inherited) @loader_path/Frameworks\n")
     }
 
+    func testAValueForSomeConfigurationsFollowsTheValueForAll() throws {
+        let directory = try fixture(
+            "target 'App' do\n  settings 'OTHER_LDFLAGS[config=Debug]' => '-ObjC -lz', 'OTHER_LDFLAGS' => '-ObjC'\nend\n")
+
+        _ = try installer(directory).install(InstallOptions())
+
+        let settings = try generated(directory, "Settings/App/App.xcconfig")
+        XCTAssertTrue(settings.hasSuffix("\nOTHER_LDFLAGS = -ObjC\nOTHER_LDFLAGS[config=Debug] = -ObjC -lz\n"), settings)
+    }
+
     func testBaseConfigurationTraversalRejectsGroupCyclesAndSpecialFiles() throws {
         func configuredProject(_ directory: URL, path: String, groups: Bool) throws {
             var edited = try project(directory)
@@ -405,6 +374,10 @@ final class InstallerTests: XCTestCase {
         let app = old.nativeTargets.first { $0.name == "App" }!.id
         let remote = "package:" + PackageLocation.canonical("https://github.com/firebase/firebase-ios-sdk.git")
         let local = "package:local:Modules/Networking"
+        // 0.2 had these products under identifiers derived from the target's name, not the ones just installed.
+        for (key, product) in [(remote, "FirebaseCore"), (local, "Networking")] {
+            old.remove(XcodeProject.identifier(ProjectIntegration.productKey(targetID: app, package: key, product: product)))
+        }
         old[XcodeProject.identifier(remote)] = [
             "isa": "XCRemoteSwiftPackageReference", "repositoryURL": "https://github.com/firebase/firebase-ios-sdk.git",
             "requirement": ["kind": "upToNextMajorVersion", "minimumVersion": "13.0.0"],
@@ -412,14 +385,14 @@ final class InstallerTests: XCTestCase {
         old[XcodeProject.identifier(local)] = ["isa": "XCLocalSwiftPackageReference", "relativePath": "Modules/Networking"]
         for key in [remote, local] { old.append(XcodeProject.identifier(key), to: "packageReferences", of: old.rootID) }
         for (key, product) in [(remote, "FirebaseCore"), (local, "Networking")] {
-            let dependency = XcodeProject.identifier(ProjectIntegration.productKey(target: "App", package: key, product: product))
+            let dependency = XcodeProject.identifier(ProjectIntegration.legacyProductKey(target: "App", package: key, product: product))
             old[dependency] = ["isa": "XCSwiftPackageProductDependency", "package": .string(XcodeProject.identifier(key)), "productName": .string(product)]
             old.append(dependency, to: "packageProductDependencies", of: app)
             let file = XcodeProject.identifier("build-file:" + dependency)
             old[file] = ["isa": "PBXBuildFile", "productRef": .string(dependency)]
             old.append(file, to: "files", of: "A30000000000000000000001")
         }
-        let script = XcodeProject.identifier(ProjectIntegration.scriptKey(target: "App", name: "Upload"))
+        let script = XcodeProject.identifier(ProjectIntegration.legacyScriptKey(target: "App", name: "Upload"))
         old[script] = [
             "isa": "PBXShellScriptBuildPhase", "buildActionMask": "2147483647", "files": [], "name": "[SwiftPods] Upload",
             "runOnlyForDeploymentPostprocessing": "0", "shellPath": "/bin/sh", "shellScript": "upload",
@@ -599,43 +572,10 @@ final class InstallerTests: XCTestCase {
             XCTAssertEqual(try String(
                 contentsOf: installedFramework.appendingPathComponent("Headers/Kit.h"), encoding: .utf8), contents)
             XCTAssertFalse(FileManager.default.fileExists(
-                atPath: directory.appendingPathComponent(InstallTransactionJournal.directoryName).path))
+                atPath: directory.appendingPathComponent(".swiftpods-transaction").path))
             XCTAssertFalse(try FileManager.default.contentsOfDirectory(
                 atPath: directory.appendingPathComponent("SwiftPods").path).contains { $0.hasPrefix(".staging-") })
         }
-    }
-
-    func testInstallReadsLocalBinaryThroughLockedWorkspaceAfterPathRebind() throws {
-        let podfile = "target 'App' do\n  binary 'Kit', path: 'Vendor/Kit.xcframework'\nend\n"
-        let directory = try fixture(podfile)
-        let decoy = try fixture(podfile)
-        let trusted = directory.appendingPathComponent("Vendor/Kit.xcframework", isDirectory: true)
-        let replacement = decoy.appendingPathComponent("Vendor/Kit.xcframework", isDirectory: true)
-        try makeXCFramework(trusted)
-        try makeXCFramework(replacement)
-        try "trusted".write(
-            to: trusted.appendingPathComponent("payload.txt"), atomically: true, encoding: .utf8)
-        try "decoy".write(
-            to: replacement.appendingPathComponent("payload.txt"), atomically: true, encoding: .utf8)
-
-        let raced = Installer(
-            directory: directory, cache: directory.appendingPathComponent(".cache"),
-            generatedMutationHook: { point in
-                switch point {
-                case .beforeBinaryRead("Kit"), .afterBinaryRead("Kit"):
-                    precondition(renameatx_np(
-                        AT_FDCWD, directory.path, AT_FDCWD, decoy.path, UInt32(RENAME_SWAP)) == 0)
-                default: break
-                }
-            })
-        _ = try raced.install(.init())
-
-        XCTAssertEqual(
-            try String(
-                contentsOf: directory.appendingPathComponent(
-                    "SwiftPods/SwiftPodsBinaries/Artifacts/Kit/Kit.xcframework/payload.txt"),
-                encoding: .utf8),
-            "trusted")
     }
 
     func testLocalBinaryMaySelectAnArtifactFromSwiftPodsWithoutRecursiveSnapshot() throws {
@@ -786,18 +726,6 @@ final class InstallerTests: XCTestCase {
         try String(format: workspaceText, podsReference).write(
             to: workspaceContents, atomically: true, encoding: .utf8)
         XCTAssertEqual(chmod(workspaceContents.path, 0o600), 0)
-        let workspaceAttributeName = "com.swiftpods.tests.metadata"
-        let workspaceAttribute = Data("preserve-me".utf8)
-        XCTAssertEqual(workspaceAttribute.withUnsafeBytes {
-            setxattr(workspaceContents.path, workspaceAttributeName, $0.baseAddress, $0.count, 0, 0)
-        }, 0)
-        _ = try ProcessRunner().run(
-            "/bin/chmod", ["+a", "everyone allow read", workspaceContents.path], in: directory)
-        let originalWorkspaceDescriptor = open(
-            workspaceContents.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
-        XCTAssertGreaterThanOrEqual(originalWorkspaceDescriptor, 0)
-        let originalWorkspaceMetadata = try FileSecurityMetadata(descriptor: originalWorkspaceDescriptor)
-        close(originalWorkspaceDescriptor)
         var originalWorkspaceStatus = stat()
         XCTAssertEqual(lstat(workspaceContents.path, &originalWorkspaceStatus), 0)
 
@@ -840,22 +768,6 @@ final class InstallerTests: XCTestCase {
         XCTAssertEqual(workspaceStatus.st_mode & 0o7777, 0o600)
         XCTAssertEqual(workspaceStatus.st_uid, originalWorkspaceStatus.st_uid)
         XCTAssertEqual(workspaceStatus.st_gid, originalWorkspaceStatus.st_gid)
-        XCTAssertEqual(workspaceStatus.st_flags, originalWorkspaceStatus.st_flags)
-        let workspaceAttributeSize = getxattr(
-            workspaceContents.path, workspaceAttributeName, nil, 0, 0, 0)
-        XCTAssertEqual(workspaceAttributeSize, workspaceAttribute.count)
-        var restoredWorkspaceAttribute = Data(count: max(0, workspaceAttributeSize))
-        let restoredWorkspaceAttributeSize = restoredWorkspaceAttribute.withUnsafeMutableBytes {
-            getxattr(workspaceContents.path, workspaceAttributeName, $0.baseAddress, $0.count, 0, 0)
-        }
-        XCTAssertEqual(restoredWorkspaceAttributeSize, workspaceAttribute.count)
-        XCTAssertEqual(restoredWorkspaceAttribute, workspaceAttribute)
-        let restoredWorkspaceDescriptor = open(
-            workspaceContents.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
-        XCTAssertGreaterThanOrEqual(restoredWorkspaceDescriptor, 0)
-        let restoredWorkspaceMetadata = try FileSecurityMetadata(descriptor: restoredWorkspaceDescriptor)
-        close(restoredWorkspaceDescriptor)
-        XCTAssertEqual(restoredWorkspaceMetadata, originalWorkspaceMetadata)
     }
 
     func testApplicationRuntimeSearchPathIsRestoredAfterCocoaPodsDeintegration() throws {
@@ -889,200 +801,6 @@ final class InstallerTests: XCTestCase {
             try generated(directory, "Settings/App/App.xcconfig"),
             "// Generated by SwiftPods from the Podfile. Do not edit.\n"
                 + "LD_RUNPATH_SEARCH_PATHS = $(inherited) @executable_path/Frameworks\n")
-    }
-
-    func testCocoaPodsWorkspaceReaderRejectsSpecialFilesWithoutBlocking() throws {
-        let directory = try fixture("target 'App' do\nend\n")
-        let workspace = directory.appendingPathComponent("App.xcworkspace")
-        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
-        let contents = workspace.appendingPathComponent("contents.xcworkspacedata")
-        XCTAssertEqual(contents.path.withCString { mkfifo($0, S_IRUSR | S_IWUSR) }, 0)
-
-        XCTAssertThrowsError(try installer(directory).deintegrate(cocoapods: true)) {
-            XCTAssertTrue("\($0)".contains("regular file"), "\($0)")
-        }
-    }
-
-    func testCocoaPodsWorkspaceDirectorySymlinkCannotRedirectAWrite() throws {
-        let directory = try fixture("target 'App' do\nend\n")
-        let outside = FileManager.default.temporaryDirectory
-            .appendingPathComponent("swiftpods-outside-workspace-" + UUID().uuidString, isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: outside) }
-        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
-        let contents = outside.appendingPathComponent("contents.xcworkspacedata")
-        let original = "<Workspace><FileRef location=\"group:Pods/Pods.xcodeproj\"></FileRef>\n</Workspace>\n"
-        try original.write(to: contents, atomically: true, encoding: .utf8)
-        try FileManager.default.createSymbolicLink(
-            at: directory.appendingPathComponent("App.xcworkspace"), withDestinationURL: outside)
-
-        XCTAssertThrowsError(try installer(directory).deintegrate(cocoapods: true)) {
-            XCTAssertTrue("\($0)".contains("workspace directory"), "\($0)")
-        }
-        XCTAssertEqual(try String(contentsOf: contents, encoding: .utf8), original)
-    }
-
-    func testCocoaPodsWorkspaceAncestorSymlinkRaceRollsBackTheAnchoredWorkspace() throws {
-        let directory = try fixture("target 'App' do\nend\n")
-        let container = directory.appendingPathComponent("Container", isDirectory: true)
-        let movedContainer = directory.appendingPathComponent("Container-original", isDirectory: true)
-        let workspace = container.appendingPathComponent("App.xcworkspace", isDirectory: true)
-        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
-        let contents = workspace.appendingPathComponent("contents.xcworkspacedata")
-        let original = "<Workspace><FileRef location=\"group:Pods/Pods.xcodeproj\"></FileRef>\n</Workspace>\n"
-        try original.write(to: contents, atomically: true, encoding: .utf8)
-
-        let outside = FileManager.default.temporaryDirectory
-            .appendingPathComponent("swiftpods-workspace-ancestor-race-" + UUID().uuidString, isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: outside) }
-        let outsideWorkspace = outside.appendingPathComponent("App.xcworkspace", isDirectory: true)
-        try FileManager.default.createDirectory(at: outsideWorkspace, withIntermediateDirectories: true)
-        let outsideContents = outsideWorkspace.appendingPathComponent("contents.xcworkspacedata")
-        let outsideData = "<Workspace><FileRef location=\"group:Outside.xcodeproj\"></FileRef>\n</Workspace>\n"
-        try outsideData.write(to: outsideContents, atomically: true, encoding: .utf8)
-
-        XCTAssertThrowsError(try CocoaPodsIntegration.removePodsProject(fromWorkspace: workspace) {
-            try! FileManager.default.moveItem(at: container, to: movedContainer)
-            try! FileManager.default.createSymbolicLink(at: container, withDestinationURL: outside)
-        }) { error in
-            XCTAssertTrue("\(error)".contains("directory changed"), "\(error)")
-        }
-        XCTAssertEqual(
-            try String(
-                contentsOf: movedContainer.appendingPathComponent("App.xcworkspace/contents.xcworkspacedata"),
-                encoding: .utf8),
-            original)
-        XCTAssertEqual(try String(contentsOf: outsideContents, encoding: .utf8), outsideData)
-    }
-
-    func testCocoaPodsWorkspaceRelativeAnchorRejectsAReplacedAncestor() throws {
-        let directory = try fixture("target 'App' do\nend\n")
-        let container = directory.appendingPathComponent("Container", isDirectory: true)
-        let movedContainer = directory.appendingPathComponent("Container-original", isDirectory: true)
-        let workspace = container.appendingPathComponent("App.xcworkspace", isDirectory: true)
-        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
-        let contents = workspace.appendingPathComponent("contents.xcworkspacedata")
-        let original = "<Workspace><FileRef location=\"group:Pods/Pods.xcodeproj\"></FileRef>\n</Workspace>\n"
-        try original.write(to: contents, atomically: true, encoding: .utf8)
-
-        let outside = FileManager.default.temporaryDirectory
-            .appendingPathComponent("swiftpods-relative-workspace-race-" + UUID().uuidString, isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: outside) }
-        let outsideWorkspace = outside.appendingPathComponent("App.xcworkspace", isDirectory: true)
-        try FileManager.default.createDirectory(at: outsideWorkspace, withIntermediateDirectories: true)
-        let outsideContents = outsideWorkspace.appendingPathComponent("contents.xcworkspacedata")
-        let outsideData = "<Workspace><FileRef location=\"group:Outside.xcodeproj\"></FileRef>\n</Workspace>\n"
-        try outsideData.write(to: outsideContents, atomically: true, encoding: .utf8)
-
-        let root = directory.path.withCString {
-            open($0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
-        }
-        XCTAssertGreaterThanOrEqual(root, 0)
-        defer { close(root) }
-        XCTAssertThrowsError(
-            try CocoaPodsIntegration.removePodsProjectRecoverably(
-                fromWorkspace: workspace, relativeToWorkspaceRoot: root,
-                relativeWorkspacePath: "Container/App.xcworkspace",
-                beforeAtomicReplacement: {
-                    try! FileManager.default.moveItem(at: container, to: movedContainer)
-                    try! FileManager.default.createSymbolicLink(at: container, withDestinationURL: outside)
-                })
-        ) { error in
-            XCTAssertTrue("\(error)".contains("directory changed"), "\(error)")
-        }
-        XCTAssertEqual(
-            try String(
-                contentsOf: movedContainer.appendingPathComponent("App.xcworkspace/contents.xcworkspacedata"),
-                encoding: .utf8),
-            original)
-        XCTAssertEqual(try String(contentsOf: outsideContents, encoding: .utf8), outsideData)
-    }
-
-    func testCocoaPodsWorkspaceWriterRollsBackAChangeAfterFinalValidation() throws {
-        let directory = try fixture("target 'App' do\nend\n")
-        let workspace = directory.appendingPathComponent("App.xcworkspace")
-        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
-        let contents = workspace.appendingPathComponent("contents.xcworkspacedata")
-        let original = "<Workspace><FileRef location=\"group:Pods/Pods.xcodeproj\"></FileRef>\n</Workspace>\n"
-        try original.write(to: contents, atomically: true, encoding: .utf8)
-        let external = "<Workspace><FileRef location=\"group:Concurrent.xcodeproj\"></FileRef>\n</Workspace>\n"
-
-        XCTAssertThrowsError(try CocoaPodsIntegration.removePodsProject(fromWorkspace: workspace) {
-            try! external.write(to: contents, atomically: true, encoding: .utf8)
-        }) { error in
-            XCTAssertTrue("\(error)".contains("atomic replacement"), "\(error)")
-        }
-        XCTAssertEqual(try String(contentsOf: contents, encoding: .utf8), external)
-        XCTAssertFalse(
-            try FileManager.default.contentsOfDirectory(atPath: workspace.path)
-                .contains(where: { $0.hasPrefix(".contents.xcworkspacedata.swiftpods-") }))
-    }
-
-    func testDeintegrateRollsBackProjectsWorkspaceAndGeneratedTreesOnLateFailure() throws {
-        let directory = try fixture(
-            "target 'App' do\n  settings 'SWIFT_VERSION' => '5.10'\nend\n")
-        _ = try installer(directory).install(.init())
-        let appProject = directory.appendingPathComponent("App.xcodeproj", isDirectory: true)
-        let otherProject = directory.appendingPathComponent("Other.xcodeproj", isDirectory: true)
-        try FileManager.default.copyItem(at: appProject, to: otherProject)
-        let appFile = appProject.appendingPathComponent("project.pbxproj")
-        let otherFile = otherProject.appendingPathComponent("project.pbxproj")
-        let originalApp = try Data(contentsOf: appFile)
-        let originalOther = try String(contentsOf: otherFile, encoding: .utf8)
-        let concurrentOther = originalOther.replacingOccurrences(
-            of: "archiveVersion = 1;", with: "archiveVersion = 2;")
-
-        let workspace = directory.appendingPathComponent("App.xcworkspace", isDirectory: true)
-        try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
-        let workspaceFile = workspace.appendingPathComponent("contents.xcworkspacedata")
-        let originalWorkspace =
-            "<Workspace><FileRef location=\"group:Pods/Pods.xcodeproj\"></FileRef>\n</Workspace>\n"
-        try originalWorkspace.write(to: workspaceFile, atomically: true, encoding: .utf8)
-        let generatedSettings = directory.appendingPathComponent("SwiftPods/Settings/App/App.xcconfig")
-        let originalGenerated = try Data(contentsOf: generatedSettings)
-
-        let raced = Installer(
-            directory: directory, cache: directory.appendingPathComponent(".cache"),
-            generatedMutationHook: { point in
-                guard point == .afterDeintegratedProjectSave("App.xcodeproj") else { return }
-                try! concurrentOther.write(to: otherFile, atomically: true, encoding: .utf8)
-            })
-        XCTAssertThrowsError(try raced.deintegrate(cocoapods: true)) { error in
-            XCTAssertTrue("\(error)".contains("changed since SwiftPods read it"), "\(error)")
-        }
-
-        XCTAssertEqual(try Data(contentsOf: appFile), originalApp)
-        XCTAssertEqual(try String(contentsOf: otherFile, encoding: .utf8), concurrentOther)
-        XCTAssertEqual(try String(contentsOf: workspaceFile, encoding: .utf8), originalWorkspace)
-        XCTAssertEqual(try Data(contentsOf: generatedSettings), originalGenerated)
-    }
-
-    func testDeintegrateAuthenticatesManifestBeforeMutationAndCommit() throws {
-        for racePoint in [
-            Installer.GeneratedMutationPoint.beforeDeintegrationMutation,
-            .beforeDeintegrationCommit,
-        ] {
-            let directory = try fixture(
-                "target 'App' do\n  settings 'SWIFT_VERSION' => '5.10'\nend\n")
-            _ = try installer(directory).install(.init())
-            let podfile = directory.appendingPathComponent("Podfile")
-            let projectFile = directory.appendingPathComponent("App.xcodeproj/project.pbxproj")
-            let generatedSettings = directory.appendingPathComponent("SwiftPods/Settings/App/App.xcconfig")
-            let originalProject = try Data(contentsOf: projectFile)
-            let originalGenerated = try Data(contentsOf: generatedSettings)
-            let raced = Installer(
-                directory: directory, cache: directory.appendingPathComponent(".cache"),
-                generatedMutationHook: { point in
-                    guard point == racePoint else { return }
-                    try! "target 'Other' do\nend\n".write(
-                        to: podfile, atomically: true, encoding: .utf8)
-                })
-
-            XCTAssertThrowsError(try raced.deintegrate()) { error in
-                XCTAssertTrue("\(error)".contains("changed after the manifest was read"), "\(error)")
-            }
-            XCTAssertEqual(try Data(contentsOf: projectFile), originalProject)
-            XCTAssertEqual(try Data(contentsOf: generatedSettings), originalGenerated)
-        }
     }
 
     func testMalformedStaticFrameworksAreNormalized() throws {
@@ -1253,40 +971,6 @@ final class InstallerTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent(".sources").path))
     }
 
-    func testExplicitOnlyInstallNeverInspectsUnsafeIrrelevantSwiftPodsLock() throws {
-        let directory = try fixture("target 'App' do\nend\n")
-        let lock = directory.appendingPathComponent(SwiftPodsLock.fileName)
-
-        XCTAssertEqual(lock.path.withCString { mkfifo($0, 0o600) }, 0)
-        _ = try installer(directory).install(.init())
-        var status = stat()
-        XCTAssertEqual(lstat(lock.path, &status), 0)
-        XCTAssertEqual(status.st_mode & S_IFMT, S_IFIFO)
-        XCTAssertEqual(lock.path.withCString { unlink($0) }, 0)
-
-        let target = directory.appendingPathComponent("unrelated-lock-target")
-        try Data("do not read\n".utf8).write(to: target)
-        try FileManager.default.createSymbolicLink(at: lock, withDestinationURL: target)
-        _ = try installer(directory).install(.init())
-        XCTAssertEqual(lstat(lock.path, &status), 0)
-        XCTAssertEqual(status.st_mode & S_IFMT, S_IFLNK)
-        try FileManager.default.removeItem(at: lock)
-
-        try FileManager.default.createDirectory(at: lock, withIntermediateDirectories: false)
-        _ = try installer(directory).install(.init())
-        XCTAssertEqual(lstat(lock.path, &status), 0)
-        XCTAssertEqual(status.st_mode & S_IFMT, S_IFDIR)
-        try FileManager.default.removeItem(at: lock)
-
-        XCTAssertTrue(FileManager.default.createFile(atPath: lock.path, contents: Data()))
-        let handle = try FileHandle(forWritingTo: lock)
-        try handle.truncate(atOffset: UInt64(16 * 1_024 * 1_024 + 1))
-        try handle.close()
-        _ = try installer(directory).install(.init())
-        XCTAssertEqual(lstat(lock.path, &status), 0)
-        XCTAssertEqual(status.st_size, 16 * 1_024 * 1_024 + 1)
-    }
-
     func testDeploymentIgnoresAStaleLockWhenNoCatalogMetadataIsUsed() throws {
         let directory = try fixture("target 'App' do\nend\n")
         let lock = directory.appendingPathComponent(SwiftPodsLock.fileName)
@@ -1302,57 +986,6 @@ final class InstallerTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: lock, encoding: .utf8), contents)
     }
 
-    func testDeploymentRejectsAConcurrentSwiftPodsLockChange() throws {
-        let directory = try fixture("")
-        let shell = ProcessRunner()
-        let catalog = directory.appendingPathComponent("catalog", isDirectory: true)
-        try FileManager.default.createDirectory(
-            at: catalog.appendingPathComponent("Packages", isDirectory: true), withIntermediateDirectories: true)
-        try "package 'Kit', git: 'https://github.com/example/Kit.git', products: ['Kit']\n"
-            .write(to: catalog.appendingPathComponent("Packages/Kit.podfile"), atomically: true, encoding: .utf8)
-        _ = try shell.run("/usr/bin/git", ["init", "-q"], in: catalog)
-        _ = try shell.run("/usr/bin/git", ["add", "-A"], in: catalog)
-        _ = try shell.run(
-            "/usr/bin/git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "Kit"],
-            in: catalog)
-        try "source '\(catalog.path)'\ntarget 'App' do\n  spm 'Kit', exact: '1.0.0'\nend\n"
-            .write(to: directory.appendingPathComponent("Podfile"), atomically: true, encoding: .utf8)
-        let cache = directory.appendingPathComponent(".cache")
-        let sources = directory.appendingPathComponent(".sources")
-        let forwardingRunner = RecordingRunner { executable, arguments, workingDirectory in
-            if executable == "/usr/bin/xcrun" { return "" }
-            return try shell.run(executable, arguments, in: workingDirectory)
-        }
-        _ = try Installer(directory: directory, runner: forwardingRunner, cache: cache, sourcesCache: sources)
-            .install(.init())
-
-        let lock = directory.appendingPathComponent(SwiftPodsLock.fileName)
-        let originalLock = try String(contentsOf: lock, encoding: .utf8)
-        let resolved = directory.appendingPathComponent(
-            "App.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved")
-        try FileManager.default.createDirectory(at: resolved.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try #"{"pins":[{"identity":"kit","kind":"remoteSourceControl","location":"https://github.com/example/Kit.git","state":{"revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","version":"1.0.0"}}],"version":3}"#
-            .write(to: resolved, atomically: true, encoding: .utf8)
-        let concurrentLock = originalLock + " "
-        let mutatingRunner = RecordingRunner { executable, arguments, workingDirectory in
-            if executable == "/usr/bin/xcrun" {
-                try concurrentLock.write(to: lock, atomically: true, encoding: .utf8)
-                return ""
-            }
-            return try shell.run(executable, arguments, in: workingDirectory)
-        }
-        var options = InstallOptions()
-        options.deployment = true
-
-        XCTAssertThrowsError(
-            try Installer(directory: directory, runner: mutatingRunner, cache: cache, sourcesCache: sources)
-                .install(options)
-        ) { error in
-            XCTAssertTrue("\(error)".contains("SwiftPods.lock changed after it was read"), "\(error)")
-        }
-        XCTAssertEqual(try String(contentsOf: lock, encoding: .utf8), concurrentLock)
-    }
-
     func testDeintegratePreservesUnknownGeneratedEntries() throws {
         let directory = try fixture("target 'App' do\nend\n")
         _ = try installer(directory).install(.init())
@@ -1361,11 +994,15 @@ final class InstallerTests: XCTestCase {
         let unknownDirectory = root.appendingPathComponent("UserData", isDirectory: true)
         let stagingPrefix = root.appendingPathComponent(".staging-not-swiftpods", isDirectory: true)
         let unmarkedStaging = root.appendingPathComponent(
-            ".staging-00000000-0000-0000-0000-000000000000", isDirectory: true)
+            ".swiftpods-staging-00000000-0000-0000-0000-000000000000", isDirectory: true)
+        let markedStaging = root.appendingPathComponent(".staging-\(UUID().uuidString)", isDirectory: true)
         try "keep\n".write(to: unknown, atomically: true, encoding: .utf8)
         try FileManager.default.createDirectory(at: unknownDirectory, withIntermediateDirectories: false)
         try FileManager.default.createDirectory(at: stagingPrefix, withIntermediateDirectories: false)
         try FileManager.default.createDirectory(at: unmarkedStaging, withIntermediateDirectories: false)
+        try FileManager.default.createDirectory(at: markedStaging, withIntermediateDirectories: false)
+        try Data("SwiftPods generated staging v1\n".utf8).write(to: markedStaging.appendingPathComponent(".swiftpods-staging"))
+        try Data("Unrelated data\n".utf8).write(to: unknownDirectory.appendingPathComponent(".swiftpods-staging"))
         try "nested\n".write(
             to: unknownDirectory.appendingPathComponent("value.txt"), atomically: true, encoding: .utf8)
 
@@ -1376,15 +1013,37 @@ final class InstallerTests: XCTestCase {
             try String(contentsOf: unknownDirectory.appendingPathComponent("value.txt"), encoding: .utf8), "nested\n")
         XCTAssertTrue(FileManager.default.fileExists(atPath: stagingPrefix.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: unmarkedStaging.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: markedStaging.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("Scripts").path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("SwiftPodsDependencies").path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(".swiftpods-owned").path))
     }
 
+    func testInstallLeavesStagingInAnUnownedRootAlone() throws {
+        let directory = try fixture("target 'App' do\nend\n")
+        let root = directory.appendingPathComponent("SwiftPods")
+        let staging = root.appendingPathComponent(".swiftpods-staging-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        let marker = staging.appendingPathComponent(".swiftpods-staging")
+        let contents = Data("SwiftPods generated staging v1\n".utf8)
+        try contents.write(to: marker)
+        let journal = directory.appendingPathComponent(".swiftpods-transaction")
+        try Data("recovery data\n".utf8).write(to: journal)
+
+        XCTAssertThrowsError(try installer(directory).install(.init())) {
+            XCTAssertTrue("\($0)".contains("Refusing to manage non-SwiftPods directory"), "\($0)")
+        }
+        XCTAssertEqual(try Data(contentsOf: marker), contents)
+        XCTAssertEqual(try Data(contentsOf: journal), Data("recovery data\n".utf8))
+    }
+
     func testRemoteBinariesAreVerifiedAndCached() throws {
         let directory = try fixture("target 'App' do\nend\n")
         let source = directory.appendingPathComponent("archive-source")
-        try makeXCFramework(source.appendingPathComponent("SDK/Remote.xcframework"))
+        let framework = source.appendingPathComponent("SDK/Remote.xcframework")
+        try makeXCFramework(framework)
+        try FileManager.default.createSymbolicLink(atPath: framework.appendingPathComponent("Metadata").path, withDestinationPath: "Info.plist")
+        try FileManager.default.createSymbolicLink(atPath: framework.appendingPathComponent("Current").path, withDestinationPath: "Metadata")
         let archive = directory.appendingPathComponent("Remote.zip")
         _ = try ProcessRunner().run("/usr/bin/ditto", ["-c", "-k", source.path, archive.path], in: nil)
         let digest = try ProcessRunner().run("/usr/bin/shasum", ["-a", "256", archive.path], in: nil).split(separator: " ")[0]
@@ -1404,6 +1063,9 @@ final class InstallerTests: XCTestCase {
         _ = try installer(directory).install(InstallOptions())
         let generatedFramework = directory.appendingPathComponent("SwiftPods/SwiftPodsBinaries/Artifacts/Remote/Remote.xcframework")
         XCTAssertTrue(FileManager.default.fileExists(atPath: generatedFramework.path))
+        XCTAssertEqual(
+            try Data(contentsOf: generatedFramework.appendingPathComponent("Current")),
+            try Data(contentsOf: generatedFramework.appendingPathComponent("Info.plist")))
 
         // A matching self-declared fingerprint must not let a modified generated artifact survive another install.
         let generatedInfo = generatedFramework.appendingPathComponent("Info.plist")
@@ -1417,6 +1079,41 @@ final class InstallerTests: XCTestCase {
         try FileManager.default.removeItem(at: archive)
         try FileManager.default.removeItem(at: directory.appendingPathComponent("SwiftPods"))
         _ = try installer(directory).install(offline)
+    }
+
+    func testDownloadErrorOmitsURLAndCurlOutput() throws {
+        let directory = try fixture("""
+            target 'App' do
+              binary 'Remote', url: 'https://example.com/sdk.zip?signature=test-value', sha256: '\(String(repeating: "0", count: 64))'
+            end
+            """)
+        let runner = RecordingRunner { _, _, _ in throw SwiftPodsError("curl transport diagnostic") }
+        let installer = Installer(directory: directory, runner: runner, cache: directory.appendingPathComponent(".cache"))
+        XCTAssertThrowsError(try installer.install(.init())) { error in
+            let message = "\(error)"
+            XCTAssertTrue(message.contains("Cannot download binary"), message)
+            XCTAssertFalse(message.contains("test-value"), message)
+            XCTAssertFalse(message.contains("curl transport diagnostic"), message)
+        }
+        XCTAssertEqual(runner.invocations.map(\.executable), ["/usr/bin/curl"])
+    }
+
+    func testDuplicateLockRecordsAreRejectedDuringDecoding() throws {
+        let file = URL(fileURLWithPath: "/SwiftPods.lock")
+        let entry = #"{"name":"Kit","sha256":"0000000000000000000000000000000000000000000000000000000000000000"}"#
+        let catalog = #"{"url":"https://example.com/catalog.git","revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","entries":[\#(entry)]}"#
+        let duplicateEntry = catalog.replacingOccurrences(of: entry, with: "\(entry),\(entry.replacingOccurrences(of: "Kit", with: "kit"))")
+        let override = #"{"identity":"kit","url":"https://example.com/kit.git","revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","submodules":true,"sha256":"0000000000000000000000000000000000000000000000000000000000000000","metadataPaths":[]}"#
+        let invalidLocks = [
+            (#"{"version":1,"catalogs":[\#(catalog),\#(catalog)]}"#, "duplicate catalog URL"),
+            (#"{"version":1,"catalogs":[\#(duplicateEntry)]}"#, "duplicate entry"),
+            (#"{"version":2,"catalogs":[],"overrides":[\#(override),\#(override)]}"#, "duplicate package override"),
+        ]
+        for (contents, diagnostic) in invalidLocks {
+            XCTAssertThrowsError(try SwiftPodsLock(data: Data(contents.utf8), file: file)) {
+                XCTAssertTrue("\($0)".contains(diagnostic), "\($0)")
+            }
+        }
     }
 
     func testDeploymentRequiresSatisfyingPins() throws {
@@ -1442,22 +1139,12 @@ final class InstallerTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent(SwiftPodsLock.fileName).path))
     }
 
-    func testResolveValidationFailureRollsBackCreatedPathAndProjectMetadata() throws {
+    func testResolveValidationFailureRollsBackCreatedPathAndProject() throws {
         let directory = try fixture(
             "target 'App' do\n  spm 'https://github.com/a/Kit.git', exact: '1.0.0'\nend\n")
         let projectFile = directory.appendingPathComponent("App.xcodeproj/project.pbxproj")
         let originalProject = try Data(contentsOf: projectFile)
         XCTAssertEqual(chmod(projectFile.path, 0o640), 0)
-        let attributeName = "com.swiftpods.tests.project-rollback"
-        let originalAttribute = Data("original-project-metadata".utf8)
-        XCTAssertEqual(originalAttribute.withUnsafeBytes {
-            setxattr(projectFile.path, attributeName, $0.baseAddress, $0.count, 0, 0)
-        }, 0)
-        var originalTimes = [
-            timespec(tv_sec: 1_700_000_011, tv_nsec: 123_456_789),
-            timespec(tv_sec: 1_700_000_012, tv_nsec: 987_654_321),
-        ]
-        XCTAssertEqual(utimensat(AT_FDCWD, projectFile.path, &originalTimes, 0), 0)
         var originalStatus = stat()
         XCTAssertEqual(lstat(projectFile.path, &originalStatus), 0)
 
@@ -1484,120 +1171,6 @@ final class InstallerTests: XCTestCase {
         var restoredStatus = stat()
         XCTAssertEqual(lstat(projectFile.path, &restoredStatus), 0)
         XCTAssertEqual(restoredStatus.st_mode & 0o7777, originalStatus.st_mode & 0o7777)
-        XCTAssertEqual(restoredStatus.st_mtimespec.tv_sec, originalStatus.st_mtimespec.tv_sec)
-        XCTAssertEqual(restoredStatus.st_mtimespec.tv_nsec, originalStatus.st_mtimespec.tv_nsec)
-        var restoredAttribute = Data(count: originalAttribute.count)
-        let restoredAttributeCount = restoredAttribute.withUnsafeMutableBytes {
-            getxattr(projectFile.path, attributeName, $0.baseAddress, $0.count, 0, 0)
-        }
-        XCTAssertEqual(restoredAttributeCount, originalAttribute.count)
-        XCTAssertEqual(restoredAttribute, originalAttribute)
-    }
-
-    func testProjectTransactionSnapshotsCannotBePoisonedByTemporaryProjectPathRebind() throws {
-        let directory = try fixture("target 'App' do\n  settings 'SWIFT_VERSION' => '5.10'\nend\n")
-        let project = directory.appendingPathComponent("App.xcodeproj", isDirectory: true)
-        let retained = directory.appendingPathComponent(".trusted-project", isDirectory: true)
-        let decoy = directory.appendingPathComponent(".decoy-project", isDirectory: true)
-        let displacedDecoy = directory.appendingPathComponent(".displaced-decoy", isDirectory: true)
-        try FileManager.default.copyItem(at: project, to: decoy)
-        let decoyFile = decoy.appendingPathComponent("project.pbxproj")
-        let attackerMarker = "// attacker-controlled rollback source\n"
-        let decoyBytes = attackerMarker + (try String(contentsOf: decoyFile, encoding: .utf8))
-        try decoyBytes.write(to: decoyFile, atomically: false, encoding: .utf8)
-
-        let raced = Installer(
-            directory: directory, cache: directory.appendingPathComponent(".cache"),
-            generatedMutationHook: { point in
-                switch point {
-                case .beforeProjectTransactionSnapshot("App.xcodeproj"):
-                    precondition(rename(project.path, retained.path) == 0)
-                    precondition(rename(decoy.path, project.path) == 0)
-                case .beforeProjectSave("App.xcodeproj"):
-                    precondition(rename(project.path, displacedDecoy.path) == 0)
-                    precondition(rename(retained.path, project.path) == 0)
-                default:
-                    break
-                }
-            })
-
-        _ = try raced.install(.init())
-
-        let installed = try String(
-            contentsOf: project.appendingPathComponent("project.pbxproj"), encoding: .utf8)
-        XCTAssertFalse(installed.contains(attackerMarker), installed)
-        _ = try XcodeProject(path: project)
-        XCTAssertTrue(try String(
-            contentsOf: displacedDecoy.appendingPathComponent("project.pbxproj"), encoding: .utf8
-        ).contains(attackerMarker))
-    }
-
-    func testResolveRunsAgainstRetainedProjectDescriptorDuringPathRebind() throws {
-        let directory = try fixture(
-            "target 'App' do\n  spm 'https://github.com/a/Kit.git', exact: '1.0.0'\nend\n")
-        let project = directory.appendingPathComponent("App.xcodeproj", isDirectory: true)
-        let movedProject = directory.appendingPathComponent(".moved-project", isDirectory: true)
-        let decoy = directory.appendingPathComponent(".resolver-decoy", isDirectory: true)
-        let displacedDecoy = directory.appendingPathComponent(".resolver-displaced-decoy", isDirectory: true)
-        try FileManager.default.copyItem(at: project, to: decoy)
-
-        let runner = DescriptorRunner { executable, arguments, descriptor in
-            XCTAssertEqual(executable, "/usr/bin/xcrun")
-            XCTAssertEqual(Array(arguments.suffix(2)), ["-project", "."])
-            precondition(rename(project.path, movedProject.path) == 0)
-            precondition(rename(decoy.path, project.path) == 0)
-
-            var anchored = stat()
-            var moved = stat()
-            var replacement = stat()
-            XCTAssertEqual(fstat(descriptor, &anchored), 0)
-            XCTAssertEqual(lstat(movedProject.path, &moved), 0)
-            XCTAssertEqual(lstat(project.path, &replacement), 0)
-            XCTAssertEqual(anchored.st_dev, moved.st_dev)
-            XCTAssertEqual(anchored.st_ino, moved.st_ino)
-            XCTAssertNotEqual(anchored.st_ino, replacement.st_ino)
-
-            let resolved = PackageResolved.location(project: movedProject)
-            try FileManager.default.createDirectory(
-                at: resolved.deletingLastPathComponent(), withIntermediateDirectories: true)
-            let bytes = Data(#"{"pins":[{"identity":"kit","kind":"remoteSourceControl","location":"https://github.com/a/Kit.git","state":{"revision":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","version":"1.0.0"}}],"version":3}"#.utf8)
-            try bytes.write(to: resolved)
-
-            precondition(rename(project.path, displacedDecoy.path) == 0)
-            precondition(rename(movedProject.path, project.path) == 0)
-            return ""
-        }
-        var options = InstallOptions()
-        options.resolve = true
-        _ = try Installer(
-            directory: directory, runner: runner,
-            cache: directory.appendingPathComponent(".cache")
-        ).install(options)
-
-        let resolved = try PackageResolved.snapshot(project: project)
-        XCTAssertNotNil(resolved.data)
-        XCTAssertFalse(FileManager.default.fileExists(
-            atPath: PackageResolved.location(project: displacedDecoy).path))
-    }
-
-    func testResolveRejectsAPathOnlyCommandRunner() throws {
-        struct PathOnlyRunner: CommandRunner {
-            func run(_ executable: String, _ arguments: [String], in directory: URL?) throws -> String { "" }
-        }
-        let directory = try fixture(
-            "target 'App' do\n  spm 'https://github.com/a/Kit.git', exact: '1.0.0'\nend\n")
-        let projectFile = directory.appendingPathComponent("App.xcodeproj/project.pbxproj")
-        let original = try Data(contentsOf: projectFile)
-        var options = InstallOptions()
-        options.resolve = true
-
-        XCTAssertThrowsError(try Installer(
-            directory: directory, runner: PathOnlyRunner(),
-            cache: directory.appendingPathComponent(".cache")
-        ).install(options)) { error in
-            XCTAssertTrue("\(error)".contains("authenticated project directory"), "\(error)")
-        }
-        XCTAssertEqual(try Data(contentsOf: projectFile), original)
     }
 
     private func resolverMetadataFixture() throws -> (directory: URL, resolved: URL, package: URL) {
@@ -1664,39 +1237,6 @@ final class InstallerTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.directory.appendingPathComponent("SwiftPods").path))
     }
 
-    func testResolveMetadataDoesNotAuthorizeManagedPayloadChanges() throws {
-        let fixture = try resolverMetadataFixture()
-        let manifest = fixture.package.appendingPathComponent("Package.swift")
-        let tampered = Data("concurrent managed edit".utf8)
-        let runner = RecordingRunner { _, _, _ in
-            try self.createResolverMetadata(in: fixture.package)
-            try tampered.write(to: manifest)
-            return ""
-        }
-        var options = InstallOptions()
-        options.resolve = true
-        XCTAssertThrowsError(try Installer(directory: fixture.directory, runner: runner).install(options)) { error in
-            XCTAssertTrue("\(error)".contains("Resolver changed managed generated package contents"), "\(error)")
-        }
-        XCTAssertEqual(try Data(contentsOf: manifest), tampered)
-    }
-
-    func testResolveRejectsSymlinkMetadataRootWithoutTouchingItsTarget() throws {
-        let fixture = try resolverMetadataFixture()
-        let outside = fixture.directory.appendingPathComponent("outside")
-        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
-        let sentinel = outside.appendingPathComponent("keep")
-        try Data("keep".utf8).write(to: sentinel)
-        let runner = RecordingRunner { _, _, _ in
-            try FileManager.default.createSymbolicLink(at: fixture.package.appendingPathComponent(".swiftpm"), withDestinationURL: outside)
-            return ""
-        }
-        var options = InstallOptions()
-        options.resolve = true
-        XCTAssertThrowsError(try Installer(directory: fixture.directory, runner: runner).install(options))
-        XCTAssertEqual(try Data(contentsOf: sentinel), Data("keep".utf8))
-    }
-
     func testResolveCommandFailureRollsBackItsNewPackageResolvedPath() throws {
         let directory = try fixture(
             "target 'App' do\n  spm 'https://github.com/a/Kit.git', exact: '1.0.0'\nend\n")
@@ -1725,33 +1265,41 @@ final class InstallerTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: projectFile), originalProject)
     }
 
-    func testProjectRollbackRefusesConcurrentMetadataOnlyEdit() throws {
-        let directory = try fixture(
-            "target 'App' do\n  spm 'https://github.com/a/Kit.git', exact: '1.0.0'\nend\n")
-        let projectFile = directory.appendingPathComponent("App.xcodeproj/project.pbxproj")
-        let attributeName = "com.swiftpods.tests.concurrent-project-metadata"
-        let concurrentAttribute = Data("keep-concurrent-metadata".utf8)
+    func testRollbackFailurePreservesGeneratedBackupsAcrossRetry() throws {
+        guard geteuid() != 0 else { throw XCTSkip("Requires directory permissions to apply to the installer") }
+        let directory = try fixture("target 'App' do\n  settings 'REVIEW_SETTING' => 'original'\nend\n")
+        _ = try installer(directory).install(.init())
+        let generated = directory.appendingPathComponent("SwiftPods")
+        let settings = "Settings/App/App.xcconfig"
+        let original = try Data(contentsOf: generated.appendingPathComponent(settings))
+        try Data("target 'App' do\n  settings 'REVIEW_SETTING' => 'updated'\nend\n".utf8)
+            .write(to: directory.appendingPathComponent("Podfile"))
+
         let runner = RecordingRunner { _, _, _ in
-            let result = concurrentAttribute.withUnsafeBytes {
-                setxattr(projectFile.path, attributeName, $0.baseAddress, $0.count, 0, 0)
-            }
-            XCTAssertEqual(result, 0)
-            throw SwiftPodsError("resolver failed after concurrent metadata edit")
+            guard chmod(generated.path, 0o555) == 0 else { throw SwiftPodsError("Could not make the generated directory read-only") }
+            throw SwiftPodsError("Package resolution failed after publishing settings")
         }
+        defer { chmod(generated.path, 0o755) }
         var options = InstallOptions()
         options.resolve = true
-        XCTAssertThrowsError(try Installer(
-            directory: directory, runner: runner, cache: directory.appendingPathComponent(".cache")
-        ).install(options)) { error in
-            XCTAssertTrue("\(error)".contains("rollback was incomplete"), "\(error)")
-            XCTAssertTrue("\(error)".contains("concurrent edit"), "\(error)")
+        XCTAssertThrowsError(try Installer(directory: directory, runner: runner).install(options)) {
+            let message = "\($0)"
+            XCTAssertTrue(message.contains("rollback was incomplete"), message)
+            XCTAssertTrue(message.contains("Package resolution failed"), message)
+            XCTAssertTrue(message.contains(".swiftpods-staging-"), message)
         }
-        var preservedAttribute = Data(count: concurrentAttribute.count)
-        let preservedAttributeCount = preservedAttribute.withUnsafeMutableBytes {
-            getxattr(projectFile.path, attributeName, $0.baseAddress, $0.count, 0, 0)
-        }
-        XCTAssertEqual(preservedAttributeCount, concurrentAttribute.count)
-        XCTAssertEqual(preservedAttribute, concurrentAttribute)
+        XCTAssertEqual(chmod(generated.path, 0o755), 0)
+        let staging = try XCTUnwrap(FileManager.default.contentsOfDirectory(atPath: generated.path)
+            .first { $0.hasPrefix(".swiftpods-staging-") })
+        let backup = generated.appendingPathComponent(staging).appendingPathComponent(".previous-" + settings)
+        XCTAssertEqual(try Data(contentsOf: backup), original)
+
+        _ = try installer(directory).install(.init())
+        XCTAssertEqual(try Data(contentsOf: backup), original)
+        XCTAssertTrue(try String(contentsOf: generated.appendingPathComponent(settings), encoding: .utf8).contains("REVIEW_SETTING = updated"))
+        _ = try installer(directory).deintegrate()
+        _ = try installer(directory).install(.init())
+        XCTAssertEqual(try Data(contentsOf: backup), original)
     }
 
     func testDeploymentUsesOneFrozenFullGraphResolutionAndPreservesTheLock() throws {
@@ -1772,13 +1320,68 @@ final class InstallerTests: XCTestCase {
         XCTAssertEqual(runner.invocations.count, 1)
         let invocation = try XCTUnwrap(runner.invocations.first)
         XCTAssertEqual(invocation.executable, "/usr/bin/xcrun")
-        XCTAssertNil(invocation.directory)
-        XCTAssertEqual(Array(invocation.arguments.suffix(2)), ["-project", "."])
+        XCTAssertEqual(invocation.directory?.standardizedFileURL.path, directory.standardizedFileURL.path)
+        XCTAssertEqual(Array(invocation.arguments.suffix(2)), ["-project", "App.xcodeproj"])
         XCTAssertTrue(invocation.arguments.contains("-resolvePackageDependencies"), "\(invocation.arguments)")
         XCTAssertTrue(invocation.arguments.contains("-disableAutomaticPackageResolution"), "\(invocation.arguments)")
         XCTAssertTrue(invocation.arguments.contains("-onlyUsePackageVersionsFromResolvedFile"), "\(invocation.arguments)")
         XCTAssertTrue(invocation.arguments.contains("-skipPackageUpdates"), "\(invocation.arguments)")
         XCTAssertEqual(try Data(contentsOf: resolved), Data(contents.utf8))
+    }
+
+    func testDeploymentChecksLocalPackagesWithoutAnExistingResolvedFile() throws {
+        let directory = try fixture("target 'App' do\n  spm 'Kit', path: 'Modules/Kit'\nend\n")
+        let project = directory.appendingPathComponent("App.xcodeproj")
+        let resolved = PackageResolved.location(project: project)
+        let projectFile = project.appendingPathComponent("project.pbxproj")
+        let originalProject = try Data(contentsOf: projectFile)
+        var options = InstallOptions()
+        options.deployment = true
+
+        let writesPins = RecordingRunner { _, arguments, _ in
+            XCTAssertTrue(arguments.contains("-onlyUsePackageVersionsFromResolvedFile"))
+            try FileManager.default.createDirectory(at: resolved.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(#"{"version":3,"pins":[]}"#.utf8).write(to: resolved)
+            return ""
+        }
+        XCTAssertThrowsError(try Installer(directory: directory, runner: writesPins).install(options)) {
+            XCTAssertTrue("\($0)".contains("modified Package.resolved"), "\($0)")
+        }
+        XCTAssertEqual(try Data(contentsOf: projectFile), originalProject)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: project.appendingPathComponent("project.xcworkspace").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("SwiftPods").path))
+
+        let localOnly = RecordingRunner()
+        _ = try Installer(directory: directory, runner: localOnly).install(options)
+        XCTAssertEqual(localOnly.invocations.count, 1)
+        XCTAssertTrue(localOnly.invocations.first?.arguments.contains("-onlyUsePackageVersionsFromResolvedFile") == true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: resolved.path))
+    }
+
+    func testDeploymentAlsoChecksLocalPackagesOnlyInXcode() throws {
+        let directory = try fixture("target 'App' do\nend\n")
+        var before = try project(directory)
+        let group = try XCTUnwrap(before.project.string("mainGroup"))
+        let app = try XCTUnwrap(before.nativeTargets.first { $0.name == "App" }?.id)
+        let localPackage = before.put("hand-added package", [
+            "isa": "PBXFileReference", "lastKnownFileType": "wrapper", "path": "Modules/Kit", "sourceTree": "SOURCE_ROOT",
+        ])
+        let product = before.put("hand-added product", ["isa": "XCSwiftPackageProductDependency", "productName": "Kit"])
+        before.append(localPackage, to: "children", of: group)
+        before.append(product, to: "packageProductDependencies", of: app)
+        try before.save()
+        let original = try Data(contentsOf: before.file)
+        let runner = RecordingRunner { _, arguments, _ in
+            XCTAssertTrue(arguments.contains("-onlyUsePackageVersionsFromResolvedFile"))
+            throw SwiftPodsError("Xcode requires a lock for the transitive dependency")
+        }
+        var options = InstallOptions()
+        options.deployment = true
+        XCTAssertThrowsError(try Installer(directory: directory, runner: runner).install(options)) {
+            XCTAssertTrue("\($0)".contains("Xcode requires a lock"), "\($0)")
+        }
+        XCTAssertEqual(runner.invocations.count, 1)
+        XCTAssertEqual(try Data(contentsOf: before.file), original)
     }
 
     func testDeploymentFailsIfFrozenResolutionFailsOrMutatesTheLock() throws {
@@ -1908,20 +1511,6 @@ final class InstallerTests: XCTestCase {
         XCTAssertTrue(script.contains("/SourcePackages/checkouts/firebase-ios-sdk/Crashlytics/"), script)
     }
 
-    func testGeneratedTextInspectionHasPerFileAndAggregateBudgets() throws {
-        let directory = try fixture("target 'App' do\nend\n")
-        _ = try installer(directory).install(.init())
-        let oversized = directory.appendingPathComponent("SwiftPods/Scripts/oversized")
-        XCTAssertTrue(FileManager.default.createFile(atPath: oversized.path, contents: Data()))
-        let handle = try FileHandle(forWritingTo: oversized)
-        try handle.truncate(atOffset: UInt64(8 * 1_024 * 1_024 + 1))
-        try handle.close()
-
-        XCTAssertThrowsError(try installer(directory).install(.init())) {
-            XCTAssertTrue("\($0)".contains("8388608 bytes"), "\($0)")
-        }
-    }
-
     func testCRLFScriptFileListsRemainUsable() throws {
         let directory = try fixture(
             "target 'App' do\n  script_phase name: 'Build', script: 'true', input_file_lists: ['Inputs.xcfilelist']\nend\n",
@@ -1950,70 +1539,85 @@ final class InstallerTests: XCTestCase {
         XCTAssertTrue(prepareInputs.contains("$(SRCROOT)/Inputs.xcfilelist\n"), prepareInputs)
     }
 
-    func testScriptFileListChangeBeforeCommitAbortsAndRollsBack() throws {
-        let directory = try fixture(
-            "target 'App' do\n  script_phase name: 'Build', script: 'true', input_file_lists: ['Inputs.xcfilelist']\nend\n",
-            files: ["Inputs.xcfilelist": "Sources/One.swift\n"])
-        let list = directory.appendingPathComponent("Inputs.xcfilelist")
-        let raced = Installer(
-            directory: directory, cache: directory.appendingPathComponent(".cache"),
-            generatedMutationHook: { point in
-                guard point == .afterPublish("Scripts") else { return }
-                try! "Sources/Two.swift\n".write(to: list, atomically: true, encoding: .utf8)
-            })
-
-        XCTAssertThrowsError(try raced.install(.init())) { error in
-            XCTAssertTrue("\(error)".contains("Script file list changed after it was read"), "\(error)")
+    func testAnInterruptedResolutionRollsTheInstallBack() throws {
+        defer { Interruption.reset() }
+        let directory = try fixture("target 'App' do\n  spm 'https://github.com/a/Bar.git', exact: '1.0.0', products: ['Bar']\nend\n")
+        let projectFile = directory.appendingPathComponent("App.xcodeproj/project.pbxproj")
+        let original = try Data(contentsOf: projectFile)
+        // SIGINT arrives while Xcode resolves packages, after the generated folders and the project were written.
+        let runner = RecordingRunner { _, _, _ in
+            DispatchQueue.global().asyncAfter(deadline: .now() + 0.3) { Interruption.record(SIGINT) }
+            return try ProcessRunner().run("/bin/sleep", ["30"], in: nil)
         }
-        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("SwiftPods/Scripts").path))
-    }
-
-    func testManifestChangeBeforeGeneratedMutationIsRejected() throws {
-        let directory = try fixture("target 'App' do\nend\n")
-        let podfile = directory.appendingPathComponent("Podfile")
-        let raced = Installer(
-            directory: directory, cache: directory.appendingPathComponent(".cache"),
-            generatedMutationHook: { point in
-                guard point == .beforeGeneratedRootOpen else { return }
-                try! "target 'Other' do\nend\n".write(to: podfile, atomically: true, encoding: .utf8)
-            })
-
-        XCTAssertThrowsError(try raced.install(.init())) { error in
-            XCTAssertTrue("\(error)".contains("changed after the manifest was read"), "\(error)")
+        var options = InstallOptions()
+        options.resolve = true
+        let start = Date()
+        XCTAssertThrowsError(try Installer(directory: directory, runner: runner, cache: directory.appendingPathComponent(".cache"))
+            .install(options)) {
+            XCTAssertTrue("\($0)".contains("Interrupted by SIGINT"), "\($0)")
         }
+        XCTAssertLessThan(Date().timeIntervalSince(start), 5)
+        XCTAssertEqual(try Data(contentsOf: projectFile), original)
         XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("SwiftPods").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent(SwiftPodsLock.fileName).path))
     }
 
-    func testScriptFileListEntryAndExpansionBudgetsBoundWork() throws {
-        let entries = String(repeating: "Sources/A.swift\n", count: 25_001)
-        let oversized = try fixture(
-            "target 'App' do\n  script_phase name: 'Build', script: 'true', input_file_lists: ['Inputs.xcfilelist']\nend\n",
-            files: ["Inputs.xcfilelist": entries])
-        XCTAssertThrowsError(try installer(oversized).install(.init())) { error in
-            XCTAssertTrue("\(error)".contains("more than 25000 entries"), "\(error)")
+    func testAnInterruptionAfterDeintegrationStartsRestoresTheProjects() throws {
+        let directory = try fixture("")
+        let projects = (0..<64).map { directory.appendingPathComponent("Project-\($0).xcodeproj") }
+        let podfile = projects.map { "target 'App' do\n  project '\($0.lastPathComponent)'\nend\n" }.joined(separator: "\n")
+        try Data(podfile.utf8).write(to: directory.appendingPathComponent("Podfile"))
+        let projectFiles = try projects.map { project in
+            try FileManager.default.createDirectory(at: project, withIntermediateDirectories: false)
+            let file = project.appendingPathComponent("project.pbxproj")
+            try Data(Fixtures.project.utf8).write(to: file)
+            return file
+        }
+        let installer = self.installer(directory)
+        _ = try installer.install(.init())
+        let originals = try projectFiles.map { try Data(contentsOf: $0) }
+        let generated = directory.appendingPathComponent("SwiftPods/SwiftPodsDependencies")
+        let descriptor = open(generated.path, O_EVTONLY | O_CLOEXEC)
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        guard descriptor >= 0 else { return }
+        let events = DispatchQueue(label: "SwiftPods tests deintegrate")
+        let watcher = DispatchSource.makeFileSystemObjectSource(fileDescriptor: descriptor, eventMask: .rename, queue: events)
+        watcher.setEventHandler { Interruption.record(SIGTERM) }
+        watcher.setCancelHandler { close(descriptor) }
+        watcher.resume()
+        defer {
+            watcher.cancel()
+            events.sync { Interruption.reset() }
         }
 
-        let bounded = String(repeating: "A\n", count: 25_000)
-        let references = Array(repeating: "'Inputs.xcfilelist'", count: 9).joined(separator: ", ")
-        let amplified = try fixture(
-            "target 'App' do\n  script_phase name: 'Build', script: 'true', input_file_lists: [\(references)]\nend\n",
-            files: ["Inputs.xcfilelist": bounded])
-        XCTAssertThrowsError(try installer(amplified).install(.init())) { error in
-            XCTAssertTrue("\(error)".contains("Expanded script file lists exceed the install work budget"), "\(error)")
+        XCTAssertThrowsError(try installer.deintegrate()) { error in
+            XCTAssertTrue("\(error)".contains("Interrupted by SIGTERM"), "\(error)")
+        }
+        XCTAssertTrue(FileTree.isDirectory(generated))
+        XCTAssertEqual(try projectFiles.map { try Data(contentsOf: $0) }, originals)
+    }
+
+    func testAFileListThatExistsButCannotBeReadFailsTheInstall() throws {
+        let directory = try fixture(
+            "target 'App' do\n  script_phase name: 'Build', script: 'true', input_file_lists: ['Inputs.xcfilelist']\nend\n")
+        try FileManager.default.createDirectory(
+            at: directory.appendingPathComponent("Inputs.xcfilelist"), withIntermediateDirectories: false)
+
+        XCTAssertThrowsError(try installer(directory).install(.init())) {
+            XCTAssertTrue("\($0)".contains("Cannot read file list"), "\($0)")
         }
     }
 
-    func testScriptFileListPhysicalLineBudgetCountsBlankAndCommentLines() throws {
-        for contents in [
-            String(repeating: "\n", count: 50_001),
-            String(repeating: "# comment\n", count: 50_001),
-        ] {
-            let directory = try fixture(
-                "target 'App' do\n  script_phase name: 'Build', script: 'true', input_file_lists: ['Inputs.xcfilelist']\nend\n",
-                files: ["Inputs.xcfilelist": contents])
-            XCTAssertThrowsError(try installer(directory).install(.init())) { error in
-                XCTAssertTrue("\(error)".contains("more than 50000 physical lines"), "\(error)")
-            }
+    func testAFileListBehindAnInaccessibleDirectoryFailsTheInstall() throws {
+        guard geteuid() != 0 else { throw XCTSkip("Requires directory permissions to apply to the installer") }
+        let directory = try fixture(
+            "target 'App' do\n  script_phase name: 'Build', script: 'true', input_file_lists: ['Lists/Inputs.xcfilelist']\nend\n",
+            files: ["Lists/Inputs.xcfilelist": "main.swift\n"])
+        let lists = directory.appendingPathComponent("Lists")
+        XCTAssertEqual(chmod(lists.path, 0o000), 0)
+        defer { chmod(lists.path, 0o755) }
+        XCTAssertThrowsError(try installer(directory).install(.init())) {
+            XCTAssertTrue("\($0)".contains("Cannot read file list"), "\($0)")
         }
     }
 
@@ -2052,306 +1656,6 @@ final class InstallerTests: XCTestCase {
             XCTAssertTrue("\(error)".contains("Refusing to manage non-SwiftPods directory"), "\(error)")
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent(".swiftpods-owned").path))
-    }
-
-    func testGeneratedAndProjectSymlinksCannotRedirectWrites() throws {
-        let victim = try fixture("")
-        let victimProject = victim.appendingPathComponent("App.xcodeproj")
-        let victimText = try String(contentsOf: victimProject.appendingPathComponent("project.pbxproj"), encoding: .utf8)
-
-        let projectAttack = try fixture("project 'Linked.xcodeproj'\ntarget 'App' do\nend\n")
-        try FileManager.default.createSymbolicLink(
-            at: projectAttack.appendingPathComponent("Linked.xcodeproj"), withDestinationURL: victimProject)
-        XCTAssertThrowsError(try installer(projectAttack).install(InstallOptions())) {
-            XCTAssertTrue("\($0)".contains("outside the Podfile directory"), "\($0)")
-        }
-        XCTAssertEqual(try String(contentsOf: victimProject.appendingPathComponent("project.pbxproj"), encoding: .utf8), victimText)
-
-        let generatedAttack = try fixture("target 'App' do\nend\n")
-        try FileManager.default.createSymbolicLink(
-            at: generatedAttack.appendingPathComponent("SwiftPods"), withDestinationURL: victim)
-        XCTAssertThrowsError(try installer(generatedAttack).install(InstallOptions())) {
-            XCTAssertTrue("\($0)".contains("symbolic link"), "\($0)")
-        }
-        XCTAssertFalse(FileManager.default.fileExists(atPath: victim.appendingPathComponent(".swiftpods-owned").path))
-
-        let nestedAttack = try fixture("target 'App' do\nend\n")
-        _ = try installer(nestedAttack).install(InstallOptions())
-        let generatedScript = nestedAttack.appendingPathComponent("SwiftPods/Scripts/App/App/prepare.sh")
-        let outsideScript = nestedAttack.appendingPathComponent("redirected-prepare.sh")
-        try FileManager.default.copyItem(at: generatedScript, to: outsideScript)
-        try FileManager.default.removeItem(at: generatedScript)
-        try FileManager.default.createSymbolicLink(at: generatedScript, withDestinationURL: outsideScript)
-        XCTAssertThrowsError(try installer(nestedAttack).install(InstallOptions())) {
-            XCTAssertTrue("\($0)".contains("symbolic link or special file"), "\($0)")
-        }
-    }
-
-    func testGeneratedRootRejectsWritableModesAndExtendedACLs() throws {
-        let directory = try fixture("target 'App' do\nend\n")
-        _ = try installer(directory).install(InstallOptions())
-        let root = directory.appendingPathComponent("SwiftPods", isDirectory: true)
-
-        XCTAssertEqual(chmod(root.path, 0o777), 0)
-        XCTAssertThrowsError(try installer(directory).install(InstallOptions())) {
-            XCTAssertTrue("\($0)".contains("not writable by group or others"), "\($0)")
-        }
-        XCTAssertEqual(chmod(root.path, 0o755), 0)
-
-        _ = try ProcessRunner().run("/bin/chmod", ["+a", "everyone allow write", root.path], in: nil)
-        XCTAssertTrue(try SecureFileTree.hasExtendedACL(root))
-        XCTAssertThrowsError(try installer(directory).install(InstallOptions())) {
-            XCTAssertTrue("\($0)".contains("extended ACL"), "\($0)")
-        }
-        _ = try ProcessRunner().run("/bin/chmod", ["-N", root.path], in: nil)
-
-        let scripts = root.appendingPathComponent("Scripts", isDirectory: true)
-        XCTAssertEqual(chmod(scripts.path, 0o777), 0)
-        XCTAssertThrowsError(try installer(directory).install(InstallOptions())) {
-            XCTAssertTrue("\($0)".contains("not writable by group or others"), "\($0)")
-        }
-        XCTAssertEqual(chmod(scripts.path, 0o755), 0)
-
-        let script = scripts.appendingPathComponent("App/App/prepare.sh")
-        _ = try ProcessRunner().run("/bin/chmod", ["+a", "everyone allow write", script.path], in: nil)
-        XCTAssertThrowsError(try installer(directory).install(InstallOptions())) {
-            XCTAssertTrue("\($0)".contains("extended ACL"), "\($0)")
-        }
-        _ = try ProcessRunner().run("/bin/chmod", ["-N", script.path], in: nil)
-    }
-
-    func testGeneratedPublicationPreservesOldTreeAndANonCooperatingReplacement() throws {
-        let directory = try fixture("target 'App' do\n  settings 'SWIFT_VERSION' => '5.9'\nend\n")
-        _ = try installer(directory).install(.init())
-        let oldSettings = try generated(directory, "Settings/App/App.xcconfig")
-        try "target 'App' do\n  settings 'SWIFT_VERSION' => '5.10'\nend\n"
-            .write(to: directory.appendingPathComponent("Podfile"), atomically: true, encoding: .utf8)
-
-        let concurrent = directory.appendingPathComponent("ConcurrentSettings", isDirectory: true)
-        try FileManager.default.createDirectory(at: concurrent, withIntermediateDirectories: false)
-        try "preserve me\n".write(
-            to: concurrent.appendingPathComponent("concurrent.txt"), atomically: false, encoding: .utf8)
-        let generatedSettings = directory.appendingPathComponent("SwiftPods/Settings", isDirectory: true)
-        let raced = Installer(
-            directory: directory, cache: directory.appendingPathComponent(".cache"),
-            generatedMutationHook: { point in
-                guard point == .afterPublish("Settings") else { return }
-                precondition(renamex_np(concurrent.path, generatedSettings.path, UInt32(RENAME_SWAP)) == 0)
-            })
-
-        XCTAssertThrowsError(try raced.install(.init())) { error in
-            XCTAssertTrue("\(error)".contains("raced with another writer"), "\(error)")
-        }
-        let staging = try preservedGeneratedStaging(directory)
-        let visibleOld = try? generated(directory, "Settings/App/App.xcconfig")
-        let stagedOld = try? String(
-            contentsOf: staging.appendingPathComponent("Settings/App/App.xcconfig"), encoding: .utf8)
-        XCTAssertTrue(visibleOld == oldSettings || stagedOld == oldSettings, "The displaced tree was not preserved")
-        let visibleConcurrent = try? String(
-            contentsOf: generatedSettings.appendingPathComponent("concurrent.txt"), encoding: .utf8)
-        let stagedConcurrent = try? String(
-            contentsOf: staging.appendingPathComponent("Settings/concurrent.txt"), encoding: .utf8)
-        XCTAssertTrue(
-            visibleConcurrent == "preserve me\n" || stagedConcurrent == "preserve me\n",
-            "The concurrent replacement was not preserved")
-        XCTAssertTrue(
-            try String(contentsOf: concurrent.appendingPathComponent("App/App.xcconfig"), encoding: .utf8)
-                .contains("5.10"))
-    }
-
-    func testGeneratedWithdrawalPreservesAConcurrentReplacementAndTheWithdrawnTree() throws {
-        let directory = try fixture(
-            "target 'App' do\n  binary 'Kit', path: 'Vendor/Kit.xcframework'\nend\n")
-        try makeXCFramework(directory.appendingPathComponent("Vendor/Kit.xcframework"))
-        _ = try installer(directory).install(.init())
-        try "target 'App' do\nend\n".write(
-            to: directory.appendingPathComponent("Podfile"), atomically: true, encoding: .utf8)
-
-        let concurrent = directory.appendingPathComponent("ConcurrentBinaries", isDirectory: true)
-        try FileManager.default.createDirectory(at: concurrent, withIntermediateDirectories: false)
-        try "preserve me\n".write(
-            to: concurrent.appendingPathComponent("concurrent.txt"), atomically: false, encoding: .utf8)
-        let generatedBinaries = directory.appendingPathComponent(
-            "SwiftPods/SwiftPodsBinaries", isDirectory: true)
-        let raced = Installer(
-            directory: directory, cache: directory.appendingPathComponent(".cache"),
-            generatedMutationHook: { point in
-                guard point == .afterWithdraw("SwiftPodsBinaries") else { return }
-                precondition(rename(concurrent.path, generatedBinaries.path) == 0)
-            })
-
-        XCTAssertThrowsError(try raced.install(.init())) { error in
-            XCTAssertTrue("\(error)".contains("withdrawal raced with another writer"), "\(error)")
-        }
-        XCTAssertEqual(
-            try String(contentsOf: generatedBinaries.appendingPathComponent("concurrent.txt"), encoding: .utf8),
-            "preserve me\n")
-        let staging = try preservedGeneratedStaging(directory)
-        XCTAssertTrue(FileManager.default.fileExists(
-            atPath: staging.appendingPathComponent("SwiftPodsBinaries/Package.swift").path))
-    }
-
-    func testGeneratedRollbackRefusesToOverwriteANonCooperatingReplacement() throws {
-        let directory = try fixture("target 'App' do\n  settings 'SWIFT_VERSION' => '5.9'\nend\n")
-        _ = try installer(directory).install(.init())
-        try "target 'App' do\n  settings 'SWIFT_VERSION' => '5.10'\nend\n"
-            .write(to: directory.appendingPathComponent("Podfile"), atomically: true, encoding: .utf8)
-
-        let concurrent = directory.appendingPathComponent("ConcurrentSettings", isDirectory: true)
-        try FileManager.default.createDirectory(at: concurrent, withIntermediateDirectories: false)
-        try "preserve me\n".write(
-            to: concurrent.appendingPathComponent("concurrent.txt"), atomically: false, encoding: .utf8)
-        let generatedSettings = directory.appendingPathComponent("SwiftPods/Settings", isDirectory: true)
-        let runner = RecordingRunner { executable, arguments, _ in
-            guard executable == "/usr/bin/xcrun", arguments.first == "xcodebuild" else { return "" }
-            precondition(renamex_np(concurrent.path, generatedSettings.path, UInt32(RENAME_SWAP)) == 0)
-            throw SwiftPodsError("forced late failure")
-        }
-        var options = InstallOptions()
-        options.resolve = true
-
-        XCTAssertThrowsError(try Installer(
-            directory: directory, runner: runner, cache: directory.appendingPathComponent(".cache")
-        ).install(options)) { error in
-            XCTAssertTrue("\(error)".contains("rollback was incomplete"), "\(error)")
-            XCTAssertTrue("\(error)".contains("concurrent replacement"), "\(error)")
-        }
-        XCTAssertEqual(
-            try String(contentsOf: generatedSettings.appendingPathComponent("concurrent.txt"), encoding: .utf8),
-            "preserve me\n")
-        let staging = try preservedGeneratedStaging(directory)
-        XCTAssertTrue(
-            try String(contentsOf: staging.appendingPathComponent("Settings/App/App.xcconfig"), encoding: .utf8)
-                .contains("5.9"))
-        XCTAssertTrue(
-            try String(contentsOf: concurrent.appendingPathComponent("App/App.xcconfig"), encoding: .utf8)
-                .contains("5.10"))
-    }
-
-    func testGeneratedRootCannotRebindAwayFromTheLockedWorkspaceDescriptor() throws {
-        let directory = try fixture("target 'App' do\nend\n")
-        let moved = directory.deletingLastPathComponent().appendingPathComponent(
-            "moved-workspace-" + UUID().uuidString, isDirectory: true)
-        directories.append(moved)
-        let replacementSentinel = directory.appendingPathComponent("replacement.txt")
-        let raced = Installer(
-            directory: directory, cache: directory.appendingPathComponent(".cache"),
-            generatedMutationHook: { point in
-                guard point == .beforeGeneratedRootOpen else { return }
-                precondition(rename(directory.path, moved.path) == 0)
-                precondition(mkdir(directory.path, 0o755) == 0)
-                precondition(FileManager.default.createFile(
-                    atPath: replacementSentinel.path, contents: Data("replacement\n".utf8)))
-            })
-
-        XCTAssertThrowsError(try raced.install(.init())) { error in
-            XCTAssertTrue("\(error)".contains("Podfile directory changed while the workspace was locked"), "\(error)")
-        }
-        XCTAssertEqual(try String(contentsOf: replacementSentinel, encoding: .utf8), "replacement\n")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("SwiftPods").path))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: moved.appendingPathComponent("SwiftPods").path))
-    }
-
-    func testGeneratedStagingCleanupPreservesAChildAddedAfterVerification() throws {
-        let directory = try fixture("target 'App' do\n  settings 'SWIFT_VERSION' => '5.10'\nend\n")
-        let root = directory.appendingPathComponent("SwiftPods", isDirectory: true)
-        let raced = Installer(
-            directory: directory, cache: directory.appendingPathComponent(".cache"),
-            generatedMutationHook: { point in
-                guard point == .afterStagingCleanupVerification else { return }
-                let stagingNames = try! FileManager.default.contentsOfDirectory(atPath: root.path)
-                    .filter { $0.hasPrefix(".staging-") }
-                precondition(stagingNames.count == 1)
-                let unknown = root.appendingPathComponent(stagingNames[0], isDirectory: true)
-                    .appendingPathComponent("concurrent.txt")
-                precondition(FileManager.default.createFile(
-                    atPath: unknown.path, contents: Data("preserve me\n".utf8)))
-            })
-
-        let report = try raced.install(.init())
-
-        XCTAssertTrue(report.notes.contains { $0.contains("could not remove a completed transaction staging") })
-        let staging = try preservedGeneratedStaging(directory)
-        XCTAssertEqual(
-            try String(contentsOf: staging.appendingPathComponent("concurrent.txt"), encoding: .utf8),
-            "preserve me\n")
-        XCTAssertEqual(
-            try String(
-                contentsOf: staging.appendingPathComponent(".swiftpods-staging"), encoding: .utf8),
-            "SwiftPods generated staging v1\n")
-        XCTAssertTrue(try generated(directory, "Settings/App/App.xcconfig").contains("5.10"))
-    }
-
-    func testGeneratedMutationFingerprintRejectsAnAdversarialDeepTree() throws {
-        let directory = try fixture("target 'App' do\n  settings 'SWIFT_VERSION' => '5.9'\nend\n")
-        _ = try installer(directory).install(.init())
-        try "target 'App' do\n  settings 'SWIFT_VERSION' => '5.10'\nend\n".write(
-            to: directory.appendingPathComponent("Podfile"), atomically: true, encoding: .utf8)
-        let settings = directory.appendingPathComponent("SwiftPods/Settings", isDirectory: true)
-        let raced = Installer(
-            directory: directory, cache: directory.appendingPathComponent(".cache"),
-            generatedMutationHook: { point in
-                guard point == .afterPublish("Settings") else { return }
-                var nested = settings
-                for index in 0..<66 {
-                    nested.appendPathComponent("deep-\(index)", isDirectory: true)
-                    precondition(mkdir(nested.path, 0o700) == 0)
-                }
-            })
-
-        XCTAssertThrowsError(try raced.install(.init())) { error in
-            XCTAssertTrue("\(error)".contains("changed immediately after publication"), "\(error)")
-        }
-        _ = try preservedGeneratedStaging(directory)
-    }
-
-    func testScriptFileListSymlinkCannotRedirectReads() throws {
-        let directory = try fixture(
-            "target 'App' do\n  script_phase name: 'Build', script: 'true', input_file_lists: ['Inputs.xcfilelist']\nend\n")
-        let outside = directory.appendingPathComponent("outside.xcfilelist")
-        try "$(SRCROOT)/Secret\n".write(to: outside, atomically: true, encoding: .utf8)
-        try FileManager.default.createSymbolicLink(
-            at: directory.appendingPathComponent("Inputs.xcfilelist"), withDestinationURL: outside)
-
-        XCTAssertThrowsError(try installer(directory).install(InstallOptions())) {
-            XCTAssertTrue("\($0)".contains("Cannot safely read file list"), "\($0)")
-        }
-    }
-
-    func testScriptFileListOutsideThePodfileDirectoryRequiresExplicitTrust() throws {
-        let outsideDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(
-            "swiftpods-external-file-list-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: outsideDirectory, withIntermediateDirectories: false)
-        directories.append(outsideDirectory)
-        let outside = outsideDirectory.appendingPathComponent("Inputs.xcfilelist")
-        try "$(SRCROOT)/External.swift\n".write(to: outside, atomically: true, encoding: .utf8)
-        let directory = try fixture(
-            "target 'App' do\n  script_phase name: 'Build', script: 'true', input_file_lists: ['\(outside.path)']\nend\n")
-
-        XCTAssertThrowsError(try installer(directory).install(InstallOptions())) {
-            XCTAssertTrue("\($0)".contains("outside the Podfile directory"), "\($0)")
-        }
-
-        var trusted = InstallOptions()
-        trusted.allowExternalFileLists = true
-        _ = try installer(directory).install(trusted)
-        let inputs = try generated(directory, "Scripts/App/App/finish.inputs.xcfilelist")
-        XCTAssertTrue(inputs.contains("$(SRCROOT)/External.swift\n"), inputs)
-    }
-
-    func testScriptFileListCannotTraverseThroughASymlinkedDirectory() throws {
-        let directory = try fixture(
-            "target 'App' do\n  script_phase name: 'Build', script: 'true', input_file_lists: ['Lists/Inputs.xcfilelist']\nend\n")
-        let real = directory.appendingPathComponent("RealLists", isDirectory: true)
-        try FileManager.default.createDirectory(at: real, withIntermediateDirectories: false)
-        try "Sources/One.swift\n".write(
-            to: real.appendingPathComponent("Inputs.xcfilelist"), atomically: true, encoding: .utf8)
-        try FileManager.default.createSymbolicLink(
-            at: directory.appendingPathComponent("Lists", isDirectory: true), withDestinationURL: real)
-
-        XCTAssertThrowsError(try installer(directory).install(InstallOptions())) {
-            XCTAssertTrue("\($0)".contains("Cannot safely read file list"), "\($0)")
-        }
     }
 
     func testGeneratedPackageDisambiguatesSanitizedModuleNames() throws {

@@ -194,7 +194,10 @@ final class EndToEndTests: XCTestCase {
         let loadCommands = try shell.run(
             "/usr/bin/otool", ["-l", derived.appendingPathComponent("Build/Products/Debug-iphonesimulator/App.app/App").path], in: nil)
         XCTAssertTrue(loadCommands.contains("@executable_path/Frameworks"), loadCommands)
-        let signature = try shell.run("/usr/bin/codesign", ["-dv", frameworks.appendingPathComponent("Greeting.framework").path], in: nil)
+        // codesign describes a signature on standard error.
+        let signature = try shell.run(
+            "/bin/sh", ["-c", #"exec /usr/bin/codesign -dv "$1" 2>&1"#, "codesign", frameworks.appendingPathComponent("Greeting.framework").path],
+            in: nil)
         XCTAssertTrue(signature.contains("Signature=adhoc"), signature)
     }
 }

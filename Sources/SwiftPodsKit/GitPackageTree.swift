@@ -1,35 +1,9 @@
-import Darwin
 import Foundation
 import SwiftPodsManifest
 
-/// Bounded records from Git's NUL-delimited tree and config output, before any paths are materialized.
+/// Records from Git's NUL-delimited tree and config output. Paths come from a remote repository and are checked
+/// before anything is written.
 enum GitPackageTree {
-    static let maximumEntries = 20_000
-    static let maximumBytes: Int64 = 256 * 1_024 * 1_024
-    private static let maximumBlobBytes = 64 * 1_024 * 1_024
-    static let maximumConfigBytes = 64 * 1_024
-    static let maximumSubmodules = 32
-    static let maximumOverrides = 32
-
-    struct Budget {
-        var remainingEntries = GitPackageTree.maximumEntries
-        var remainingBytes = GitPackageTree.maximumBytes
-
-        mutating func consume(bytes: Int) throws {
-            guard bytes <= GitPackageTree.maximumBlobBytes else {
-                throw SwiftPodsError("Package override exceeds the Git blob byte limit")
-            }
-            try consume(entries: 1, bytes: Int64(bytes))
-        }
-
-        mutating func consume(entries: Int, bytes: Int64) throws {
-            guard entries >= 0, entries <= remainingEntries, bytes >= 0, bytes <= remainingBytes
-            else { throw SwiftPodsError("Package override exceeds the Git tree entry or byte limit") }
-            remainingEntries -= entries
-            remainingBytes -= bytes
-        }
-    }
-
     struct Entry {
         enum Kind: Equatable {
             case directory, file(executable: Bool), symbolicLink, submodule
@@ -46,7 +20,7 @@ enum GitPackageTree {
         }
     }
 
-    static func parse(_ listing: Data, objectIDLength: Int, prefix: String, budget: inout Budget) throws -> [Entry] {
+    static func parse(_ listing: Data, objectIDLength: Int, prefix: String) throws -> [Entry] {
         guard listing.isEmpty || listing.last == 0 else {
             throw SwiftPodsError("Package override has an incomplete Git tree listing")
         }
@@ -87,13 +61,9 @@ enum GitPackageTree {
             default:
                 throw SwiftPodsError("Package override contains an unsupported Git tree entry type")
             }
-            if kind == .symbolicLink, bytes > Int(PATH_MAX) {
-                throw SwiftPodsError("Package override contains an oversized symbolic link")
-            }
             if GeneratedPackageMetadata.directories.contains(path), kind != .directory {
                 throw SwiftPodsError("Package override metadata root must be a directory")
             }
-            try budget.consume(bytes: bytes)
             entries.append(Entry(path: path, object: String(fields[2]), kind: kind, bytes: bytes))
         }
         return entries
@@ -106,11 +76,8 @@ enum GitPackageTree {
 
     static func isSafePath(_ path: String) -> Bool {
         let components = path.split(separator: "/", omittingEmptySubsequences: false)
-        return path.utf8.count <= 16 * 1_024 && components.count <= 32
-            && !path.contains("\\") && !path.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
-            && components.allSatisfy {
-                !$0.isEmpty && $0.utf8.count <= 255 && $0 != "." && $0 != ".." && $0.lowercased() != ".git"
-            }
+        return !path.contains("\\") && !path.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains)
+            && components.allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." && $0.lowercased() != ".git" }
     }
 
     static func linkTarget(_ data: Data, at path: String) throws -> String {
@@ -148,7 +115,7 @@ enum GitPackageTree {
         let linkedPaths = Set(links.map(\.path))
         var origins: [String: String] = [:]
         for (name, path) in paths where linkedPaths.contains(path) {
-            guard let url = urls[name], url.utf8.count <= 4_096,
+            guard let url = urls[name],
                 url.lowercased().hasPrefix("https://") || url.lowercased().hasPrefix("ssh://"),
                 PackageLocation.isSafeRemote(url)
             else { throw SwiftPodsError("Package override submodule \(path) needs an absolute HTTPS or SSH URL") }

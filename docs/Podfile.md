@@ -24,7 +24,9 @@ target 'Game' do
   settings 'OTHER_LDFLAGS' => '$(inherited) -ObjC'
 
   target 'GameTests' do
-    inherit! :search_paths
+    inherit! :none                        # the app's packages stay linked into the app only
+    spm 'https://github.com/pointfreeco/swift-snapshot-testing.git', '~> 1.18',
+        products: ['SnapshotTesting']
   end
 end
 ```
@@ -62,7 +64,7 @@ Variables, `def`, `if`, `require` and string interpolation are rejected. Use
 | `use :a, :b` | Applies groups. Groups can use other groups. |
 | `use :a, flag: false` | Applies a group with parameter values. |
 | `with :flag do … end` | Groups only. Declarations that apply while the parameter is true. |
-| `settings 'KEY' => 'value'` | Build settings for the target; add `configurations: ['Debug']` to restrict them. |
+| `settings 'KEY' => 'value'` | Build settings for the target; add `configurations: ['Debug']`, or write `'KEY[config=Debug]'`, to restrict them. A restricted value overrides the target's value for all configurations. |
 | `script_phase name: …, script: …` | A Run Script phase on the target. |
 | `inherit! :complete \| :search_paths \| :none` | Targets only. What a nested target takes from its parent (default `:complete`). |
 | `platform`, `project` | Targets only. Override the defaults. |
@@ -138,15 +140,9 @@ may use an absolute path or `file://` URL. A `revision` pin is the complete
 40-character SHA-1 or 64-character SHA-256 object ID; abbreviated hashes are not
 integrity pins and are rejected.
 
-Remote catalog fetches accept only hosts whose complete DNS result contains
-public IP addresses. SwiftPods pins that validated address snapshot for the
-connection, disables HTTP redirects and proxies, requires TLS verification,
-and does not load ambient system/global Git or SSH configuration. HTTPS
-authentication uses the macOS Keychain Git credential helper; SSH may use the
-standard keys and `SSH_AUTH_SOCK`, and requires an existing `known_hosts` key.
-For a catalog on an internal, loopback, link-local or private-network Git
-server, create a trusted local mirror and use its absolute path or `file://`
-URL instead.
+SwiftPods runs Git with your own configuration, credentials and SSH settings,
+so a private or internal catalog works wherever `git clone` does. Git never
+prompts for a password; set credentials up as you would for a clone in CI.
 
 A remote package needs exactly one requirement:
 
@@ -269,7 +265,9 @@ Xcode embeds every framework of a binary package, which CocoaPods never did for
 static ones. In its copy of an iOS framework, SwiftPods therefore moves a
 versioned bundle's contents to the top level, unwraps a static library packed in
 a single-architecture universal binary, and adds a minimal `Info.plist` when one
-is missing. `swiftpods install` prints a note for each repair.
+is missing. `swiftpods install` prints a note for each repair. A signed
+XCFramework is never modified, because Xcode verifies its signature; the note
+then names the repair it would have needed.
 
 ### Script phases
 
@@ -288,10 +286,8 @@ alone. `[SwiftPods] Prepare`, before compiling, runs `:before_compile` scripts;
 `:any` scripts. Both run on every build, in declaration order. Input and output
 files declare what the scripts read and write, for Xcode's script sandbox and
 build order; input and output file lists are read when installing.
-By default SwiftPods reads those lists only from regular, non-symlink files
-inside the Podfile directory. For a deliberately shared list outside that
-directory, pass `swiftpods install --allow-external-file-lists`; this is an
-explicit trust decision for every external list declared by that Podfile.
+A list may be outside the Podfile directory; changing any list makes the build
+stop until the next install, like a Podfile change.
 
 ## Frameworks embedded in an app
 

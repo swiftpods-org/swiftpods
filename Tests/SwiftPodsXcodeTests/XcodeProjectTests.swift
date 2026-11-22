@@ -1,44 +1,8 @@
 import Darwin
 import Foundation
-import SwiftPodsSecurity
 import SwiftPodsTestSupport
 @testable import SwiftPodsXcode
 import XCTest
-
-private final class ConcurrentProjectWriter: @unchecked Sendable {
-    private let lock = NSLock()
-    private var project: XcodeProject
-    private var storedError: (any Error)?
-
-    init(_ project: XcodeProject) {
-        self.project = project
-    }
-
-    func save(entered: DispatchSemaphore, release: DispatchSemaphore) {
-        do {
-            try project.save(
-                beforeAtomicReplacement: {},
-                afterAtomicReplacement: {
-                    entered.signal()
-                    if release.wait(timeout: .now() + 5) == .timedOut {
-                        record(NSError(domain: "ConcurrentProjectWriter", code: 1))
-                    }
-                })
-        } catch {
-            record(error)
-        }
-    }
-
-    var error: (any Error)? {
-        lock.withLock { storedError }
-    }
-
-    private func record(_ error: any Error) {
-        lock.withLock {
-            if storedError == nil { storedError = error }
-        }
-    }
-}
 
 final class XcodeProjectTests: XCTestCase {
     private func load() throws -> XcodeProject {
@@ -181,6 +145,52 @@ final class XcodeProjectTests: XCTestCase {
         XCTAssertFalse(project[main]!.strings("children").contains(second))
     }
 
+    func testRemovalTakesDependentObjectsAndSingleReferencesWithIt() throws {
+        var project = try load()
+        let main = try XCTUnwrap(project.project.string("mainGroup"))
+        let subproject = "B00000000000000000000001"
+        let proxy = "B00000000000000000000002"
+        let library = "B00000000000000000000003"
+        let file = "B00000000000000000000004"
+        let products = "B00000000000000000000005"
+        let settings = "B00000000000000000000006"
+        project[subproject] = ["isa": "PBXFileReference", "path": "Sub.xcodeproj", "sourceTree": "<group>"]
+        project[proxy] = ["isa": "PBXContainerItemProxy", "containerPortal": .string(subproject), "proxyType": "2",
+                          "remoteGlobalIDString": "D00000000000000000000001", "remoteInfo": "Sub"]
+        project[library] = ["isa": "PBXReferenceProxy", "path": "libSub.a", "remoteRef": .string(proxy), "sourceTree": "BUILT_PRODUCTS_DIR"]
+        project[file] = ["isa": "PBXBuildFile", "fileRef": .string(library)]
+        project[products] = ["isa": "PBXGroup", "children": [.string(library)], "sourceTree": "<group>"]
+        project[settings] = ["isa": "PBXFileReference", "path": "App.xcconfig", "sourceTree": "<group>"]
+        project.append(file, to: "files", of: "A30000000000000000000001")
+        project.append(subproject, to: "children", of: main)
+        project.project["projectReferences"] = [["ProductGroup": .string(products), "ProjectRef": .string(subproject)]]
+        project["A80000000000000000000003"]!["baseConfigurationReference"] = .string(settings)
+
+        project.remove(Set([subproject, settings]))
+
+        for id in [subproject, proxy, library, file, settings] { XCTAssertNil(project[id], id) }
+        XCTAssertNotNil(project[products], "A group is not dependent; only its entries are removed")
+        XCTAssertEqual(project[products]?.strings("children"), [])
+        XCTAssertEqual(project["A30000000000000000000001"]?.strings("files"), [])
+        XCTAssertEqual(project.project["projectReferences"], [])
+        XCTAssertNil(project["A80000000000000000000003"]?["baseConfigurationReference"])
+    }
+
+    func testUnquotedDoubleSlashIsPartOfAStringAsInFoundation() throws {
+        let text = Fixtures.project.replacingOccurrences(
+            of: "\t\t\tknownRegions = (\n\t\t\t\ten,\n", with: "\t\t\tknownRegions = (\n\t\t\t\ten//x,\n")
+        XCTAssertNotEqual(text, Fixtures.project)
+        var project = try XcodeProject(path: URL(fileURLWithPath: "/tmp/App.xcodeproj"), text: text)
+        XCTAssertEqual(project.project.strings("knownRegions"), ["en//x", "Base"])
+
+        project.project["knownRegions"] = ["en//x", "Base", "fr"]
+        let serialized = project.serialized()
+        XCTAssertEqual(try XcodeProject(path: project.path, text: serialized).project.strings("knownRegions"), ["en//x", "Base", "fr"])
+        let foundation = try PropertyListSerialization.propertyList(from: Data(serialized.utf8), format: nil) as? [String: Any]
+        let objects = foundation?["objects"] as? [String: [String: Any]]
+        XCTAssertEqual(objects?["A00000000000000000000001"]?["knownRegions"] as? [String], ["en//x", "Base", "fr"])
+    }
+
     func testIdentifiersAreStableAndXcodeShaped() {
         let id = XcodeProject.identifier("package:github.com/a/kit")
         XCTAssertEqual(id, XcodeProject.identifier("package:github.com/a/kit"))
@@ -231,37 +241,6 @@ final class XcodeProjectTests: XCTestCase {
         }
     }
 
-    func testFileReaderRejectsSymlinkFifoAndOversizedProject() throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("SwiftPods-XcodeProjectTests-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let project = directory.appendingPathComponent("App.xcodeproj")
-        try FileManager.default.createDirectory(at: project, withIntermediateDirectories: true)
-        let file = project.appendingPathComponent("project.pbxproj")
-        let source = directory.appendingPathComponent("real.pbxproj")
-        try Data(Fixtures.project.utf8).write(to: source)
-
-        try FileManager.default.createSymbolicLink(at: file, withDestinationURL: source)
-        XCTAssertThrowsError(try XcodeProject(path: project)) {
-            XCTAssertTrue("\($0)".contains("symbolic link"), "\($0)")
-        }
-
-        try FileManager.default.removeItem(at: file)
-        XCTAssertEqual(file.path.withCString { mkfifo($0, S_IRUSR | S_IWUSR) }, 0)
-        XCTAssertThrowsError(try XcodeProject(path: project)) {
-            XCTAssertTrue("\($0)".contains("regular file"), "\($0)")
-        }
-
-        try FileManager.default.removeItem(at: file)
-        XCTAssertTrue(FileManager.default.createFile(atPath: file.path, contents: nil))
-        let handle = try FileHandle(forWritingTo: file)
-        try handle.truncate(atOffset: 32 * 1_024 * 1_024 + 1)
-        try handle.close()
-        XCTAssertThrowsError(try XcodeProject(path: project)) {
-            XCTAssertTrue("\($0)".contains("32 MiB"), "\($0)")
-        }
-    }
-
     func testSaveRefusesToOverwriteAConcurrentProjectChange() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("SwiftPods-XcodeProjectSave-\(UUID().uuidString)")
@@ -282,140 +261,22 @@ final class XcodeProjectTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), external)
     }
 
-    func testSaveRollsBackAChangeAfterTheFinalValidation() throws {
+    func testAProjectFileWithAByteOrderMarkCanBeSaved() throws {
         let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("SwiftPods-XcodeProjectAtomicRace-\(UUID().uuidString)")
+            .appendingPathComponent("SwiftPods-XcodeProjectBOM-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: directory) }
         let projectDirectory = directory.appendingPathComponent("App.xcodeproj", isDirectory: true)
         try FileManager.default.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
         let file = projectDirectory.appendingPathComponent("project.pbxproj")
-        try Data(Fixtures.project.utf8).write(to: file)
+        try (Data([0xEF, 0xBB, 0xBF]) + Data(Fixtures.project.utf8)).write(to: file)
+
         var project = try XcodeProject(path: projectDirectory)
-        _ = project.put("test:atomic-race", ["isa": "PBXGroup", "children": [], "sourceTree": "<group>"])
-        let external = Fixtures.project.replacingOccurrences(of: "archiveVersion = 1;", with: "archiveVersion = 7;")
-
-        XCTAssertThrowsError(try project.save(beforeAtomicReplacement: {
-            try! Data(external.utf8).write(to: file, options: .atomic)
-        })) { error in
-            XCTAssertTrue("\(error)".contains("atomic replacement"), "\(error)")
-        }
-        XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), external)
-        XCTAssertFalse(
-            try FileManager.default.contentsOfDirectory(atPath: projectDirectory.path)
-                .contains(where: { $0.hasPrefix(".project.pbxproj.swiftpods-") }))
+        _ = project.put("test:bom", ["isa": "PBXGroup", "children": [], "sourceTree": "<group>"])
+        XCTAssertTrue(try project.save())
+        XCTAssertNotNil(try XcodeProject(path: projectDirectory)[XcodeProject.identifier("test:bom")])
     }
 
-    func testConcurrentProjectWritersSerializeOnTheStableDirectoryInode() throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("SwiftPods-XcodeProjectConcurrentSave-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let projectDirectory = directory.appendingPathComponent("App.xcodeproj", isDirectory: true)
-        try FileManager.default.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
-        try Data(Fixtures.project.utf8).write(to: projectDirectory.appendingPathComponent("project.pbxproj"))
-
-        var first = try XcodeProject(path: projectDirectory)
-        let firstID = first.put(
-            "test:concurrent-first", ["isa": "PBXGroup", "children": [], "sourceTree": "<group>"])
-        let writer = ConcurrentProjectWriter(first)
-        let entered = DispatchSemaphore(value: 0)
-        let release = DispatchSemaphore(value: 0)
-        let completed = DispatchSemaphore(value: 0)
-
-        DispatchQueue.global().async {
-            writer.save(entered: entered, release: release)
-            completed.signal()
-        }
-        guard entered.wait(timeout: .now() + 5) == .success else {
-            release.signal()
-            _ = completed.wait(timeout: .now() + 5)
-            XCTFail("The first project writer did not reach atomic replacement")
-            return
-        }
-        // Load after the first swap: the path now names a new, otherwise-unlocked file inode. Without the directory
-        // lock this writer can complete while the first writer is still validating and cleaning up its transaction.
-        var second = try XcodeProject(path: projectDirectory)
-        let secondID = second.put(
-            "test:concurrent-second", ["isa": "PBXGroup", "children": [], "sourceTree": "<group>"])
-        XCTAssertThrowsError(try second.save()) { error in
-            XCTAssertTrue("\(error)".contains("Another process is updating the Xcode project"), "\(error)")
-        }
-        release.signal()
-        XCTAssertEqual(completed.wait(timeout: .now() + 5), .success)
-        XCTAssertNil(writer.error)
-
-        let saved = try XcodeProject(path: projectDirectory)
-        XCTAssertNotNil(saved[firstID])
-        XCTAssertNil(saved[secondID])
-        XCTAssertFalse(
-            try FileManager.default.contentsOfDirectory(atPath: projectDirectory.path)
-                .contains(where: { $0.hasPrefix(".project.pbxproj.swiftpods-") }))
-    }
-
-    func testSaveDoesNotAdoptAReplacementProjectDirectoryEvenWhenBytesMatch() throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("SwiftPods-XcodeProjectDirectorySwap-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let projectDirectory = directory.appendingPathComponent("App.xcodeproj", isDirectory: true)
-        try FileManager.default.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
-        try Data(Fixtures.project.utf8).write(to: projectDirectory.appendingPathComponent("project.pbxproj"))
-        var project = try XcodeProject(path: projectDirectory)
-        _ = project.put("test:replacement", ["isa": "PBXGroup", "children": [], "sourceTree": "<group>"])
-        let desired = project.serialized()
-
-        try FileManager.default.moveItem(
-            at: projectDirectory, to: directory.appendingPathComponent("Original.xcodeproj", isDirectory: true))
-        try FileManager.default.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
-        let replacement = projectDirectory.appendingPathComponent("project.pbxproj")
-        try Data(desired.utf8).write(to: replacement)
-
-        XCTAssertThrowsError(try project.save()) {
-            XCTAssertTrue("\($0)".contains("directory changed since it was read"), "\($0)")
-        }
-        XCTAssertEqual(try String(contentsOf: replacement, encoding: .utf8), desired)
-    }
-
-    func testAnchoredSaveRejectsAncestorRebindBeforeAtomicReplacement() throws {
-        let workspace = FileManager.default.temporaryDirectory
-            .appendingPathComponent("SwiftPods-XcodeProjectAnchored-\(UUID().uuidString)", isDirectory: true)
-        let projects = workspace.appendingPathComponent("Projects", isDirectory: true)
-        let decoy = workspace.appendingPathComponent("Decoy", isDirectory: true)
-        let projectDirectory = projects.appendingPathComponent("App.xcodeproj", isDirectory: true)
-        let decoyProject = decoy.appendingPathComponent("App.xcodeproj", isDirectory: true)
-        try FileManager.default.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
-        try FileManager.default.createDirectory(at: decoyProject, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: workspace) }
-        try Data(Fixtures.project.utf8).write(to: projectDirectory.appendingPathComponent("project.pbxproj"))
-        try Data(Fixtures.project.utf8).write(to: decoyProject.appendingPathComponent("project.pbxproj"))
-
-        let root = workspace.path.withCString {
-            open($0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
-        }
-        XCTAssertGreaterThanOrEqual(root, 0)
-        defer { if root >= 0 { close(root) } }
-        var project = try XcodeProject(
-            path: projectDirectory, relativePath: "Projects/App.xcodeproj",
-            relativeToDirectoryDescriptor: root)
-        let inserted = project.put(
-            "test:anchored-rebind", ["isa": "PBXGroup", "children": [], "sourceTree": "<group>"])
-
-        XCTAssertThrowsError(try project.save(beforeAtomicReplacement: {
-            let result = projects.path.withCString { first in
-                decoy.path.withCString { second in
-                    renameatx_np(AT_FDCWD, first, AT_FDCWD, second, UInt32(RENAME_SWAP))
-                }
-            }
-            XCTAssertEqual(result, 0)
-        })) { error in
-            XCTAssertTrue("\(error)".contains("anchored Xcode project directory changed"), "\(error)")
-        }
-
-        let pathNowNamesDecoy = try XcodeProject(path: projectDirectory)
-        let originalNowAtDecoy = try XcodeProject(path: decoyProject)
-        XCTAssertNil(pathNowNamesDecoy[inserted])
-        XCTAssertNil(originalNowAtDecoy[inserted])
-    }
-
-    func testSaveRefreshesItsBaselineAndPreservesPrivatePermissions() throws {
+    func testSaveRefreshesItsBaselineAndKeepsPermissions() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("SwiftPods-XcodeProjectRepeatSave-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -424,23 +285,6 @@ final class XcodeProjectTests: XCTestCase {
         let file = projectDirectory.appendingPathComponent("project.pbxproj")
         try Data(Fixtures.project.utf8).write(to: file)
         XCTAssertEqual(chmod(file.path, 0o600), 0)
-        let attributeName = "com.swiftpods.tests.metadata"
-        let attribute = Data("preserve-me".utf8)
-        XCTAssertEqual(attribute.withUnsafeBytes {
-            setxattr(file.path, attributeName, $0.baseAddress, $0.count, 0, 0)
-        }, 0)
-        let chmod = Process()
-        chmod.executableURL = URL(fileURLWithPath: "/bin/chmod")
-        chmod.arguments = ["+a", "everyone allow read", file.path]
-        try chmod.run()
-        chmod.waitUntilExit()
-        XCTAssertEqual(chmod.terminationStatus, 0)
-        let originalDescriptor = open(file.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
-        XCTAssertGreaterThanOrEqual(originalDescriptor, 0)
-        let originalMetadata = try BoundedFileSecurityMetadata.capture(originalDescriptor)
-        close(originalDescriptor)
-        var originalStatus = stat()
-        XCTAssertEqual(lstat(file.path, &originalStatus), 0)
 
         var project = try XcodeProject(path: projectDirectory)
         _ = project.put("test:first-save", ["isa": "PBXGroup", "children": [], "sourceTree": "<group>"])
@@ -455,51 +299,6 @@ final class XcodeProjectTests: XCTestCase {
         var status = stat()
         XCTAssertEqual(lstat(file.path, &status), 0)
         XCTAssertEqual(status.st_mode & 0o7777, 0o600)
-        XCTAssertEqual(status.st_uid, originalStatus.st_uid)
-        XCTAssertEqual(status.st_gid, originalStatus.st_gid)
-        XCTAssertEqual(status.st_flags, originalStatus.st_flags)
-        let attributeSize = getxattr(file.path, attributeName, nil, 0, 0, 0)
-        XCTAssertEqual(attributeSize, attribute.count)
-        var restoredAttribute = Data(count: max(0, attributeSize))
-        let restoredSize = restoredAttribute.withUnsafeMutableBytes {
-            getxattr(file.path, attributeName, $0.baseAddress, $0.count, 0, 0)
-        }
-        XCTAssertEqual(restoredSize, attribute.count)
-        XCTAssertEqual(restoredAttribute, attribute)
-        let restoredDescriptor = open(file.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
-        XCTAssertGreaterThanOrEqual(restoredDescriptor, 0)
-        let restoredMetadata = try BoundedFileSecurityMetadata.capture(restoredDescriptor)
-        close(restoredDescriptor)
-        XCTAssertEqual(restoredMetadata.attributes, originalMetadata.attributes)
-        XCTAssertEqual(restoredMetadata.acl, originalMetadata.acl)
-    }
-
-    func testSaveRejectsExcessiveExtendedAttributeCountBeforeReplacement() throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("SwiftPods-XcodeProjectMetadataLimit-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let projectDirectory = directory.appendingPathComponent("App.xcodeproj", isDirectory: true)
-        try FileManager.default.createDirectory(at: projectDirectory, withIntermediateDirectories: true)
-        let file = projectDirectory.appendingPathComponent("project.pbxproj")
-        let original = Data(Fixtures.project.utf8)
-        try original.write(to: file)
-        let value = Data([0x41])
-        for index in 0...128 {
-            let name = String(format: "com.swiftpods.tests.metadata-limit-%03d", index)
-            XCTAssertEqual(value.withUnsafeBytes {
-                setxattr(file.path, name, $0.baseAddress, $0.count, 0, 0)
-            }, 0, name)
-        }
-
-        var project = try XcodeProject(path: projectDirectory)
-        _ = project.put("test:metadata-limit", ["isa": "PBXGroup", "children": [], "sourceTree": "<group>"])
-        XCTAssertThrowsError(try project.save()) { error in
-            XCTAssertTrue("\(error)".contains("too many extended attributes"), "\(error)")
-        }
-        XCTAssertEqual(try Data(contentsOf: file), original)
-        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: projectDirectory.path).contains {
-            $0.hasPrefix(".project.pbxproj.swiftpods-")
-        })
     }
 
     func testTextInitializerCannotBlindlyOverwriteADifferentExistingFile() throws {
@@ -515,7 +314,7 @@ final class XcodeProjectTests: XCTestCase {
         _ = project.put("test:unsafe", ["isa": "PBXGroup", "children": [], "sourceTree": "<group>"])
 
         XCTAssertThrowsError(try project.save()) {
-            XCTAssertTrue("\($0)".contains("does not match the text supplied"), "\($0)")
+            XCTAssertTrue("\($0)".contains("changed since SwiftPods read it"), "\($0)")
         }
         XCTAssertEqual(try String(contentsOf: file, encoding: .utf8), external)
     }

@@ -8,20 +8,17 @@ let package = Package(
     targets: [
         .systemLibrary(name: "CLibArchive"),
         .target(name: "SwiftPodsManifest"),
-        .target(name: "SwiftPodsSecurity"),
-        .target(name: "SwiftPodsXcode", dependencies: ["SwiftPodsSecurity"]),
-        .target(
-            name: "SwiftPodsKit",
-            dependencies: ["CLibArchive", "SwiftPodsManifest", "SwiftPodsSecurity", "SwiftPodsXcode"]),
+        .target(name: "SwiftPodsXcode"),
+        .target(name: "SwiftPodsKit", dependencies: ["CLibArchive", "SwiftPodsManifest", "SwiftPodsXcode"]),
         .executableTarget(name: "swiftpods", dependencies: ["SwiftPodsKit", "SwiftPodsManifest"]),
         .target(name: "SwiftPodsTestSupport", path: "Tests/SwiftPodsTestSupport"),
         .testTarget(name: "SwiftPodsManifestTests", dependencies: ["SwiftPodsManifest"]),
         .testTarget(
             name: "SwiftPodsXcodeTests",
-            dependencies: ["SwiftPodsSecurity", "SwiftPodsXcode", "SwiftPodsTestSupport"]),
+            dependencies: ["SwiftPodsXcode", "SwiftPodsTestSupport"]),
         .testTarget(
             name: "SwiftPodsKitTests",
-            dependencies: ["SwiftPodsKit", "SwiftPodsSecurity", "SwiftPodsTestSupport"]),
+            dependencies: ["SwiftPodsKit", "SwiftPodsTestSupport"]),
     ],
     swiftLanguageModes: [.v6]
 )

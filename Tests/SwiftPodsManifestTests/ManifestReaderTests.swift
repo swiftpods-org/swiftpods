@@ -90,24 +90,6 @@ final class ManifestReaderTests: XCTestCase {
         }
     }
 
-    func testFilesystemManifestRetainsSnapshotsForLaterTrustBoundaries() throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
-            "swiftpods-manifest-snapshot-\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let podfile = directory.appendingPathComponent("Podfile")
-        let include = directory.appendingPathComponent("Shared.podfile")
-        try "include 'Shared.podfile'\ntarget 'App' do\nend\n".write(
-            to: podfile, atomically: false, encoding: .utf8)
-        try "platform :ios, '15.0'\n".write(to: include, atomically: false, encoding: .utf8)
-
-        let manifest = try ManifestReader().load(podfile.path)
-        XCTAssertNoThrow(try manifest.verifyFileSnapshots())
-        try "platform :ios, '16.0'\n".write(to: include, atomically: true, encoding: .utf8)
-
-        XCTAssertThrowsError(try manifest.verifyFileSnapshots())
-    }
-
     func testSharedGroupsFromIncludedFiles() throws {
         let manifest = try read(
             """
@@ -369,6 +351,99 @@ final class ManifestReaderTests: XCTestCase {
             """)
         XCTAssertEqual(same.packages.count, 1)
         XCTAssertEqual(same.targets[1].products.map(\.product), ["Kit", "KitTesting"])
+    }
+
+    func testLexerFollowsRubyForContinuationsInterpolationAndWordArrays() throws {
+        let crlf = try read("target 'App' do\r\n  spm 'https://x/Kit.git', \\\r\n      exact: '1.0.0'\r\nend\r\n")
+        XCTAssertEqual(crlf.packages.first?.requirement, .exact(Version(1, 0, 0)))
+
+        assertError("target 'App' do\n  script_phase name: 'A', script: \"echo #$HOME\"\nend", "String interpolation is not supported", line: 2)
+        assertError("target 'App' do\n  script_phase name: 'A', script: \"echo #@x\"\nend", "String interpolation is not supported", line: 2)
+        let escaped = try read("target 'App' do\n  script_phase name: 'A', script: \"echo \\#$HOME\"\n  script_phase name: 'B', script: 'echo #$HOME'\nend")
+        XCTAssertEqual(escaped.targets[0].scriptPhases.map(\.script), ["echo #$HOME", "echo #$HOME"])
+        // Ruby interpolates only a variable name, or one of its special globals, after `#$` and `#@`.
+        for interpolated in ["#$1", "#$_x", "#$?", "#$-w", "#@@x", "#@_x", "#$\\", "#{x}"] {
+            assertError("target 'App' do\n  script_phase name: 'A', script: \"\(interpolated)\"\nend",
+                        "String interpolation is not supported", line: 2)
+        }
+        let literal = ["-DTAG=#$(TAG)", "#@1", "a #@ b", "#$ ", "#$-1", "#@@1", "#"]
+        let literals = try read("target 'App' do\n" + literal.enumerated().map {
+            "  script_phase name: '\($0.offset)', script: \"\($0.element)\"\n"
+        }.joined() + "end")
+        XCTAssertEqual(literals.targets[0].scriptPhases.map(\.script), literal)
+
+        assertError("target 'App' do\n  spm 'Kit', path: 'Kit', products: %w[A\\ B]\nend", "Escapes are not supported in %w literals", line: 2)
+    }
+
+    func testLocalPackageIdentityIsTheStandardizedDirectoryName() throws {
+        func manifest(_ podfile: String, at path: String) throws -> Manifest {
+            try ManifestReader(read: { _ in podfile }).load(path)
+        }
+        let parent = try manifest("target 'App' do\n  spm 'MyLib', path: '..'\nend\n", at: "/work/MyLib/Example/Podfile")
+        XCTAssertEqual(parent.packages.first?.identity, "mylib")
+        let nested = try manifest("target 'App' do\n  spm 'Kit', path: 'Vendor/Kit'\nend\n", at: "/work/App/Podfile")
+        XCTAssertEqual(nested.packages.first?.identity, "kit")
+
+        assertError(
+            "target 'App' do\n  spm 'Local', path: 'Modules/MyLib/..'\n  spm 'https://github.com/a/Modules.git', exact: '1.0.0'\nend",
+            "Two packages have the identity `modules`")
+    }
+
+    func testBinaryDependencyCyclesAreRejected() {
+        assertError(
+            """
+            target 'App' do
+              binary 'A', path: 'A.xcframework', dependencies: ['B']
+              binary 'B', path: 'B.xcframework', dependencies: ['C']
+              binary 'C', path: 'C.xcframework', dependencies: ['A']
+            end
+            """,
+            "Binary dependencies form a cycle: `A` → `B` → `C` → `A`")
+        XCTAssertNoThrow(try read(
+            """
+            target 'App' do
+              binary 'A', path: 'A.xcframework', dependencies: ['B', 'C']
+              binary 'B', path: 'B.xcframework', dependencies: ['C']
+              binary 'C', path: 'C.xcframework'
+            end
+            """))
+    }
+
+    func testConfigurationSelectorsInSettingKeysAreConfigurations() throws {
+        assertError(
+            "target 'App' do\n  settings 'A[config=Debug]' => '1'\n  settings 'A' => '2', configurations: ['Debug']\nend",
+            "sets A twice")
+        assertError("target 'App' do\n  settings 'A[config=Debug]' => '1', configurations: ['Release']\nend", "restricts its configurations twice")
+        let manifest = try read("target 'App' do\n  settings 'A[sdk=iphoneos*][config=Debug]' => '1'\n  settings 'A' => '2', configurations: ['Release']\nend")
+        let settings = manifest.targets[0].settings
+        XCTAssertEqual(settings.map(\.key), ["A[sdk=iphoneos*]", "A"])
+        XCTAssertEqual(settings.map(\.configurations), [["Debug"], ["Release"]])
+
+        // A value for some configurations refines the one for all of them, in either spelling and order.
+        let refined = try read("""
+            target 'App' do
+              settings 'OTHER_LDFLAGS[config=Debug]' => '-ObjC -lz', 'OTHER_LDFLAGS' => '-ObjC'
+              settings 'OTHER_LDFLAGS' => '-ObjC -lc++', configurations: ['Release']
+            end
+            """)
+        XCTAssertEqual(refined.targets[0].settings.map(\.key), ["OTHER_LDFLAGS", "OTHER_LDFLAGS", "OTHER_LDFLAGS"])
+        XCTAssertEqual(refined.targets[0].settings.map(\.configurations), [["Debug"], nil, ["Release"]])
+        assertError("target 'App' do\n  settings 'A' => '1'\n  settings 'A' => '2'\nend", "sets A twice")
+        assertError(
+            "target 'App' do\n  settings 'A' => '1', configurations: ['Debug', 'Release']\n  settings 'A[config=Release]' => '2'\nend",
+            "sets A twice")
+    }
+
+    func testTheReferenceOpeningExampleReads() throws {
+        let reference = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
+            .deletingLastPathComponent().appendingPathComponent("docs/Podfile.md")
+        let text = try String(contentsOf: reference, encoding: .utf8)
+        let start = try XCTUnwrap(text.range(of: "```ruby\n"))
+        let end = try XCTUnwrap(text.range(of: "```", range: start.upperBound..<text.endIndex))
+        let example = String(text[start.upperBound..<end.lowerBound])
+        let ads = "group :ads do\n  spm 'https://github.com/AppLovin/AppLovin-MAX-Swift-Package.git', '~> 13.6', products: ['AppLovinSDK']\nend\n"
+        let manifest = try read(example, files: ["/Shared/ads.podfile": ads])
+        XCTAssertEqual(manifest.targets.map(\.name), ["Game", "GameTests"])
     }
 
     func testGroupsAndIncludes() {

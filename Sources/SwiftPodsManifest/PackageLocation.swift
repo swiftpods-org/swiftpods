@@ -66,6 +66,14 @@ public enum PackageLocation {
         return value.precomposedStringWithCanonicalMapping.lowercased()
     }
 
+    /// A local package's identity: its directory's name, as SwiftPM derives it from the absolute path. The path is
+    /// standardized lexically against `directory` first, so `..` names the parent folder rather than "..".
+    public static func localIdentity(_ path: String, relativeTo directory: String) -> String {
+        let base = URL(fileURLWithPath: directory, isDirectory: true)
+        let resolved = URL(fileURLWithPath: path, isDirectory: true, relativeTo: base).standardizedFileURL
+        return identity(resolved.lastPathComponent)
+    }
+
     package static func isSafeOverrideIdentity(_ identity: String) -> Bool {
         isSafeRelativePath(identity) && !identity.contains("/") && identity.utf8.count <= 255
             && identity == self.identity(identity)

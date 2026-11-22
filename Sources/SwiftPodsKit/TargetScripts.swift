@@ -11,7 +11,10 @@ enum TargetScripts {
     /// Their prepare phase publishes a target-scoped external module map here after package dependencies build.
     static let packageModuleSearchPath = "$(DERIVED_FILE_DIR)/SwiftPodsPackageModules"
     static let packageCompilerArguments = "@\"$(DERIVED_FILE_DIR)/SwiftPodsPackageModules/clang.rsp\""
-    private static let generatedPackageModuleMaps = "$(BUILD_DIR)/../Intermediates.noindex/GeneratedModuleMaps$(EFFECTIVE_PLATFORM_NAME)"
+    /// SwiftPM's generated module maps. `OBJROOT`, not a path from `BUILD_DIR`, also holds them during archive.
+    private static let generatedPackageModuleMaps = "$(OBJROOT)/GeneratedModuleMaps$(EFFECTIVE_PLATFORM_NAME)"
+    /// What a phase prints when its generated script is missing. It also identifies SwiftPods' own phases.
+    static let notInstalledMessage = "SwiftPods is not installed. Run swiftpods install next to the Podfile."
 
     enum Phase: String, CaseIterable {
         /// Before compiling: checks the installation is current, then runs `before_compile` scripts.
@@ -38,7 +41,7 @@ enum TargetScripts {
         """
         script=\(sourceRootShellPath(join(paths.target, phase.file + ".sh")))
         if [ ! -f "$script" ]; then
-          echo "error: SwiftPods is not installed. Run swiftpods install next to the Podfile." >&2
+          echo "error: \(notInstalledMessage)" >&2
           exit 1
         fi
         exec /bin/sh "$script"
@@ -202,7 +205,7 @@ enum TargetScripts {
     /// targets. Binary products have no generated module map and are deliberately skipped.
     private static func packageModuleBridge(_ modules: [String]) -> [String] {
         var lines = [
-            #"swiftpods_module_maps="${BUILD_DIR}/../Intermediates.noindex/GeneratedModuleMaps${EFFECTIVE_PLATFORM_NAME}""#,
+            #"swiftpods_module_maps="${OBJROOT}/GeneratedModuleMaps${EFFECTIVE_PLATFORM_NAME}""#,
             #"swiftpods_modules="${DERIVED_FILE_DIR}/SwiftPodsPackageModules""#,
             #"/bin/mkdir -p "$swiftpods_modules""#,
             #"swiftpods_module_map=$(/usr/bin/mktemp "$swiftpods_modules/.module.modulemap.XXXXXX")"#,

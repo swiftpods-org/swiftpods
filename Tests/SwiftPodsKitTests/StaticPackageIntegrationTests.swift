@@ -238,7 +238,7 @@ final class StaticPackageIntegrationTests: XCTestCase {
                 log = try runner.run("/usr/bin/xcrun", ["xcodebuild", "build", "-project", "App.xcodeproj", "-scheme", scheme,
                     "-configuration", configuration, "-destination", "generic/platform=\(platform)", "-derivedDataPath", derived.path, "ARCHS=arm64"], in: directory)
             } catch let error as SwiftPodsError {
-                if let output = error.commandFailure?.output { print(String(decoding: output, as: UTF8.self)) }
+                print(error)
                 throw error
             }
             XCTAssertTrue(log.contains("** BUILD SUCCEEDED **"), log)
@@ -426,7 +426,7 @@ final class StaticPackageIntegrationTests: XCTestCase {
                     "-configuration", configuration, "-destination", "generic/platform=\(platform)", "-derivedDataPath", derived.path,
                     "-archivePath", archive.path, "ARCHS=arm64"], in: directory)
             } catch let error as SwiftPodsError {
-                if let output = error.commandFailure?.output { print(String(decoding: output, as: UTF8.self)) }
+                print(error)
                 throw error
             }
             XCTAssertTrue(log.contains("** \(action.uppercased()) SUCCEEDED **"), log)

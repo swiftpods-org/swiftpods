@@ -63,21 +63,6 @@ public struct ProjectChange: Sendable, Equatable, Codable, CustomStringConvertib
 enum ProjectIntegration {
     static let scriptPrefix = "[SwiftPods] "
     static let groupKey = "group:SwiftPods"
-    private static let maximumSemanticWork = 1_000_000
-
-    private struct SemanticWorkBudget {
-        private var remaining = ProjectIntegration.maximumSemanticWork
-
-        mutating func consume(_ amount: Int, file: String) throws {
-            guard amount >= 0, amount <= remaining else {
-                throw SwiftPodsError(
-                    "Xcode project exceeds the semantic integration work budget",
-                    file: file,
-                    hint: "Reduce duplicated targets, package products, build phases, or local package references")
-            }
-            remaining -= amount
-        }
-    }
 
     static func packageKey(_ object: PBXObject) -> String? {
         switch object.isa {
@@ -122,25 +107,70 @@ enum ProjectIntegration {
         }.map(\.name)
     }
 
-    static func productKey(target: String, package: String, product: String) -> String {
-        "product:\(target)|\(package)|\(product)"
+    // Objects that belong to one target derive from the target's object identifier, which survives renaming it.
+    static func productKey(targetID: String, package: String, product: String) -> String {
+        "target-product:\(targetID)|\(package)|\(product)"
     }
 
     static func dependencyKey(product: String) -> String { "build-dependency:" + product }
 
-    static func scriptKey(target: String, name: String) -> String { "script:\(target)|\(name)" }
-    static func frameworksKey(target: String) -> String { "frameworks-phase:\(target)" }
+    static func scriptKey(targetID: String, name: String) -> String { "target-script:\(targetID)|\(name)" }
+    static func frameworksKey(targetID: String) -> String { "target-frameworks-phase:\(targetID)" }
     static func settingsKey(path: String) -> String { "xcconfig:" + path }
     static func resourceKey(path: String) -> String { "resource:" + path }
-    static func resourcesKey(target: String) -> String { "resources-phase:\(target)" }
-    static func resourceFileKey(target: String, file: String) -> String { "resource-file:\(target)|\(file)" }
+    static func resourcesKey(targetID: String) -> String { "target-resources-phase:\(targetID)" }
+    static func resourceFileKey(targetID: String, file: String) -> String { "target-resource-file:\(targetID)|\(file)" }
 
-    /// Objects SwiftPods created, recognized because their identifiers match what they describe.
+    // SwiftPods 0.3.17 and earlier derived target objects from the target's name. Recognized, never written.
+    static func legacyProductKey(target: String, package: String, product: String) -> String {
+        "product:\(target)|\(package)|\(product)"
+    }
+    static func legacyScriptKey(target: String, name: String) -> String { "script:\(target)|\(name)" }
+    static func legacyFrameworksKey(target: String) -> String { "frameworks-phase:\(target)" }
+    static func legacyResourcesKey(target: String) -> String { "resources-phase:\(target)" }
+    static func legacyResourceFileKey(target: String, file: String) -> String { "resource-file:\(target)|\(file)" }
+
+    private static func productIDs(of target: XcodeProject.NativeTarget, in project: XcodeProject) -> [String] {
+        guard let object = project[target.id] else { return [] }
+        let buildProducts = object.strings("dependencies").compactMap { id -> String? in
+            guard project[id]?.isa == "PBXTargetDependency" else { return nil }
+            return project[id]?.string("productRef")
+        }
+        return object.strings("packageProductDependencies") + buildProducts
+    }
+
+    /// Names whose legacy derivations may describe a target's objects: its current name, and the names inside the
+    /// `SwiftPods-<Target>` container products it links, which keep the name the target had when SwiftPods installed
+    /// them. A candidate only ever confirms an object whose identifier is that exact derivation.
+    private static func legacyNames(of target: XcodeProject.NativeTarget, products: [String], in project: XcodeProject) -> [String] {
+        let prefix = DependencyPackage.productName("")
+        var names = [target.name]
+        for id in products {
+            guard let product = project[id]?.string("productName"), product.hasPrefix(prefix) else { continue }
+            // The container is named after `<project>-<target>` when targets of several projects share a name.
+            var base = Substring(product.dropFirst(prefix.count))
+            names.append(String(base))
+            while let dash = base.firstIndex(of: "-") {
+                base = base[base.index(after: dash)...]
+                names.append(String(base))
+            }
+        }
+        var seen = Set<String>()
+        return names.filter { !$0.isEmpty && seen.insert($0).inserted }
+    }
+
+    /// Objects SwiftPods created, recognized because their identifiers match what they describe. Target objects match
+    /// the derivation from the target's identifier or, for older installations, a legacy derivation from one of its
+    /// `legacyNames`. The Prepare and Finish phases are also recognized by name and generated runner, so one left by
+    /// a renamed or duplicated target is still SwiftPods' own.
     static func ownedIdentifiers(_ project: XcodeProject) throws -> Set<String> {
-        var budget = SemanticWorkBudget()
         var owned = Set<String>()
         func check(_ id: String, _ key: String?) {
             if let key, XcodeProject.identifier(key) == id { owned.insert(id) }
+        }
+        func check(_ id: String, _ key: String, names: [String], legacy: (String) -> String) {
+            check(id, key)
+            for name in names where !owned.contains(id) { check(id, legacy(name)) }
         }
         var localPackages: [String] = []
         for (id, object) in project.objects {
@@ -159,37 +189,43 @@ enum ProjectIntegration {
         }
         for target in project.nativeTargets {
             let object = project[target.id] ?? [:]
-            try budget.consume(
-                object.strings("packageProductDependencies").count + object.strings("dependencies").count
-                    + object.strings("buildPhases").count,
-                file: project.file.path)
-            let buildProducts = object.strings("dependencies").compactMap { id -> String? in
-                guard project[id]?.isa == "PBXTargetDependency" else { return nil }
-                return project[id]?.string("productRef")
-            }
-            for id in object.strings("packageProductDependencies") + buildProducts {
+            let productIDs = Self.productIDs(of: target, in: project)
+            let names = legacyNames(of: target, products: productIDs, in: project)
+            for id in productIDs {
                 guard let dependency = project[id], let product = dependency.string("productName") else { continue }
+                let packages: [String]
                 if let package = dependency.string("package") {
-                    check(id, project[package].flatMap(packageKey).map { productKey(target: target.name, package: $0, product: product) })
+                    packages = project[package].flatMap(packageKey).map { [$0] } ?? []
                 } else {
-                    try budget.consume(localPackages.count, file: project.file.path)
-                    for package in localPackages {
-                        check(id, productKey(target: target.name, package: package, product: product))
+                    packages = localPackages
+                }
+                for package in packages {
+                    check(id, productKey(targetID: target.id, package: package, product: product), names: names) {
+                        legacyProductKey(target: $0, package: package, product: product)
                     }
                 }
             }
             for id in object.strings("buildPhases") {
                 guard let phase = project[id] else { continue }
                 if phase.isa == "PBXShellScriptBuildPhase", let name = phase.string("name"), name.hasPrefix(scriptPrefix) {
-                    check(id, scriptKey(target: target.name, name: String(name.dropFirst(scriptPrefix.count))))
+                    let script = String(name.dropFirst(scriptPrefix.count))
+                    check(id, scriptKey(targetID: target.id, name: script), names: names) {
+                        legacyScriptKey(target: $0, name: script)
+                    }
+                    if TargetScripts.Phase(rawValue: script) != nil,
+                        phase.string("shellScript")?.contains(TargetScripts.notInstalledMessage) == true
+                    {
+                        owned.insert(id)
+                    }
                 } else if phase.isa == "PBXFrameworksBuildPhase" {
-                    check(id, frameworksKey(target: target.name))
+                    check(id, frameworksKey(targetID: target.id), names: names, legacy: legacyFrameworksKey)
                 } else if phase.isa == "PBXResourcesBuildPhase" {
-                    check(id, resourcesKey(target: target.name))
-                    try budget.consume(phase.strings("files").count, file: project.file.path)
+                    check(id, resourcesKey(targetID: target.id), names: names, legacy: legacyResourcesKey)
                     for file in phase.strings("files") {
                         guard let reference = project[file]?.string("fileRef"), owned.contains(reference) else { continue }
-                        check(file, resourceFileKey(target: target.name, file: reference))
+                        check(file, resourceFileKey(targetID: target.id, file: reference), names: names) {
+                            legacyResourceFileKey(target: $0, file: reference)
+                        }
                     }
                 }
             }
@@ -231,6 +267,16 @@ enum ProjectIntegration {
         _ plan: ProjectPlan, to project: inout XcodeProject, adopt: Bool,
         migrateLegacyCrashlyticsPaths: Bool = false
     ) throws -> [ProjectChange] {
+        var notes: [String] = []
+        return try apply(
+            plan, to: &project, adopt: adopt, migrateLegacyCrashlyticsPaths: migrateLegacyCrashlyticsPaths, notes: &notes)
+    }
+
+    /// Applies `plan`; `notes` receives what SwiftPods deliberately left in place, such as a package still in use.
+    static func apply(
+        _ plan: ProjectPlan, to project: inout XcodeProject, adopt: Bool,
+        migrateLegacyCrashlyticsPaths: Bool = false, notes: inout [String]
+    ) throws -> [ProjectChange] {
         var owned = try ownedIdentifiers(project)
         let foreign = adoptable(project, plan: plan, owned: owned)
         if !foreign.isEmpty {
@@ -245,6 +291,13 @@ enum ProjectIntegration {
             }
             owned.formUnion(foreign)
         }
+        // A Frameworks or Resources phase SwiftPods created becomes the target's own once a file of someone else's is
+        // in it: the phase and that file stay, and SwiftPods keeps managing only its own entries there.
+        owned.subtract(owned.filter { id in
+            guard let phase = project[id], ["PBXFrameworksBuildPhase", "PBXResourcesBuildPhase"].contains(phase.isa ?? "")
+            else { return false }
+            return phase.strings("files").contains { project[$0] != nil && !owned.contains($0) }
+        })
 
         let nativeTargets = project.nativeTargets
         if let duplicate = Dictionary(grouping: nativeTargets, by: \.name).first(where: { $0.value.count > 1 }) {
@@ -286,15 +339,31 @@ enum ProjectIntegration {
             var resources: [String] = []
         }
         var edits: [String: TargetEdits] = [:]
+        var plannedProducts: [String: (target: String, package: String, name: String)] = [:]
+        var legacyProductsByName: [String: String] = [:]
+        var legacyProductCandidates: [String: Set<String>] = [:]
         var settingsFiles: [String] = []
         var resourceFiles: [String] = []
         var resourceFileSet = Set<String>()
         for target in plan.targets {
+            let nativeTarget = targets[target.name]!
+            let targetID = nativeTarget.id
+            let names = legacyNames(of: nativeTarget, products: productIDs(of: nativeTarget, in: project), in: project)
             var edit = TargetEdits()
             for product in target.products {
                 var object: PBXObject = ["isa": "XCSwiftPackageProductDependency", "productName": .string(product.name)]
                 if !isLocalPackage(product.package.object) { object["package"] = .string(XcodeProject.identifier(product.package.key)) }
-                let id = put(productKey(target: target.name, package: product.package.key, product: product.name), object)
+                let id = put(productKey(targetID: targetID, package: product.package.key, product: product.name), object)
+                plannedProducts[id] = (targetID, product.package.key, product.name)
+                for name in names {
+                    let legacy = XcodeProject.identifier(legacyProductKey(target: name, package: product.package.key, product: product.name))
+                    guard owned.contains(legacy), project[legacy]?.isa == "XCSwiftPackageProductDependency" else { continue }
+                    if name == target.name {
+                        legacyProductsByName[legacy] = id
+                    } else {
+                        legacyProductCandidates[legacy, default: []].insert(id)
+                    }
+                }
                 if product.link {
                     edit.products.append(id)
                     edit.buildFiles.append(put("build-file:" + id, ["isa": "PBXBuildFile", "productRef": .string(id)]))
@@ -313,7 +382,7 @@ enum ProjectIntegration {
                     "runOnlyForDeploymentPostprocessing": "0", "shellPath": "/bin/sh", "shellScript": .string(phase.script),
                     "showEnvVarsInLog": "0",
                 ]
-                edit.scripts.append((put(scriptKey(target: target.name, name: phase.name), object), phase.position))
+                edit.scripts.append((put(scriptKey(targetID: targetID, name: phase.name), object), phase.position))
             }
             if let path = target.settingsFile {
                 edit.settings = put(
@@ -331,7 +400,7 @@ enum ProjectIntegration {
                     "name": .string((path as NSString).lastPathComponent), "path": .string(path), "sourceTree": "SOURCE_ROOT",
                 ])
                 if resourceFileSet.insert(file).inserted { resourceFiles.append(file) }
-                edit.resources.append(put(resourceFileKey(target: target.name, file: file), ["isa": "PBXBuildFile", "fileRef": .string(file)]))
+                edit.resources.append(put(resourceFileKey(targetID: targetID, file: file), ["isa": "PBXBuildFile", "fileRef": .string(file)]))
             }
             edits[target.name] = edit
         }
@@ -348,7 +417,7 @@ enum ProjectIntegration {
             let existing = (project[target]?.strings("buildPhases") ?? []).first {
                 project[$0]?.isa == "PBXFrameworksBuildPhase" && !owned.contains($0)
             }
-            frameworksPhases[name] = existing ?? put(frameworksKey(target: name), [
+            frameworksPhases[name] = existing ?? put(frameworksKey(targetID: target), [
                 "isa": "PBXFrameworksBuildPhase", "buildActionMask": "2147483647", "files": [],
                 "runOnlyForDeploymentPostprocessing": "0",
             ])
@@ -361,7 +430,7 @@ enum ProjectIntegration {
             let existing = (project[target]?.strings("buildPhases") ?? []).first {
                 project[$0]?.isa == "PBXResourcesBuildPhase" && !owned.contains($0)
             }
-            resourcesPhases[name] = existing ?? put(resourcesKey(target: name), [
+            resourcesPhases[name] = existing ?? put(resourcesKey(targetID: target), [
                 "isa": "PBXResourcesBuildPhase", "buildActionMask": "2147483647", "files": [],
                 "runOnlyForDeploymentPostprocessing": "0",
             ])
@@ -374,11 +443,32 @@ enum ProjectIntegration {
                 let path = targetPlan.settingsFile
             else { continue }
             for (configuration, id) in project.configurations(of: targets[name]!.id) {
-                guard let base = project[id]?.string("baseConfigurationReference"), base != settings, !owned.contains(base) else { continue }
-                if !includes(project, base: base, settings: path, parents: groupParents) {
-                    let include = relativeInclude(project, base: base, settings: path, parents: groupParents)
+                guard let object = project[id] else { continue }
+                let file: URL?
+                let description: String
+                if let anchor = object.string("baseConfigurationReferenceAnchor") {
+                    // Xcode 16 names an xcconfig inside a synchronized folder by that folder and a path within it.
+                    let relative = object.string("baseConfigurationReferenceRelativePath")
+                    file = relative.flatMap { relative in directory(project, of: anchor, parents: groupParents)?.appendingPathComponent(relative) }
+                    description = relative ?? anchor
+                } else if let base = object.string("baseConfigurationReference"), base != settings, !owned.contains(base) {
+                    file = location(project, of: base, parents: groupParents)
+                    description = project[base]?.string("path") ?? base
+                } else {
+                    continue
+                }
+                guard let file else {
+                    // A group with several parents or an unknown synchronized folder: no include path can be given.
                     throw SwiftPodsError(
-                        "Target `\(name)` already uses \(project[base]?.string("path") ?? base) as its \(configuration) base configuration",
+                        "Target `\(name)` already uses \(description) as its \(configuration) base configuration, "
+                            + "and SwiftPods cannot tell where that file is",
+                        file: project.file.path,
+                        hint: "Add #include? \"<path>\" to that file, where <path> leads from its folder to \(path) in the project folder")
+                }
+                if !includes(project, file: file, settings: path) {
+                    let include = relativeInclude(project, file: file, settings: path)
+                    throw SwiftPodsError(
+                        "Target `\(name)` already uses \(description) as its \(configuration) base configuration",
                         file: project.file.path,
                         hint: "Add this line to that file: #include? \"\(include)\"")
                 }
@@ -419,13 +509,51 @@ enum ProjectIntegration {
                 project[id] = migrated
             }
         }
-        project.remove(Set(owned.filter { desired[$0] == nil }))
+        var removal = Set(owned.filter { desired[$0] == nil })
+        // A package someone also links in Xcode, through a product dependency of their own, stays referenced: removing
+        // it would leave their dependency naming nothing. It is reported, and dropped once nothing of theirs uses it.
+        var kept: [String: [String]] = [:]
+        for (id, object) in project.objects where object.isa == "XCSwiftPackageProductDependency" && !owned.contains(id) {
+            guard let package = object.string("package"), removal.contains(package) else { continue }
+            let user = project.nativeTargets.first {
+                project[$0.id]?.strings("packageProductDependencies").contains(id) == true
+            }
+            kept[package, default: []].append((object.string("productName") ?? id) + (user.map { " in " + $0.name } ?? ""))
+        }
+        for (package, users) in kept.sorted(by: { $0.key < $1.key }) {
+            removal.remove(package)
+            let name = project[package].flatMap { $0.string("repositoryURL") ?? $0.string("relativePath") } ?? package
+            notes.append(
+                "Kept package \(name), which the Podfile no longer declares: \(users.sorted().joined(separator: ", ")) still use it")
+        }
+        // A legacy ID includes the original target name and package key. Other targets may refer to that ID too.
+        // Prefer the original name and use a former name only when it identifies a single replacement.
+        var replacements = legacyProductsByName.filter { removal.contains($0.key) }
+        for (old, candidates) in legacyProductCandidates where removal.contains(old) && replacements[old] == nil {
+            if candidates.count == 1 { replacements[old] = candidates.first }
+        }
+        for (id, object) in project.objects where !owned.contains(id) {
+            guard let product = object.string("productRef"), let replacement = replacements[product] else { continue }
+            var updated = object
+            updated["productRef"] = .string(replacement)
+            project[id] = updated
+        }
+        project.remove(removal)
+        // Entries of others that only referred to something SwiftPods removed went with it.
+        let dependents = before.filter { id, _ in project[id] == nil && !owned.contains(id) && !removal.contains(id) }
+        if !dependents.isEmpty {
+            notes.append(
+                "Removed entries that referred to what SwiftPods no longer installs: "
+                    + dependents.map { "\($0.value.isa ?? "object") \($0.key)" }.sorted().joined(separator: ", "))
+        }
         for (id, object) in desired { project[id] = object }
 
         var root = project.project
         root["packageReferences"] = .array(
-            (root["packageReferences"]?.array ?? []).filter { !owned.contains($0.string ?? "") && !packageIDs.contains($0.string ?? "") }
-                + packageIDs.map(PBXValue.string))
+            (root["packageReferences"]?.array ?? []).filter {
+                let id = $0.string ?? ""
+                return (!owned.contains(id) || kept[id] != nil) && !packageIDs.contains(id)
+            } + packageIDs.map(PBXValue.string))
         if root["packageReferences"]?.array?.isEmpty == true { root["packageReferences"] = nil }
         if let mainGroup = root.string("mainGroup"), var main = project[mainGroup] {
             var children = main.strings("children").filter { !owned.contains($0) && $0 != groupID }
@@ -438,14 +566,24 @@ enum ProjectIntegration {
         for target in project.nativeTargets {
             guard var object = project[target.id] else { continue }
             let edit = edits[target.name] ?? TargetEdits()
+            // Entries of others survive unless removing what they referred to removed them too.
             let existing = before[target.id]?.strings("packageProductDependencies") ?? []
-            let products = existing.filter { !owned.contains($0) } + edit.products
+            let preserved = existing.compactMap { old -> String? in
+                let id = replacements[old] ?? old
+                guard project[id] != nil else { return nil }
+                guard owned.contains(old) else { return id }
+                guard let product = plannedProducts[id], product.target != target.id else { return nil }
+                let own = XcodeProject.identifier(productKey(targetID: target.id, package: product.package, product: product.name))
+                return plannedProducts[own] == nil ? id : nil
+            }
+            var seenProducts = Set<String>()
+            let products = (preserved + edit.products).filter { seenProducts.insert($0).inserted }
             // Leave no empty list behind where SwiftPods created the only entries.
             let keep = !products.isEmpty || (object["packageProductDependencies"] != nil && existing.allSatisfy { !owned.contains($0) })
             object["packageProductDependencies"] = keep ? .array(products.map(PBXValue.string)) : nil
 
             let existingDependencies = before[target.id]?.strings("dependencies") ?? []
-            let dependencies = existingDependencies.filter { !owned.contains($0) } + edit.dependencies
+            let dependencies = existingDependencies.filter { !owned.contains($0) && project[$0] != nil } + edit.dependencies
             let keepDependencies = !dependencies.isEmpty || before[target.id]?["dependencies"] != nil
             object["dependencies"] = keepDependencies ? .array(dependencies.map(PBXValue.string)) : nil
 
@@ -487,7 +625,11 @@ enum ProjectIntegration {
             for id in project.configurations(of: target.id).values {
                 guard var configuration = project[id] else { continue }
                 let base = configuration.string("baseConfigurationReference")
-                if let settings = edit.settings, base == nil || owned.contains(base!) || base == settings {
+                if configuration["baseConfigurationReferenceAnchor"] != nil {
+                    // A synchronized-folder file is this configuration's base and includes SwiftPods' settings (checked
+                    // above); a second base reference would leave one of them silently unused.
+                    if let base, owned.contains(base) { configuration["baseConfigurationReference"] = nil }
+                } else if let settings = edit.settings, base == nil || owned.contains(base!) || base == settings {
                     configuration["baseConfigurationReference"] = .string(settings)
                 } else if let base, owned.contains(base), project[base] == nil {
                     configuration["baseConfigurationReference"] = nil
@@ -648,19 +790,56 @@ enum ProjectIntegration {
         }
     }
 
-    private static func relativeInclude(
-        _ project: XcodeProject, base: String, settings: String, parents: [String: [String]]
-    ) -> String {
-        guard let file = location(project, of: base, parents: parents) else { return settings }
-        return Paths.relative(from: file.deletingLastPathComponent(), to: project.sourceRoot.appendingPathComponent(settings))
+    /// The directory a group, or a synchronized folder, stands for.
+    private static func directory(_ project: XcodeProject, of id: String, parents: [String: [String]]) -> URL? {
+        var visited: Set<String> = []
+        return groupDirectory(project, id, parents: parents, visited: &visited, depth: 0)
     }
 
-    private static func includes(
-        _ project: XcodeProject, base: String, settings: String, parents: [String: [String]]
-    ) -> Bool {
-        guard let file = location(project, of: base, parents: parents), let text = readConfiguration(file) else { return false }
-        let expected = relativeInclude(project, base: base, settings: settings, parents: parents)
-        return text.split(separator: "\n").contains { includedPath(in: $0) == expected }
+    private static func relativeInclude(_ project: XcodeProject, file: URL, settings: String) -> String {
+        Paths.relative(from: file.deletingLastPathComponent(), to: project.sourceRoot.appendingPathComponent(settings))
+    }
+
+    private static func includes(_ project: XcodeProject, file: URL, settings: String) -> Bool {
+        guard let text = readConfiguration(file) else { return false }
+        let directory = file.deletingLastPathComponent()
+        let expected = project.sourceRoot.appendingPathComponent(settings).standardizedFileURL.path
+        return text.split(separator: "\n").contains { line in
+            guard let path = includedPath(in: line) else { return false }
+            return matchesInclude(path, from: directory, expected: expected)
+        }
+    }
+
+    private static func matchesInclude(_ path: String, from directory: URL, expected: String) -> Bool {
+        let parts = path.split(separator: "/")
+        guard let last = parts.last, last != ".", last != "..", !path.hasSuffix("/"), !path.utf8.contains(0) else {
+            return false
+        }
+        let base = path.hasPrefix("/") ? [] : directory.path.split(separator: "/")
+        var components: [Substring] = []
+        for part in base + parts {
+            switch part {
+            case ".": continue
+            case "..":
+                guard let name = components.popLast() else { continue }
+                let parent = "/" + components.joined(separator: "/")
+                let traversed = (parent == "/" ? "" : parent) + "/" + name
+                guard reachesParent(traversed, parent: parent, expected: expected) else { return false }
+            default: components.append(part)
+            }
+        }
+        return "/" + components.joined(separator: "/") == expected
+    }
+
+    /// Appending `..` must reach the same directory as dropping the last component.
+    private static func reachesParent(_ directory: String, parent: String, expected: String) -> Bool {
+        var actual = stat()
+        if stat(directory + "/..", &actual) == 0 {
+            var intended = stat()
+            return stat(parent, &intended) == 0 && actual.st_dev == intended.st_dev && actual.st_ino == intended.st_ino
+        }
+        // The generated file's ancestors can be missing until installation publishes them.
+        return errno == ENOENT && expected.hasPrefix(directory + "/")
     }
 
     /// Parses exactly one xcconfig include directive. Comments may follow the operand, but cannot supply it.
@@ -698,62 +877,8 @@ enum ProjectIntegration {
         return path
     }
 
-    /// Base configurations are project-controlled input too. Resolve a legitimate symlink once, then open the
-    /// resulting regular file without following another final link or blocking on a special file.
     private static func readConfiguration(_ file: URL) -> String? {
-        let maximumBytes = 8 * 1_024 * 1_024
-        var source = stat()
-        guard file.path.withCString({ lstat($0, &source) }) == 0 else { return nil }
-        let resolved: URL
-        if source.st_mode & S_IFMT == S_IFLNK {
-            var buffer = [CChar](repeating: 0, count: Int(PATH_MAX))
-            let result = buffer.withUnsafeMutableBufferPointer { output in
-                file.path.withCString { realpath($0, output.baseAddress) }
-            }
-            guard result != nil else { return nil }
-            let bytes = buffer.prefix { $0 != 0 }.map { UInt8(bitPattern: $0) }
-            resolved = URL(fileURLWithPath: String(decoding: bytes, as: UTF8.self))
-            var current = stat()
-            guard file.path.withCString({ lstat($0, &current) }) == 0,
-                current.st_dev == source.st_dev, current.st_ino == source.st_ino,
-                current.st_mode == source.st_mode, current.st_size == source.st_size,
-                current.st_mtimespec.tv_sec == source.st_mtimespec.tv_sec,
-                current.st_mtimespec.tv_nsec == source.st_mtimespec.tv_nsec,
-                current.st_ctimespec.tv_sec == source.st_ctimespec.tv_sec,
-                current.st_ctimespec.tv_nsec == source.st_ctimespec.tv_nsec
-            else { return nil }
-        } else {
-            guard source.st_mode & S_IFMT == S_IFREG else { return nil }
-            resolved = file
-        }
-        let descriptor = resolved.path.withCString { open($0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK) }
-        guard descriptor >= 0 else { return nil }
-        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
-        defer { try? handle.close() }
-        var initial = stat()
-        guard fstat(descriptor, &initial) == 0, initial.st_mode & S_IFMT == S_IFREG,
-            initial.st_size >= 0, initial.st_size <= maximumBytes
-        else { return nil }
-        var data = Data()
-        do {
-            while let chunk = try handle.read(upToCount: min(1 << 20, maximumBytes + 1 - data.count)), !chunk.isEmpty {
-                data.append(chunk)
-                guard data.count <= maximumBytes else { return nil }
-            }
-        } catch {
-            return nil
-        }
-        var final = stat()
-        guard fstat(descriptor, &final) == 0, final.st_dev == initial.st_dev,
-            final.st_ino == initial.st_ino, final.st_mode == initial.st_mode,
-            final.st_nlink == initial.st_nlink, final.st_size == initial.st_size,
-            final.st_mtimespec.tv_sec == initial.st_mtimespec.tv_sec,
-            final.st_mtimespec.tv_nsec == initial.st_mtimespec.tv_nsec,
-            final.st_ctimespec.tv_sec == initial.st_ctimespec.tv_sec,
-            final.st_ctimespec.tv_nsec == initial.st_ctimespec.tv_nsec,
-            data.count == Int(initial.st_size)
-        else { return nil }
-        return String(data: data, encoding: .utf8)
+        try? String(contentsOf: file, encoding: .utf8)
     }
 }
 

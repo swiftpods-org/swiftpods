@@ -16,7 +16,6 @@ let help = """
         --adopt       Manage package references that were added without SwiftPods
         --offline     Use cached binary archives, catalogs and override commits only
         --update-sources  Refresh unpinned catalogs and update SwiftPods.lock (non-deployment only)
-        --allow-external-file-lists  Trust script .xcfilelist paths outside the Podfile directory
       deintegrate   Remove everything SwiftPods added
         --cocoapods   Also remove a CocoaPods or SwiftPods 0.1 integration
       check         Read the Podfile and show what each target gets
@@ -199,46 +198,14 @@ func run(_ arguments: [String]) throws {
     default:
         print(help)
     }
+    if command != "install" && command != "deintegrate" { Interruption.endIfReceived() }
 }
 
-ProcessRunner.installTerminationSignalHandlers()
-let commandLineArguments = Array(CommandLine.arguments.dropFirst())
-
-func dispatchCommandLine(_ arguments: [String]) throws {
-    if arguments.first == SwiftPodsArchiveWorker.command {
-        let output = try SwiftPodsArchiveWorker.run(arguments: Array(arguments.dropFirst()))
-        try FileHandle.standardOutput.write(contentsOf: output)
-    } else if arguments.first == SwiftPodsArchiveWorker.parentProbeCommand {
-        let output = try SwiftPodsArchiveWorker.runParentProbe(arguments: Array(arguments.dropFirst()))
-        try FileHandle.standardOutput.write(contentsOf: output)
-    } else {
-        try run(arguments)
-    }
-}
-
+Interruption.install()
 do {
-    #if DEBUG
-    if commandLineArguments.first == "--swiftpods-internal-process-signal-probe-v1" {
-        guard commandLineArguments.count == 3 else {
-            throw Usage(description: "Internal process signal probe requires marker and ready paths")
-        }
-        let script = """
-            trap '/usr/bin/touch "$1"; exit 0' TERM INT
-            /usr/bin/touch "$2"
-            while :; do /bin/sleep 1; done
-            """
-        _ = try ProcessRunner().run(
-            "/bin/sh",
-            ["-c", script, "swiftpods-signal-probe", commandLineArguments[1], commandLineArguments[2]], in: nil)
-    } else {
-        try dispatchCommandLine(commandLineArguments)
-    }
-    #else
-    try dispatchCommandLine(commandLineArguments)
-    #endif
-    ProcessRunner.terminateIfSignalWasReceived()
+    try run(Array(CommandLine.arguments.dropFirst()))
 } catch {
-    ProcessRunner.terminateIfSignalWasReceived()
     FileHandle.standardError.write(Data("\(error)\n".utf8))
+    Interruption.endIfReceived()
     exit(1)
 }

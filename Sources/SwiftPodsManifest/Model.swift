@@ -27,9 +27,6 @@ public struct Manifest: Sendable, Codable, Equatable {
     public var binaries: [Binary]
     /// Concrete Xcode targets, in declaration order.
     public var targets: [Target]
-    /// Production filesystem readers retain descriptor-backed snapshots here. The closure is deliberately omitted
-    /// from Codable and equality: it is a process-local capability, not manifest data.
-    private var verifyFileSnapshotsBody: (@Sendable () throws -> Void)?
 
     private enum CodingKeys: String, CodingKey {
         case file, includes, sources, packages, binaries, targets
@@ -37,7 +34,7 @@ public struct Manifest: Sendable, Codable, Equatable {
 
     init(
         file: String, files: [ManifestFile], includes: [String], sources: [Source], packages: [Package], binaries: [Binary],
-        targets: [Target], verifyFileSnapshots: (@Sendable () throws -> Void)? = nil
+        targets: [Target]
     ) {
         self.file = file
         self.files = files
@@ -46,14 +43,6 @@ public struct Manifest: Sendable, Codable, Equatable {
         self.packages = packages
         self.binaries = binaries
         self.targets = targets
-        verifyFileSnapshotsBody = verifyFileSnapshots
-    }
-
-    /// Proves that every Podfile/include pathname still names the exact inode and metadata snapshot that supplied the
-    /// parsed bytes. Manifests produced by an injected in-memory reader have no filesystem capability and therefore
-    /// require no revalidation.
-    public func verifyFileSnapshots() throws {
-        try verifyFileSnapshotsBody?()
     }
 
     public init(from decoder: any Decoder) throws {
@@ -65,7 +54,6 @@ public struct Manifest: Sendable, Codable, Equatable {
         packages = try values.decode([Package].self, forKey: .packages)
         binaries = try values.decode([Binary].self, forKey: .binaries)
         targets = try values.decode([Target].self, forKey: .targets)
-        verifyFileSnapshotsBody = nil
     }
 
     public func encode(to encoder: any Encoder) throws {

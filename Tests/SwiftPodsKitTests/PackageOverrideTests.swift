@@ -5,26 +5,21 @@ import SwiftPodsTestSupport
 import XCTest
 
 final class PackageOverrideTests: XCTestCase {
-    private struct Runner: DescriptorWorkingDirectoryCommandRunner {
+    /// Runs Git for real and stands in for Xcode's package resolution.
+    private struct Runner: CommandRunner {
         let onResolve: @Sendable () throws -> Void
         private let process = ProcessRunner()
 
         func run(_ executable: String, _ arguments: [String], in directory: URL?) throws -> String {
-            try process.run(executable, arguments, in: directory)
+            if arguments.first == "xcodebuild" {
+                try onResolve()
+                return ""
+            }
+            return try process.run(executable, arguments, in: directory)
         }
 
-        func runData(
-            _ executable: String, _ arguments: [String], in directory: URL?, timeout: TimeInterval,
-            maximumOutputBytes: Int
-        ) throws -> Data {
-            try process.runData(executable, arguments, in: directory, timeout: timeout, maximumOutputBytes: maximumOutputBytes)
-        }
-
-        func runDescriptorBacked(
-            _ executable: String, _ arguments: [String], workingDirectoryDescriptor: Int32, timeout: TimeInterval
-        ) throws -> String {
-            try onResolve()
-            return ""
+        func runData(_ executable: String, _ arguments: [String], in directory: URL?) throws -> Data {
+            try process.runData(executable, arguments, in: directory)
         }
     }
 
@@ -82,9 +77,10 @@ final class PackageOverrideTests: XCTestCase {
         return try command(["rev-parse", "HEAD"], in: repository).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func cache(_ repository: URL, in directory: URL, origin: String, revision: String) throws {
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        let cached = directory.appendingPathComponent(GitCatalog.pinnedTreeCacheName(url: origin, revision: revision))
+    private func cache(_ repository: URL, in directory: URL, origin: String, revision: String, legacy: Bool = false) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let name = legacy ? GitCatalog.pinnedTreeCacheName(url: origin, revision: revision) : GitCatalog.repositoryName(origin)
+        let cached = directory.appendingPathComponent(name)
         _ = try command(["clone", "--bare", "--quiet", "--no-local", "--template=", repository.path, cached.path])
         _ = try command(["remote", "set-url", "origin", origin], in: cached)
     }
@@ -108,7 +104,7 @@ final class PackageOverrideTests: XCTestCase {
         """
     }
 
-    func testExactBareExportReadsRawBlobsAndChecksBudgets() throws {
+    func testExactBareExportReadsRawBlobs() throws {
         let directory = try fixture()
         let repository = directory.appendingPathComponent("source")
         try self.repository(
@@ -118,24 +114,38 @@ final class PackageOverrideTests: XCTestCase {
         XCTAssertEqual(revision.count, 64)
         let cache = directory.appendingPathComponent("cache")
         let online = GitCatalog(cache: cache, runner: git, update: false, offline: false)
-        var budget = GitPackageTree.Budget()
-        var files: [String: Data] = [:]
-        _ = try online.exportPackageTree(url: repository.path, revision: revision, submodules: false, budget: &budget) {
-            entry, data in files[entry.path] = data
-        }
-        XCTAssertEqual(files["Kept.txt"], Data("raw\n".utf8))
+        let output = directory.appendingPathComponent("export")
+        _ = try online.exportPackageTree(url: repository.path, revision: revision, submodules: false, into: output)
+        XCTAssertEqual(try Data(contentsOf: output.appendingPathComponent("Kept.txt")), Data("raw\n".utf8))
         let offline = GitCatalog(cache: cache, runner: git, update: false, offline: true)
-        budget = GitPackageTree.Budget(remainingEntries: 1)
         XCTAssertThrowsError(try offline.exportPackageTree(
-            url: repository.path, revision: revision, submodules: false, budget: &budget
-        ) { _, _ in }) { XCTAssertTrue("\($0)".contains("entry or byte limit"), "\($0)") }
-        budget = GitPackageTree.Budget(remainingBytes: 1)
-        XCTAssertThrowsError(try offline.exportPackageTree(
-            url: repository.path, revision: revision, submodules: false, budget: &budget
-        ) { _, _ in }) { XCTAssertTrue("\($0)".contains("entry or byte limit"), "\($0)") }
-        XCTAssertThrowsError(try offline.exportPackageTree(
-            url: repository.path, revision: String(revision.prefix(12)), submodules: false, budget: &budget
-        ) { _, _ in }) { XCTAssertTrue("\($0)".contains("full commit ID"), "\($0)") }
+            url: repository.path, revision: String(revision.prefix(12)), submodules: false, into: output
+        )) { XCTAssertTrue("\($0)".contains("full commit ID"), "\($0)") }
+    }
+
+    func testCacheRetainsTwoRevisionsOfTheSameSource() throws {
+        let directory = try fixture()
+        let source = directory.appendingPathComponent("source")
+        try repository(source, files: ["Package.swift": package, "Readme": "first\n"])
+        let first = try commit(source)
+        let cache = directory.appendingPathComponent("cache")
+        let online = GitCatalog(cache: cache, runner: git, update: false, offline: false)
+        _ = try online.exportPackageTree(
+            url: source.path, revision: first, submodules: false, into: directory.appendingPathComponent("first"))
+
+        try write("second\n", to: source.appendingPathComponent("Readme"))
+        let second = try commit(source)
+        _ = try online.exportPackageTree(
+            url: source.path, revision: second, submodules: false, into: directory.appendingPathComponent("second"))
+        let bare = cache.appendingPathComponent(GitCatalog.repositoryName(source.path))
+        _ = try command(["gc", "--prune=now"], in: bare)
+
+        let offline = GitCatalog(cache: cache, runner: git, update: false, offline: true)
+        for (revision, text) in [(first, "first\n"), (second, "second\n")] {
+            let restored = directory.appendingPathComponent(revision)
+            _ = try offline.exportPackageTree(url: source.path, revision: revision, submodules: false, into: restored)
+            XCTAssertEqual(try String(contentsOf: restored.appendingPathComponent("Readme"), encoding: .utf8), text)
+        }
     }
 
     func testOneLevelOverrideInstallDeploymentAndOfflineRecovery() throws {
@@ -146,7 +156,7 @@ final class PackageOverrideTests: XCTestCase {
         let grammarRevision = try commit(grammar)
         try write("int moved(void) { return 8; }\n", to: grammar.appendingPathComponent("parser.c"))
         _ = try commit(grammar)
-        try self.cache(grammar, in: cache, origin: grammarOrigin, revision: grammarRevision)
+        try self.cache(grammar, in: cache, origin: grammarOrigin, revision: grammarRevision, legacy: true)
 
         let source = directory.appendingPathComponent("package")
         let scheme = ".swiftpm/xcode/Managed.xcscheme"
@@ -154,8 +164,10 @@ final class PackageOverrideTests: XCTestCase {
         XCTAssertEqual(chmod(source.appendingPathComponent("tool.sh").path, 0o755), 0)
         try FileManager.default.createSymbolicLink(
             atPath: source.appendingPathComponent("package-link").path, withDestinationPath: "Package.swift")
+        try FileManager.default.createSymbolicLink(
+            atPath: source.appendingPathComponent("grammar-link").path, withDestinationPath: "Grammar/parser.c")
         let revision = try addSubmodule(to: source, path: "Grammar", origin: grammarOrigin, revision: grammarRevision)
-        try self.cache(source, in: cache, origin: origin, revision: revision)
+        try self.cache(source, in: cache, origin: origin, revision: revision, legacy: true)
 
         let output = directory.appendingPathComponent("SwiftPods/Overrides/overridekit")
         let derived = output.appendingPathComponent(".swiftpm/xcode/LocalState")
@@ -178,6 +190,8 @@ final class PackageOverrideTests: XCTestCase {
         resolving.resolve = true
         _ = try installer.install(resolving)
         XCTAssertEqual(try String(contentsOf: output.appendingPathComponent("Grammar/parser.c"), encoding: .utf8),
+                       "int pinned(void) { return 7; }\n")
+        XCTAssertEqual(try String(contentsOf: output.appendingPathComponent("grammar-link"), encoding: .utf8),
                        "int pinned(void) { return 7; }\n")
         XCTAssertTrue(FileManager.default.isExecutableFile(atPath: output.appendingPathComponent("tool.sh").path))
         XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: output.appendingPathComponent("package-link").path),
@@ -216,13 +230,25 @@ final class PackageOverrideTests: XCTestCase {
         }
         try resolvedData.write(to: resolved)
 
+        let originalOverride = try XCTUnwrap(lock.pinnedOverrides.first)
+        let equivalentLock = SwiftPodsLock(resolutions: [], overrides: [
+            .init(
+                identity: originalOverride.identity, url: originalOverride.url, revision: originalOverride.revision,
+                submodules: originalOverride.submodules, sha256: originalOverride.sha256,
+                metadataPaths: Array(originalOverride.metadataPaths.reversed()) + [scheme]),
+        ])
+        let equivalentData = try equivalentLock.data()
+        try equivalentData.write(to: lockURL)
+        _ = try installer.install(deployment)
+        XCTAssertEqual(try Data(contentsOf: lockURL), equivalentData)
+
         try write("changed", to: output.appendingPathComponent(scheme))
         XCTAssertThrowsError(try installer.install(deployment)) { XCTAssertTrue("\($0)".contains("do not match SwiftPods.lock"), "\($0)") }
         try FileManager.default.removeItem(at: directory.appendingPathComponent("SwiftPods"))
         XCTAssertThrowsError(try installer.install(deployment))
         XCTAssertFalse(FileManager.default.fileExists(atPath: output.path))
         _ = try installer.install(offline)
-        XCTAssertEqual(try Data(contentsOf: lockURL), lockData)
+        XCTAssertEqual(try Data(contentsOf: lockURL), equivalentData)
         try write(podfile(revision, submodules: true).replacingOccurrences(
             of: "submodules: true", with: "submodules: true, products: ['OverrideKit']"),
             to: directory.appendingPathComponent("Podfile"))
@@ -272,6 +298,39 @@ final class PackageOverrideTests: XCTestCase {
         }
     }
 
+    func testOverrideNeverWritesThroughALinkTheFileSystemConsidersTheSameName() throws {
+        let directory = try fixture()
+        // APFS folds final sigma to sigma; lowercasing, which the tree's own collision check uses, does not.
+        try write("", to: directory.appendingPathComponent("\u{3C2}"))
+        guard FileManager.default.fileExists(atPath: directory.appendingPathComponent("\u{3C3}").path) else {
+            throw XCTSkip("Needs a case-insensitive file system")
+        }
+        // `0 -> .` and `ς -> 0/0/0/../../..` each stay inside by their text, but ς resolves three levels above the
+        // tree, and on this file system the directory `σ` of `σ/evil` is the link `ς`. Such a tree cannot be checked
+        // out here, so it is built from Git objects.
+        let source = directory.appendingPathComponent("package")
+        try repository(source, files: [:])
+        let objects = directory.appendingPathComponent("objects")
+        let entries = [("100644", "Package.swift", package), ("120000", "0", "."), ("120000", "\u{3C2}", "0/0/0/../../.."),
+                       ("100644", "\u{3C3}/evil", "written outside\n")]
+        for (index, (mode, path, contents)) in entries.enumerated() {
+            let file = objects.appendingPathComponent("\(index)")
+            try write(contents, to: file)
+            let blob = try command(["hash-object", "-w", file.path], in: source).trimmingCharacters(in: .whitespacesAndNewlines)
+            _ = try command(["-c", "core.ignorecase=false", "update-index", "--add", "--cacheinfo", "\(mode),\(blob),\(path)"], in: source)
+        }
+        let revision = try commitIndex(source)
+        let cache = directory.appendingPathComponent("cache")
+        try self.cache(source, in: cache, origin: origin, revision: revision)
+
+        let catalog = GitCatalog(cache: cache, runner: git, update: false, offline: true)
+        let output = directory.appendingPathComponent("one/two/export")
+        XCTAssertThrowsError(try catalog.exportPackageTree(url: origin, revision: revision, submodules: false, into: output)) {
+            XCTAssertTrue("\($0)".contains("Package override path \u{3C3}"), "\($0)")
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("evil").path))
+    }
+
     func testXcodeBuildsATransitiveBranchWithAnUnlinkedOverride() throws {
         guard ProcessInfo.processInfo.environment["SWIFTPODS_E2E"] == "1" else {
             throw XCTSkip("Set SWIFTPODS_E2E=1 to build with Xcode")
@@ -319,7 +378,7 @@ final class PackageOverrideTests: XCTestCase {
             "xcodebuild", "build", "-project", "App.xcodeproj", "-scheme", "App",
             "-destination", "generic/platform=iOS Simulator", "-derivedDataPath", directory.appendingPathComponent("DerivedData").path,
             "ARCHS=arm64", "CODE_SIGNING_ALLOWED=NO",
-        ], in: directory, timeout: 180)
+        ], in: directory)
         XCTAssertTrue(build.contains("** BUILD SUCCEEDED **"))
     }
 }

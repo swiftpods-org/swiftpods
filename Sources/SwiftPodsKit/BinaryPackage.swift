@@ -11,26 +11,23 @@ struct BinaryPackage {
         let resources: [URL]
         let xcframeworkPaths: [String]
         let resourcePaths: [String]
-        /// Retains an owned private snapshot until rendering has copied and authenticated every selected artifact.
-        let snapshotLease: BinaryStore.SnapshotLease?
 
         init(
             binary: Binary, xcframeworks: [URL], resources: [URL],
-            xcframeworkPaths: [String]? = nil, resourcePaths: [String]? = nil,
-            snapshotLease: BinaryStore.SnapshotLease? = nil
+            xcframeworkPaths: [String]? = nil, resourcePaths: [String]? = nil
         ) {
             self.binary = binary
             self.xcframeworks = xcframeworks
             self.resources = resources
             self.xcframeworkPaths = xcframeworkPaths ?? xcframeworks.map(\.lastPathComponent)
             self.resourcePaths = resourcePaths ?? resources.map(\.lastPathComponent)
-            self.snapshotLease = snapshotLease
         }
     }
 
     let entries: [Entry]
     let platforms: [Platform]
-    private let authenticatedContentDigests: [String: String]
+    /// Content digests of local artifacts, whose path alone does not identify their contents.
+    private let localContentDigests: [String: String]
 
     init(entries: [Entry], platforms: [Platform]) throws {
         // Diagnose destination-name collisions before comparing source trees. On the
@@ -41,8 +38,6 @@ struct BinaryPackage {
         self.entries = entries
         self.platforms = platforms
         var digests: [String: String] = [:]
-        // These keys are used only for filesystem identity/containment comparisons. Keep the original URLs for every
-        // read so normalization cannot redirect an artifact to a differently spelled path.
         var selectedTrees: [(owner: Int, selection: BinaryArtifactSelection)] = []
         for (owner, entry) in entries.enumerated() {
             let selections = entry.xcframeworks.map { BinaryArtifactSelection($0, kind: .framework) }
@@ -60,23 +55,12 @@ struct BinaryPackage {
             }
         }
         for entry in entries {
-            let hasOwnedSnapshot: Bool
-            switch entry.binary.source {
-            case .local:
-                hasOwnedSnapshot = true
-            case .remote:
-                // Production remote entries always retain BinaryStore's private snapshot. Keep virtual manifest-only
-                // entries usable in unit tests, but authenticate every real snapshot across the later copy boundary.
-                hasOwnedSnapshot = entry.snapshotLease != nil
-            }
-            guard hasOwnedSnapshot else { continue }
+            guard case .local = entry.binary.source else { continue }
             for url in entry.xcframeworks + entry.resources {
-                // An artifact that cannot be authenticated must stop the install. Encoding the read error into the
-                // fingerprint could otherwise let rendering continue with bytes that were never covered by a digest.
-                digests[url.path] = try SecureFileTree.digest(of: url)
+                digests[url.path] = try FileTree.digest(of: url)
             }
         }
-        authenticatedContentDigests = digests
+        localContentDigests = digests
     }
 
     /// Binary target names are the frameworks' module names; two binaries cannot ship the same one.
@@ -134,7 +118,7 @@ struct BinaryPackage {
     /// What the generated package is made from; an unchanged fingerprint means nothing to regenerate.
     var fingerprint: String {
         // Bump when generation or repairs change, so existing packages are regenerated.
-        var lines = ["layout 4"] + platforms.map { "platform \($0.name.rawValue) \($0.deploymentTarget ?? "")" }
+        var lines = ["layout 5"] + platforms.map { "platform \($0.name.rawValue) \($0.deploymentTarget ?? "")" }
         for entry in entries {
             let binary = entry.binary
             let source: String
@@ -147,10 +131,10 @@ struct BinaryPackage {
                  binary.libraries.joined(separator: ","), binary.linkerFlags.joined(separator: " "),
                  binary.dependencies.joined(separator: ",")].joined(separator: "|"))
             lines += zip(entry.xcframeworkPaths, entry.xcframeworks).map {
-                "framework \($0.0) \(authenticatedContentDigests[$0.1.path] ?? "pinned")"
+                "framework \($0.0) \(localContentDigests[$0.1.path] ?? "pinned")"
             }
             lines += zip(entry.resourcePaths, entry.resources).map {
-                "resource \($0.0) \(authenticatedContentDigests[$0.1.path] ?? "pinned")"
+                "resource \($0.0) \(localContentDigests[$0.1.path] ?? "pinned")"
             }
         }
         return lines.joined(separator: "\n")
@@ -217,11 +201,11 @@ struct BinaryPackage {
         return lines.joined(separator: "\n") + "\n"
     }
 
-    /// Writes the package into an empty directory; frameworks are cloned, so this is cheap on APFS.
-    /// Returns notes about framework slices it repaired.
+    /// Writes the package into an empty directory. Returns notes about framework slices it repaired.
     func render(into directory: URL) throws -> [String] {
         var notes: [String] = []
-        let minimumOS = platforms.first { $0.name == .ios }?.deploymentTarget
+        var deploymentTargets: [PlatformName: String] = [:]
+        for platform in platforms { deploymentTargets[platform.name] = platform.deploymentTarget }
         let fileManager = FileManager.default
         try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         try Data(manifest().utf8).write(to: directory.appendingPathComponent("Package.swift"))
@@ -234,41 +218,34 @@ struct BinaryPackage {
             try fileManager.createDirectory(at: artifacts, withIntermediateDirectories: true)
             for framework in entry.xcframeworks {
                 let copy = artifacts.appendingPathComponent(framework.lastPathComponent)
-                try copyAuthenticated(framework, to: copy)
-                // Repair only after the copy has been proven byte-for-byte equal to the digest captured at init.
-                notes += try FrameworkRepair.repair(xcframework: copy, minimumOS: minimumOS).map { "\(entry.binary.name): " + $0 }
+                try FileTree.copy(framework, to: copy)
+                notes += try FrameworkRepair.repair(xcframework: copy, deploymentTargets: deploymentTargets)
+                    .map { "\(entry.binary.name): " + $0 }
             }
             for bundle in entry.resources {
                 let destination = directory.appendingPathComponent(Self.resourcePath(entry.binary.name, bundle))
                 try fileManager.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try copyAuthenticated(bundle, to: destination)
+                try FileTree.copy(bundle, to: destination)
             }
         }
-        try Data(fingerprint.utf8).write(to: directory.appendingPathComponent(".fingerprint"))
-        // Do not let the caller's umask or inherited default ACL make generated package content group/other writable.
-        try SecureFileTree.normalizePermissions(in: directory)
+        let tree = try Self.contentDigest(of: directory)
+        try Data((fingerprint + "\ntree " + tree).utf8).write(to: directory.appendingPathComponent(Self.fingerprintFile))
         return notes
     }
 
-    private func copyAuthenticated(_ source: URL, to destination: URL) throws {
-        let expected = authenticatedContentDigests[source.path]
-        if let expected {
-            let before = try SecureFileTree.digest(of: source)
-            guard before == expected else {
-                throw SwiftPodsError("Binary artifact changed before it was copied: \(source.path)")
-            }
-        }
-        do {
-            try SecureFileTree.copySanitizedTree(from: source, to: destination, limits: .local)
-            if let expected {
-                let copied = try SecureFileTree.digest(of: destination)
-                guard copied == expected else {
-                    throw SwiftPodsError("Binary artifact changed while it was being copied: \(source.path)")
-                }
-            }
-        } catch {
-            try? FileManager.default.removeItem(at: destination)
-            throw error
-        }
+    /// Whether `directory` holds this package as rendered, unmodified since. Files written into it later, such as
+    /// build products, make it differ, so the next install replaces it.
+    func isInstalled(at directory: URL) -> Bool {
+        guard let recorded = try? String(contentsOf: directory.appendingPathComponent(Self.fingerprintFile), encoding: .utf8),
+            let separator = recorded.range(of: "\ntree ", options: .backwards),
+            recorded[..<separator.lowerBound] == fingerprint
+        else { return false }
+        return (try? Self.contentDigest(of: directory)) == String(recorded[separator.upperBound...])
     }
+
+    private static func contentDigest(of directory: URL) throws -> String {
+        try FileTree.digest(of: directory, skippingTopLevel: GeneratedPackageMetadata.directories.union([fingerprintFile]))
+    }
+
+    private static let fingerprintFile = ".fingerprint"
 }

@@ -3,20 +3,6 @@
 This document replaces the 0.1 specification and every earlier architecture
 decision. Where an older document disagrees, this one wins.
 
-## Resolver-owned package metadata
-
-Xcode may create or update top-level `.swiftpm` and `.build` directories in
-generated local Swift packages. These are derived state, not SwiftPods payload.
-After each resolver invocation (including failures), the transaction may advance
-its snapshots only if every managed member and the package root identity,
-permissions and security metadata are unchanged. Derived roots must be real
-directories, never symbolic links. The updated *complete* tree is then durably
-recorded and used for exact commit, rollback and cleanup comparisons. Derived
-state is not excluded from destructive-operation checks; a crash before the new
-snapshot is recorded or a later concurrent edit preserves evidence and fails
-closed. Ordinary validation also permits Xcode's group-writable derived state
-without relaxing ownership or permissions for managed package contents.
-
 ## Nested binary resources
 
 A binary may explicitly select a `.bundle` inside one of its selected
@@ -26,8 +12,6 @@ embedding in the app. Permit this only within the same binary selection, not
 between declarations. Framework/framework and resource/resource overlap,
 duplicate sources and colliding output names remain errors. Selected resources
 are disjoint, so no source can be copied more than twice through this exception.
-Charge the additional nested-resource traversal and bytes against the aggregate
-work budget; local artifact snapshots already charge each selected copy.
 
 ## ADR-010: product thesis
 
@@ -62,15 +46,13 @@ reads them from the package's tags; a package is registered once, not per releas
 - `source 'url'` declares catalogs, in lookup order. Without any, SwiftPods uses
   the public catalog `swiftpods-org/swiftpods-catalog`; declared sources replace it unless
   it is listed too, as in CocoaPods.
-- Catalogs are cached as exact-origin bare Git repositories and entries are
+- Catalogs are cached as bare Git repositories, one per origin, and entries are
   read directly from committed blobs. No checkout means hooks, smudge filters,
-  untracked files and working-tree symlinks cannot change an entry. An explicit
+  untracked files and working-tree symlinks cannot change an entry. Git runs with
+  the user's own configuration, credentials and SSH settings. An explicit
   `source …, revision:` uses a complete 40- or 64-character commit object ID;
   an existing `SwiftPods.lock` pins an unpinned catalog during ordinary installs;
   `install --update-sources` explicitly refreshes it and writes the reviewed result.
-  Fetches retain a pack under a kernel-enforced 512 MiB per-file limit; a
-  bounded post-fetch scan also rejects excessive aggregate bytes, objects or entries
-  before the staging repository becomes durable cache.
 - A catalog-backed lookup writes `SwiftPods.lock`: the exact commit of every
   catalog consulted (preserving source precedence) and SHA-256 of every raw
   entry used. Ordinary install and `check` read it before catalog resolution and
@@ -85,14 +67,33 @@ reads them from the package's tags; a package is registered once, not per releas
 - An entry may also list releases of a prebuilt SDK, each an archive URL with
   its SHA-256, plus how to link it. A Podfile then writes
   `binary 'HyprMX', '6.4.2'`. One name can have both a package and binary
-  releases, when only older versions are archives. Binary cache transactions live
-  in a versioned private subdirectory of the configured cache. SwiftPods does not
-  mutate or delete the layout used by an older executable during a rolling upgrade;
-  the first install with a new cache version must run online to warm that namespace,
-  while the old namespace can be removed later when no older SwiftPods process uses it.
+  releases, when only older versions are archives. The binary cache keeps one
+  entry per SHA-256 in a versioned subdirectory; layouts of older releases stay in
+  theirs, so the first install with a new layout must run online.
 - The public catalog accepts entries by reviewed pull request, checked by
   `swiftpods catalog lint`. Whoever controls a catalog controls where names
   point, so redirects are reviewed like new entries.
+
+## ADR-012: threat model
+
+SwiftPods trusts the machine it runs on and the user who runs it. What comes from
+elsewhere is not trusted:
+
+- A binary archive must match the Podfile's SHA-256 before it is used, and is
+  unpacked only inside its cache entry: absolute paths, `..`, links pointing
+  outside, writing through a link, special files and encrypted entries are
+  rejected. A remote repository tree for an override is checked the same way.
+- Catalog revisions and override commits are full commit IDs, recorded with
+  content digests in `SwiftPods.lock`.
+- The Podfile is parsed as data and never executed.
+
+SwiftPods does not defend against another process of the same user changing
+files while it runs: such a process can already edit the Podfile or the generated
+build scripts. Earlier releases did (descriptor-anchored paths, ctime, ACL and
+extended-attribute snapshots, a crash-recovery journal, a sandboxed archive
+worker, work budgets, DNS pinning). That code was most of the tool, caused most of
+its bugs, and rejected legitimate setups such as internal Git servers and
+`~/.ssh/config`; it was removed.
 
 ## ADR-013: pinned local package overrides
 
@@ -104,21 +105,21 @@ products contributes only the package reference. Xcode resolves the remaining
 graph and omits the local identity from `Package.resolved`.
 
 - The override requires an exact 40- or 64-character commit ID and a supported
-  HTTPS or SSH URL. SwiftPods reads the complete tree through its protected
-  bare Git cache. It preserves regular file bytes and the executable bit and
+  HTTPS or SSH URL. SwiftPods reads the complete tree through its bare Git
+  cache. It preserves regular file bytes and the executable bit and
   accepts relative links that resolve inside the managed tree.
 - `submodules: true` on an override permits one level of gitlinks. Each must
   have a corresponding path and absolute HTTPS or SSH URL in the committed
-  `.gitmodules`. The gitlink selects the exact child commit. Each origin goes
-  through the same fetch policy and contributes to the same export limits.
-  Nested gitlinks are rejected.
+  `.gitmodules`. The gitlink selects the exact child commit. Nested gitlinks are
+  rejected.
 - SwiftPods stages the complete override directory with the other generated
   files. `SwiftPods.lock` records the origin, commit, submodule option and
   SHA-256 of the materialized tree, including any tracked paths in `.swiftpm`
-  and `.build`. The lock lists those paths so resolver-created entries in the
-  same directories can follow the transaction rules above.
+  and `.build`. The lock lists those paths, so other entries Xcode creates in
+  those directories do not change the digest.
 - Ordinary install creates or restores the tree. `--offline` can restore it
-  from the warmed bare cache. Deployment requires the matching lock and
+  from the warmed bare cache, which retains each used revision across fetches.
+  Deployment requires the matching lock and
   materialized tree, verifies the digest and leaves the override payload
   untouched. It still asks Xcode to validate the remaining frozen graph.
 
@@ -131,9 +132,9 @@ graph and omits the local identity from `Package.resolved`.
 3. Share declarations between projects (`include`) and targets (`group`, target
    nesting, `abstract_target`).
 4. Declare build settings and script phases per target.
-5. Reproduce the integration in CI: `install --deployment` requires a present
-   `Package.resolved` that satisfies every declared requirement. Catalog entries
-   and package overrides also require a matching `SwiftPods.lock`. The command verifies
+5. Reproduce the integration in CI: `install --deployment` requires a matching
+   `Package.resolved` for remote dependencies, including those of local
+   packages. Catalog entries and package overrides also require a matching `SwiftPods.lock`. The command verifies
    contents, not whether either file is committed; version-control them only
    when a clean checkout must be reproducible. Xcode then
    validates the complete transitive graph with automatic resolution and
@@ -163,10 +164,12 @@ Podfile ─► Manifest (parse, include, evaluate) ─► Plan ─► Apply
 
 **Ownership without a receipt.** Every object SwiftPods adds to a project has
 an identifier derived from what it is (for example the canonical package URL,
-or the target and script phase name). An object is SwiftPods' own exactly when
-its identifier matches that derivation, so a fresh clone, a deleted cache or a
-hand-edited project never loses track of what SwiftPods manages, and objects
-users create in Xcode are never touched.
+or the target's object identifier and the script phase name). An object is
+SwiftPods' own exactly when its identifier matches that derivation, so a fresh
+clone, a deleted cache, a renamed target or a hand-edited project never loses
+track of what SwiftPods manages, and objects users create in Xcode are never
+touched. Identifiers of releases that derived them from target names are still
+recognized and replaced on the next install.
 
 **Products are direct target dependencies.** Each remote or local Swift package
 product is attached directly to its Xcode target. A generated wrapper package
@@ -243,17 +246,26 @@ dynamic frameworks reachable only through a build-machine path.
 **Binary packaging.** SDK archives are used as published, except that
 SwiftPods normalizes, in its own copy, the iOS framework slices Xcode would embed
 incorrectly (versioned bundles, single-architecture universal static libraries,
-missing `Info.plist`), and reports each repair. Finder AppleDouble entries
-(`__MACOSX` and `._*`) are still parsed, authenticated and charged to archive
-work limits, but are not materialized because Foundation hides them from normal
-filesystem enumeration and neither SwiftPM nor Xcode consumes them. Physical
-tree walks never call `skipDescendants()` for a symbolic link: Foundation does
-not follow links, and skipping one can hide later siblings such as a framework's
-`Versions` directory.
+missing `Info.plist`), and reports each repair. A signed XCFramework is left
+unmodified, since Xcode verifies its signature; the note names the repair it
+needed. Finder AppleDouble entries (`__MACOSX` and `._*`) are not unpacked.
 
-**Transactions.** Generated files are rendered into a staging directory and
-swapped into place; the project file is written once, atomically, after
-everything else succeeded. A failed command leaves the previous state.
+**Transactions.** Generated folders are rendered into a staging directory inside
+`SwiftPods/` and swapped into place by rename. Project files are written
+atomically after them, followed by `SwiftPods.lock`. A failed command attempts to
+restore what it replaced. If any restore fails, the error identifies the failed
+paths and any staging directory with generated backups. A later install can
+regenerate the output and leaves staging directories that still contain backups
+available for recovery.
+
+SIGINT, SIGTERM and SIGHUP fail the command the same way. SwiftPods passes the
+signal to the process group of the tool it is running and stops any processes
+remaining in that group before rolling back. A relay in the foreground group
+reports SIGINT and SIGHUP received by that group, including a Ctrl-C. SwiftPods
+ends by the received signal if it interrupted the operation before the final
+transaction check. Past that check, the command reports the committed result.
+A calling script receives SwiftPods' termination status.
+Another signal, such as SIGKILL, or a crash can still leave a change half applied.
 
 ## Process rules
 
