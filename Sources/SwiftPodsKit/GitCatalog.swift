@@ -273,6 +273,102 @@ final class GitCatalog: PackageCatalog, @unchecked Sendable {
         }
     }
 
+    static func pinnedTreeCacheName(url: String, revision: String) -> String {
+        "override-" + String(sha256(Data((url + "\0" + revision).utf8)).prefix(32)) + ".git"
+    }
+
+    /// Export one commit from the protected bare cache, then any explicitly enabled direct gitlinks. Each source
+    /// finishes under its own cache lock before the next is opened, and all sources share the caller's export budget.
+    func exportPackageTree(
+        url: String, revision: String, submodules: Bool, budget: inout GitPackageTree.Budget,
+        write: (GitPackageTree.Entry, Data?) throws -> Void
+    ) throws -> [String] {
+        guard GitPackageTree.isObjectID(revision) else {
+            throw SwiftPodsError("Package override requires a full commit ID")
+        }
+        var metadataPaths: [String] = []
+        func record(_ entry: GitPackageTree.Entry, _ data: Data?) throws {
+            try write(entry, data)
+            if GeneratedPackageMetadata.contains(entry.path) { metadataPaths.append(entry.path) }
+        }
+        let direct = try exportPackageRepository(
+            url: url, revision: revision, prefix: "", allowSubmodules: submodules,
+            budget: &budget, write: record)
+        for (path, origin, commit) in direct {
+            _ = try exportPackageRepository(
+                url: origin, revision: commit, prefix: path, allowSubmodules: false,
+                budget: &budget, write: record)
+        }
+        return metadataPaths.sorted()
+    }
+
+    private func exportPackageRepository(
+        url: String, revision: String, prefix: String, allowSubmodules: Bool, budget: inout GitPackageTree.Budget,
+        write: (GitPackageTree.Entry, Data?) throws -> Void
+    ) throws -> [(path: String, url: String, revision: String)] {
+        let source = Source(url: url, revision: revision)
+        return try withCacheLock(for: source) { cacheRoot in
+            let prepared: Prepared
+            do {
+                prepared = try prepare(source, deploymentLock: nil, cacheRoot: cacheRoot, pinnedTree: true)
+            } catch {
+                throw SwiftPodsError("Cannot prepare override Git commit \(revision) at \(url): \(error)")
+            }
+            let base = ["-C", prepared.repository.path]
+            func read(_ arguments: [String], limit: Int, subject: String) throws -> Data {
+                do {
+                    return try cacheGitData(base + arguments, maximumOutputBytes: limit, cacheRoot: cacheRoot)
+                } catch {
+                    throw SwiftPodsError("Cannot read \(subject) from override Git commit \(revision): \(error)")
+                }
+            }
+            let listing = try read(
+                ["ls-tree", "-r", "-t", "-l", "-z", "--full-tree", prepared.revision],
+                limit: Self.maximumGitOutputBytes, subject: "the tree")
+            let entries = try GitPackageTree.parse(
+                listing, objectIDLength: prepared.revision.utf8.count, prefix: prefix, budget: &budget)
+            if prefix.isEmpty, !entries.contains(where: { $0.path == "Package.swift" && $0.isRegularFile }) {
+                throw SwiftPodsError("Package override commit must contain a regular Package.swift at its root")
+            }
+            let links = entries.filter { $0.kind == .submodule }
+            var origins: [String: String] = [:]
+            if !links.isEmpty {
+                guard allowSubmodules else {
+                    throw SwiftPodsError(prefix.isEmpty
+                        ? "Package override contains a gitlink; use submodules: true to include direct submodules"
+                        : "Package override submodule \(prefix) contains a nested gitlink")
+                }
+                guard links.count <= GitPackageTree.maximumSubmodules,
+                    let config = entries.first(where: { $0.path == ".gitmodules" && $0.isRegularFile }),
+                    config.bytes <= GitPackageTree.maximumConfigBytes
+                else {
+                    throw SwiftPodsError("Package override requires a bounded regular .gitmodules and at most \(GitPackageTree.maximumSubmodules) submodules")
+                }
+                let parsed = try read(
+                    ["config", "--no-includes", "--blob", config.object, "--null", "--list"],
+                    limit: GitPackageTree.maximumConfigBytes, subject: ".gitmodules")
+                origins = try GitPackageTree.submoduleOrigins(parsed, links: links)
+            }
+            for entry in entries {
+                let data: Data?
+                switch entry.kind {
+                case .directory, .submodule:
+                    data = nil
+                case .file, .symbolicLink:
+                    let blob = try read(
+                        ["cat-file", "blob", entry.object], limit: entry.bytes, subject: entry.path)
+                    guard blob.count == entry.bytes else {
+                        throw SwiftPodsError("Package override Git blob changed: \(entry.path)")
+                    }
+                    data = blob
+                }
+                try write(entry, data)
+            }
+            try verify(prepared, in: cacheRoot)
+            return links.map { ($0.path, origins[$0.path]!, $0.object) }
+        }
+    }
+
     private func record(source: Source, revision: String, entry: SwiftPodsLock.Entry) {
         lock.lock()
         defer { lock.unlock() }
@@ -342,13 +438,13 @@ final class GitCatalog: PackageCatalog, @unchecked Sendable {
     }
 
     private func prepare(
-        _ source: Source, deploymentLock: SwiftPodsLock?, cacheRoot: PreparedCacheRoot
+        _ source: Source, deploymentLock: SwiftPodsLock?, cacheRoot: PreparedCacheRoot, pinnedTree: Bool = false
     ) throws -> Prepared {
         guard PackageLocation.isSafeCatalogSource(source.url) else {
             throw SwiftPodsError("Catalog source is not a supported HTTPS, SSH, or absolute local Git location")
         }
         let locked = deploymentLock?.catalog(url: source.url)
-        if requiresLock, locked == nil {
+        if requiresLock, !pinnedTree, locked == nil {
             throw SwiftPodsError(
                 "Catalog \(source.url) is not recorded in SwiftPods.lock",
                 hint: "Run `swiftpods install` without --deployment; add --update-sources only if the catalog revision must move")
@@ -367,8 +463,13 @@ final class GitCatalog: PackageCatalog, @unchecked Sendable {
             $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" || $0 == ".")
         }.prefix(64))
         try cacheRoot.verifyIdentity()
-        let repository = cacheRoot.url.appendingPathComponent(
-            (label.isEmpty ? "catalog" : label) + "-" + String(digest.prefix(32)) + ".git")
+        let repositoryName = if pinnedTree, let desired {
+            Self.pinnedTreeCacheName(url: source.url, revision: desired)
+        } else {
+            (label.isEmpty ? "catalog" : label) + "-" + String(digest.prefix(32)) + ".git"
+        }
+        let repository = cacheRoot.url.appendingPathComponent(repositoryName)
+        let purpose = pinnedTree ? "override source" : "catalog"
         let exists = Self.isDirectory(repository)
 
         if exists, desired != nil || !update {
@@ -384,13 +485,13 @@ final class GitCatalog: PackageCatalog, @unchecked Sendable {
                 return Prepared(repository: repository, revision: revision, identity: identity)
             } catch {
                 if offline {
-                    throw SwiftPodsError("Cached catalog \(source.url) is not a clean exact-origin repository", hint: "Remove the cache and fetch it again: \(error)")
+                    throw SwiftPodsError("Cached \(purpose) \(source.url) is not a clean exact-origin repository", hint: "Remove the cache and fetch it again: \(error)")
                 }
             }
         }
         guard !offline else {
             let suffix = desired.map { " at \($0)" } ?? ""
-            throw SwiftPodsError("Catalog \(source.url)\(suffix) is not cached and --offline forbids fetching it")
+            throw SwiftPodsError("The \(purpose) \(source.url)\(suffix) is not cached and --offline forbids fetching it")
         }
         let networkPolicy = try gitNetworkPolicy(for: source.url)
 
@@ -398,12 +499,13 @@ final class GitCatalog: PackageCatalog, @unchecked Sendable {
         defer { try? Self.removeCacheItem(staging, in: cacheRoot) }
         if let desired {
             // A locked cold install needs one commit, not the repository's complete history and every ref.
+            let objectFormat = desired.utf8.count == 64 ? ["--object-format=sha256"] : []
             _ = try cacheGit(
-                ["init", "--bare", "--quiet", "--template=", "--", staging.path], cacheRoot: cacheRoot)
+                ["init", "--bare", "--quiet", "--template="] + objectFormat + ["--", staging.path], cacheRoot: cacheRoot)
             _ = try cacheGit(
                 ["-C", staging.path, "remote", "add", "origin", source.url], cacheRoot: cacheRoot)
             _ = try cacheGit(
-                ["-C", staging.path, "fetch", "--quiet", "--depth", "1", "--no-tags", "origin", desired],
+                ["-C", staging.path, "fetch", "--quiet", "--depth", "1", "--no-tags", "--no-recurse-submodules", "origin", desired],
                 maximumFileBytes: maximumFetchFileBytes, networkPolicy: networkPolicy, cacheRoot: cacheRoot)
             _ = try cacheGit(
                 ["-C", staging.path, "update-ref", "refs/heads/swiftpods-pinned", desired], cacheRoot: cacheRoot)

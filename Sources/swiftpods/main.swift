@@ -11,10 +11,10 @@ let help = """
 
     Commands:
       install       Write the Podfile's declarations into the Xcode projects
-        --deployment  Require Package.resolved and any used SwiftPods.lock; never update either lock
+        --deployment  Verify frozen locks and any materialized package overrides
         --resolve     Resolve packages with Xcode afterwards (deployment remains frozen)
         --adopt       Manage package references that were added without SwiftPods
-        --offline     Use cached binary archives and catalogs only
+        --offline     Use cached binary archives, catalogs and override commits only
         --update-sources  Refresh unpinned catalogs and update SwiftPods.lock (non-deployment only)
         --allow-external-file-lists  Trust script .xcfilelist paths outside the Podfile directory
       deintegrate   Remove everything SwiftPods added
@@ -61,12 +61,18 @@ func describe(_ manifest: Manifest) {
     let packages = Dictionary(manifest.packages.map { ($0.identity, $0) }, uniquingKeysWith: { first, _ in first })
     for target in manifest.targets {
         print("\(target.name)" + (target.project.map { " (\($0))" } ?? "") + (target.platform.map { " \($0.name.rawValue) \($0.deploymentTarget ?? "")" } ?? ""))
+        let linkedPackages = Set(target.products.map(\.package))
+        for identity in target.packageOverrides ?? [] where !linkedPackages.contains(identity) {
+            guard case .pinnedOverride(let url, let revision, _)? = packages[identity]?.location else { continue }
+            print("  Override \(identity) from \(url) @ \(revision)")
+        }
         for product in target.products {
             let package = packages[product.package]!
             let source: String
             switch package.location {
             case .remote(let url): source = "\(url) \(package.requirement!)"
             case .local(let path): source = path
+            case .pinnedOverride(let url, let revision, _): source = "\(url) @ \(revision) (override)"
             }
             print("  \(product.product)\(product.link ? "" : " (not linked)") from \(source)")
         }

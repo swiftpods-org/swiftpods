@@ -953,7 +953,7 @@ private struct Evaluator {
     private func package(_ statement: Statement) throws(ManifestError) -> Declarations.PackageUse {
         var arguments = try Arguments(statement)
         try arguments.requireNoBlock()
-        let allowed = ["git", "path", "products", "link"] + Self.requirementKeys
+        let allowed = ["git", "path", "products", "link", "override", "submodules"] + Self.requirementKeys
         if let location = arguments.keyLocation("configurations") {
             throw ManifestError(
                 "Per-configuration linking is not supported", at: location,
@@ -965,6 +965,13 @@ private struct Evaluator {
         let firstText = try Convert.nonEmpty(try Convert.string(first, "The package name or URL"), "The package name", at: first.location)
         let gitNode = arguments.take("git")
         let pathNode = arguments.take("path")
+        let overrideNode = arguments.take("override")
+        let submodulesNode = arguments.take("submodules")
+        let overrides = try overrideNode.map { (node) throws(ManifestError) in try Convert.bool(node, "`override`") } ?? false
+        let submodules = try submodulesNode.map { (node) throws(ManifestError) in try Convert.bool(node, "`submodules`") } ?? false
+        if let submodulesNode, !overrides {
+            throw ManifestError("`submodules` requires `override: true`", at: submodulesNode.location)
+        }
         var name = firstText
         var url: String?
         if PackageLocation.isRemote(firstText) {
@@ -975,6 +982,17 @@ private struct Evaluator {
             throw ManifestError("A package repository must use a safe HTTPS or SSH URL", at: first.location)
         } else if let gitNode {
             url = try Convert.nonEmpty(try Convert.string(gitNode, "`git`"), "`git`", at: gitNode.location)
+        }
+        if overrides {
+            guard url != nil, pathNode == nil, arguments.positional.count == 1,
+                arguments.keyLocation("revision") != nil,
+                (Self.requirementKeys + ["version"]).allSatisfy({ $0 == "revision" || arguments.keyLocation($0) == nil })
+            else {
+                throw ManifestError(
+                    "`override: true` requires a Git URL and only a full `revision:`",
+                    at: overrideNode?.location,
+                    hint: "Use `spm '<HTTPS or SSH URL>', revision: '<full commit ID>', override: true`")
+            }
         }
         // A name alone comes from the catalog, which also says how the package writes its versions.
         var catalogEntry: CatalogEntry?
@@ -1040,8 +1058,15 @@ private struct Evaluator {
                     requirements.isEmpty ? "Package `\(name)` needs a version requirement" : "Package `\(name)` has more than one version requirement",
                     at: statement.location, hint: "For example '~> 1.2', exact: '1.2.3' or branch: 'main'")
             }
-            location = .remote(url: url)
             identity = PackageLocation.identity(url)
+            if overrides, case .revision(let revision) = requirements[0] {
+                guard PackageLocation.isSafeOverrideIdentity(identity) else {
+                    throw ManifestError("The package URL does not give a usable override directory name", at: first.location)
+                }
+                location = .pinnedOverride(url: url, revision: revision, submodules: submodules)
+            } else {
+                location = .remote(url: url)
+            }
         }
         let products: [String]
         if let node = productsNode {
@@ -1049,6 +1074,8 @@ private struct Evaluator {
             guard !products.isEmpty, products.allSatisfy({ PackageLocation.isSafeMetadataText($0) }) else {
                 throw ManifestError("`products` must contain bounded names without control characters", at: node.location)
             }
+        } else if overrides {
+            products = []
         } else if let catalogEntry {
             guard !catalogEntry.products.isEmpty else {
                 throw ManifestError(
@@ -1059,7 +1086,7 @@ private struct Evaluator {
             products = [name]
         }
         let package = Package(
-            name: name, location: location, requirement: requirements.first, identity: identity,
+            name: name, location: location, requirement: overrides ? nil : requirements.first, identity: identity,
             catalog: catalogEntry?.source, declaredAt: statement.location)
         return Declarations.PackageUse(package: package, products: products, link: link)
     }
@@ -1538,7 +1565,7 @@ private struct Evaluator {
 
         private func canonicalLocation(_ package: Package) -> String {
             switch package.location {
-            case .remote(let url): PackageLocation.fetchIdentity(url)
+            case .remote(let url), .pinnedOverride(let url, _, _): PackageLocation.fetchIdentity(url)
             case .local(let path):
                 URL(fileURLWithPath: path, relativeTo: URL(fileURLWithPath: file).deletingLastPathComponent())
                     .standardizedFileURL.path
@@ -1553,6 +1580,15 @@ private struct Evaluator {
             }
             let existing = packages[index]
             if existing.declaredAt == package.declaredAt { return }
+            if existing.isOverride || package.isOverride {
+                guard existing.location == package.location else {
+                    throw ManifestError(
+                        "Conflicting declarations for package override `\(package.identity)`", at: package.declaredAt,
+                        hint: "Keep one override for this identity and declare any target links with `products:`",
+                        related: existing.declaredAt)
+                }
+                return
+            }
             guard canonicalLocation(existing) == canonicalLocation(package) else {
                 throw ManifestError(
                     "Two packages have the identity `\(package.identity)`", at: package.declaredAt,
@@ -1599,7 +1635,9 @@ private struct Evaluator {
             try consumeTargetItems(shared.scripts.count, at: node.location)
             var products: [ProductUse] = []
             var productIndices: [ProductKey: Int] = [:]
+            var overrides: Set<String> = []
             for use in dependencies.packages {
+                if use.package.isOverride { overrides.insert(use.package.identity) }
                 try consumeTargetItems(use.products.count, at: node.location)
                 for product in use.products {
                     let value = ProductUse(package: use.package.identity, product: product, link: use.link)
@@ -1679,6 +1717,7 @@ private struct Evaluator {
             }
             targets.append(Target(
                 name: node.name, project: context.project, platform: context.platform, products: products,
+                packageOverrides: overrides.isEmpty ? nil : overrides.sorted(),
                 binaries: names, settings: settings, scriptPhases: scripts, declaredAt: node.location))
         }
 

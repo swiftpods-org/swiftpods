@@ -334,13 +334,18 @@ public struct Installer: Sendable {
         /// whatever happens to be present later, so a non-cooperating writer cannot add a child and have it deleted.
         let members: [String: TransactionFileSnapshot.EntryState]
 
-        func preservesManagedMembers(of other: Self) -> Bool {
-            let managed = members.filter { !GeneratedPackageMetadata.contains($0.key) }
-            let previous = other.members.filter { !GeneratedPackageMetadata.contains($0.key) }
+        func preservesManagedMembers(
+            of other: Self, layout: GeneratedPackageMetadata.Layout, trackedMetadata: Set<String> = []
+        ) -> Bool {
+            func isManaged(_ path: String) -> Bool { !layout.contains(path) || trackedMetadata.contains(path) }
+            let managed = members.filter { isManaged($0.key) }
+            let previous = other.members.filter { isManaged($0.key) }
             guard Set(managed.keys) == Set(previous.keys) else { return false }
             return managed.allSatisfy { path, state in
                 guard let before = previous[path] else { return false }
-                return path.isEmpty ? state.isSameDirectoryObject(as: before) : state == before
+                let receivesResolverFiles = layout.isPackageRoot(path)
+                    || (trackedMetadata.contains(path) && before.mode & UInt32(S_IFMT) == UInt32(S_IFDIR))
+                return receivesResolverFiles ? state.isSameDirectoryObject(as: before) : state == before
             }
         }
 
@@ -812,7 +817,7 @@ public struct Installer: Sendable {
         /// targets are hashed explicitly. A same-UID non-cooperating writer therefore cannot replace or edit a member
         /// without changing the token that is verified after the atomic rename.
         fileprivate static func mutationToken(
-            named name: String, in parent: Int32, package: Bool? = nil
+            named name: String, in parent: Int32, layout: GeneratedPackageMetadata.Layout? = nil
         ) throws -> GeneratedEntryToken? {
             try requireComponent(name)
             guard let status = try status(named: name, in: parent) else { return nil }
@@ -822,7 +827,7 @@ public struct Installer: Sendable {
             let entry = try mutationFingerprint(
                 named: name, relative: "", in: parent, depth: 0, entries: &entries,
                 members: &members, hasher: &hasher,
-                package: package ?? GeneratedPackageMetadata.isPackage(name))
+                layout: layout ?? GeneratedPackageMetadata.Layout(name))
             guard entry == TransactionFileSnapshot.EntryState(status) else {
                 throw SwiftPodsError("Generated path changed while its mutation token was captured: \(name)")
             }
@@ -830,12 +835,12 @@ public struct Installer: Sendable {
         }
 
         func acceptingResolverMetadata(_ mutation: GeneratedMutation) throws -> GeneratedMutation {
-            guard case .published(let name, let installed, let displaced) = mutation,
-                GeneratedPackageMetadata.isPackage(name)
-            else { return mutation }
+            guard case .published(let name, let installed, let displaced) = mutation else { return mutation }
+            let layout = GeneratedPackageMetadata.Layout(name)
+            guard layout != .none else { return mutation }
             try verifyIdentity()
             guard let current = try Self.mutationToken(named: name, in: descriptor),
-                current.preservesManagedMembers(of: installed)
+                current.preservesManagedMembers(of: installed, layout: layout)
             else { throw SwiftPodsError("Resolver changed managed generated package contents: \(name)") }
             return .published(name: name, installed: current, displaced: displaced)
         }
@@ -853,7 +858,7 @@ public struct Installer: Sendable {
         private static func mutationFingerprint(
             named name: String, relative: String, in parent: Int32, depth: Int,
             entries: inout Int, members: inout [String: TransactionFileSnapshot.EntryState],
-            hasher: inout SHA256, package: Bool
+            hasher: inout SHA256, layout: GeneratedPackageMetadata.Layout
         ) throws -> TransactionFileSnapshot.EntryState {
             try requireComponent(name)
             guard depth <= Installer.maximumGeneratedDepth else {
@@ -867,8 +872,8 @@ public struct Installer: Sendable {
                 throw SwiftPodsError("Generated mutation contains too many entries")
             }
             let state = TransactionFileSnapshot.EntryState(status)
-            let derived = package && GeneratedPackageMetadata.contains(relative)
-            if derived, !relative.contains("/"), status.st_mode & S_IFMT != S_IFDIR {
+            let derived = layout.contains(relative)
+            if layout.isResolverRoot(relative), status.st_mode & S_IFMT != S_IFDIR {
                 throw SwiftPodsError("Resolver metadata root must be a real directory: \(relative)")
             }
             guard members.updateValue(state, forKey: relative) == nil else {
@@ -912,7 +917,7 @@ public struct Installer: Sendable {
                     let childRelative = relative.isEmpty ? child : relative + "/" + child
                     _ = try mutationFingerprint(
                         named: child, relative: childRelative, in: directory, depth: depth + 1,
-                        entries: &entries, members: &members, hasher: &hasher, package: package)
+                        entries: &entries, members: &members, hasher: &hasher, layout: layout)
                 }
                 var final = stat()
                 var linked = stat()
@@ -1010,6 +1015,9 @@ public struct Installer: Sendable {
                 throw SwiftPodsError("Staged generated path disappeared before publication: \(name)")
             }
             let existing = try Self.mutationToken(named: name, in: descriptor)
+            if name == GeneratedPackageMetadata.overridesDirectory, existing != nil, try !hasManagedOverrides() {
+                throw SwiftPodsError("Refusing to replace an unowned SwiftPods/Overrides directory")
+            }
             let result: Int32 = name.withCString { source in
                 name.withCString { destination in
                     if existing == nil {
@@ -1075,6 +1083,9 @@ public struct Installer: Sendable {
             try staging.verifyIdentity()
             try Self.requireComponent(name)
             guard let existing = try Self.mutationToken(named: name, in: descriptor) else { return nil }
+            if name == GeneratedPackageMetadata.overridesDirectory, try !hasManagedOverrides() {
+                throw SwiftPodsError("Refusing to withdraw an unowned SwiftPods/Overrides directory")
+            }
             guard try Self.mutationToken(named: name, in: staging.descriptor) == nil else {
                 throw SwiftPodsError("Transaction staging already contains generated path \(name)")
             }
@@ -1227,9 +1238,10 @@ public struct Installer: Sendable {
 
         func removeManagedChildren() throws {
             try verifyIdentity()
-            let fixed = Set([
+            var fixed = Set([
                 BinaryPackage.directoryName, DependencyPackage.directoryName, TargetScripts.directoryName, "Settings",
             ])
+            if try hasManagedOverrides() { fixed.insert(GeneratedPackageMetadata.overridesDirectory) }
             for child in try Self.names(in: descriptor) {
                 if fixed.contains(child) || Self.isManagedStaging(child, in: descriptor) {
                     try Self.remove(child, from: descriptor)
@@ -1268,15 +1280,37 @@ public struct Installer: Sendable {
             for child in [DependencyPackage.directoryName, TargetScripts.directoryName, "Settings"] {
                 try Self.validateTree(
                     named: child, in: descriptor, diagnosticRoot: url, allowSymbolicLinks: false,
-                    maximumEntries: Installer.maximumGeneratedEntries, countsTextBytes: true,
-                    skippedTopLevelNames: GeneratedPackageMetadata.isPackage(child)
-                        ? GeneratedPackageMetadata.directories : [], budget: &textBudget)
+                    maximumEntries: Installer.maximumGeneratedEntries, countsTextBytes: true, budget: &textBudget)
             }
             var binaryBudget = ValidationBudget()
             try Self.validateTree(
                 named: BinaryPackage.directoryName, in: descriptor, diagnosticRoot: url, allowSymbolicLinks: true,
-                maximumEntries: Installer.maximumGeneratedBinaryEntries, countsTextBytes: false,
-                skippedTopLevelNames: GeneratedPackageMetadata.directories, budget: &binaryBudget)
+                maximumEntries: Installer.maximumGeneratedBinaryEntries, countsTextBytes: false, budget: &binaryBudget)
+            if try hasManagedOverrides() {
+                var budget = ValidationBudget()
+                try Self.validateTree(
+                    named: GeneratedPackageMetadata.overridesDirectory, in: descriptor, diagnosticRoot: url,
+                    allowSymbolicLinks: true, maximumEntries: GitPackageTree.maximumEntries + GitPackageTree.maximumOverrides + 1,
+                    countsTextBytes: false, budget: &budget)
+            }
+        }
+
+        func hasManagedOverrides() throws -> Bool {
+            try verifyIdentity()
+            let name = GeneratedPackageMetadata.overridesDirectory
+            guard let status = try Self.status(named: name, in: descriptor), status.st_mode & S_IFMT == S_IFDIR else {
+                return false
+            }
+            let directory = openat(descriptor, name, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
+            guard directory >= 0 else { throw SwiftPodsError("Cannot safely open the override directory") }
+            defer { close(directory) }
+            let marker = openat(
+                directory, GeneratedPackageMetadata.overridesMarker, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
+            guard marker >= 0 else { return false }
+            defer { close(marker) }
+            try Self.validateOwnedDescriptor(marker, privateDirectory: false, kind: "Override ownership marker")
+            return try Self.readText(marker, maximumBytes: 128, kind: "Override ownership marker")
+                == GeneratedPackageMetadata.overridesOwnership
         }
 
         func removeRootIfEmpty(removingMarker: Bool) throws {
@@ -1334,7 +1368,9 @@ public struct Installer: Sendable {
             }
         }
 
-        fileprivate static func writeExclusive(_ data: Data, named path: String, in base: Int32) throws {
+        fileprivate static func writeExclusive(
+            _ data: Data, named path: String, in base: Int32, mode: mode_t = 0o600
+        ) throws {
             guard Installer.isSafeGeneratedPath(path) else { throw SwiftPodsError("Refusing unsafe generated path: \(path)") }
             let components = path.split(separator: "/").map(String.init)
             let parent = try openDirectory(Array(components.dropLast()), from: base, create: true)
@@ -1347,7 +1383,7 @@ public struct Installer: Sendable {
                 throw SwiftPodsError("Cannot create generated file \(path): \(String(cString: strerror(errno)))")
             }
             do {
-                try secureCreatedDescriptor(file, mode: 0o600, kind: "Generated file \(path)")
+                try secureCreatedDescriptor(file, mode: mode, kind: "Generated file \(path)")
             } catch {
                 close(file)
                 throw error
@@ -1507,8 +1543,7 @@ public struct Installer: Sendable {
 
         fileprivate static func validateTree(
             named name: String, in parent: Int32, diagnosticRoot: URL, allowSymbolicLinks: Bool,
-            maximumEntries: Int, countsTextBytes: Bool, skippedTopLevelNames: Set<String> = [],
-            budget: inout ValidationBudget
+            maximumEntries: Int, countsTextBytes: Bool, budget: inout ValidationBudget
         ) throws {
             guard let status = try status(named: name, in: parent) else { return }
             guard status.st_mode & S_IFMT == S_IFDIR else {
@@ -1530,20 +1565,21 @@ public struct Installer: Sendable {
             try validateChildren(
                 in: descriptor, relative: name, diagnosticRoot: diagnosticRoot,
                 allowSymbolicLinks: allowSymbolicLinks, maximumEntries: maximumEntries,
-                countsTextBytes: countsTextBytes, skippedTopLevelNames: skippedTopLevelNames,
+                countsTextBytes: countsTextBytes, layout: .init(name),
                 depth: 1, budget: &budget)
         }
 
         private static func validateChildren(
             in parent: Int32, relative: String, diagnosticRoot: URL, allowSymbolicLinks: Bool,
-            maximumEntries: Int, countsTextBytes: Bool, skippedTopLevelNames: Set<String>,
+            maximumEntries: Int, countsTextBytes: Bool, layout: GeneratedPackageMetadata.Layout,
             depth: Int, budget: inout ValidationBudget
         ) throws {
             let remaining = maximumEntries - budget.entries
-            let enumerationLimit = remaining + (depth == 1 ? skippedTopLevelNames.count : 0)
+            let skippingResolverRoots = depth == layout.resolverRootDepth
+            let enumerationLimit = remaining + (skippingResolverRoots ? GeneratedPackageMetadata.directories.count : 0)
             for child in try names(in: parent, maximumCount: enumerationLimit) {
                 try requireComponent(child)
-                if depth == 1, skippedTopLevelNames.contains(child) {
+                if skippingResolverRoots, GeneratedPackageMetadata.directories.contains(child) {
                     guard let entry = try status(named: child, in: parent), entry.st_mode & S_IFMT == S_IFDIR,
                         entry.st_uid == geteuid()
                     else { throw SwiftPodsError("Resolver metadata root must be an owned real directory: \(child)") }
@@ -1579,7 +1615,7 @@ public struct Installer: Sendable {
                         try validateChildren(
                             in: descriptor, relative: path, diagnosticRoot: diagnosticRoot,
                             allowSymbolicLinks: allowSymbolicLinks, maximumEntries: maximumEntries,
-                            countsTextBytes: countsTextBytes, skippedTopLevelNames: [], depth: depth + 1,
+                            countsTextBytes: countsTextBytes, layout: layout, depth: depth + 1,
                             budget: &budget)
                         close(descriptor)
                     } catch {
@@ -1686,14 +1722,13 @@ public struct Installer: Sendable {
 
         func validateTree(named name: String) throws {
             var budget = GeneratedRoot.ValidationBudget()
+            let overrides = name == GeneratedPackageMetadata.overridesDirectory
+            let binary = name == BinaryPackage.directoryName
             try GeneratedRoot.validateTree(
                 named: name, in: descriptor, diagnosticRoot: root.url.appendingPathComponent(self.name),
-                allowSymbolicLinks: name == BinaryPackage.directoryName,
-                maximumEntries: name == BinaryPackage.directoryName
-                    ? Installer.maximumGeneratedBinaryEntries : Installer.maximumGeneratedEntries,
-                countsTextBytes: name != BinaryPackage.directoryName,
-                skippedTopLevelNames: GeneratedPackageMetadata.isPackage(name)
-                    ? GeneratedPackageMetadata.directories : [],
+                allowSymbolicLinks: binary || overrides,
+                maximumEntries: binary ? Installer.maximumGeneratedBinaryEntries : Installer.maximumGeneratedEntries,
+                countsTextBytes: !binary && !overrides,
                 budget: &budget)
         }
 
@@ -1706,6 +1741,12 @@ public struct Installer: Sendable {
         }
 
         func writeTree(named name: String, files: [(String, Data)]) throws {
+            try writeTree(named: name) { tree in
+                for (relative, data) in files { try GeneratedRoot.writeExclusive(data, named: relative, in: tree) }
+            }
+        }
+
+        func writeTree(named name: String, populate: (Int32) throws -> Void) throws {
             try verifyIdentity()
             try GeneratedRoot.requireComponent(name)
             guard name.withCString({ mkdirat(descriptor, $0, 0o755) }) == 0 else {
@@ -1718,7 +1759,7 @@ public struct Installer: Sendable {
             defer { close(tree) }
             do {
                 try GeneratedRoot.secureCreatedDescriptor(tree, mode: 0o755, kind: "Staged generated tree \(name)")
-                for (relative, data) in files { try GeneratedRoot.writeExclusive(data, named: relative, in: tree) }
+                try populate(tree)
                 guard let token = try GeneratedRoot.mutationToken(named: name, in: descriptor) else {
                     throw SwiftPodsError("Staged generated tree disappeared after creation: \(name)")
                 }
@@ -1826,16 +1867,16 @@ public struct Installer: Sendable {
                 throw SwiftPodsError(
                     "Cannot quarantine generated staging entry \(entry): \(String(cString: strerror(errno)))")
             }
-            let package = GeneratedPackageMetadata.isPackage(entry)
+            let layout = GeneratedPackageMetadata.Layout(entry)
             guard let moved = try GeneratedRoot.mutationToken(
-                named: quarantine, in: descriptor, package: package),
+                named: quarantine, in: descriptor, layout: layout),
                 moved.representsAfterRename(expected)
             else {
                 throw SwiftPodsError("Generated staging entry changed while it was quarantined: \(entry)")
             }
             try removeManifestEntry(
                 named: quarantine, relative: "", expected: moved.entry, manifest: moved.members,
-                package: package, in: descriptor)
+                layout: layout, in: descriptor)
             guard try GeneratedRoot.status(named: quarantine, in: descriptor) == nil else {
                 throw SwiftPodsError("Quarantined generated staging entry was replaced during cleanup: \(entry)")
             }
@@ -1843,7 +1884,7 @@ public struct Installer: Sendable {
 
         private func removeManifestEntry(
             named name: String, relative: String, expected: TransactionFileSnapshot.EntryState,
-            manifest: [String: TransactionFileSnapshot.EntryState], package: Bool, in parent: Int32
+            manifest: [String: TransactionFileSnapshot.EntryState], layout: GeneratedPackageMetadata.Layout, in parent: Int32
         ) throws {
             guard let status = try GeneratedRoot.status(named: name, in: parent),
                 TransactionFileSnapshot.EntryState(status) == expected
@@ -1868,7 +1909,7 @@ public struct Installer: Sendable {
             guard fstat(directory, &opened) == 0,
                 TransactionFileSnapshot.EntryState(opened) == expected
             else { throw SwiftPodsError("Quarantined generated directory changed while it was opened: \(name)") }
-            if package, GeneratedPackageMetadata.contains(relative) {
+            if layout.contains(relative) {
                 guard opened.st_uid == geteuid() else {
                     throw SwiftPodsError("Resolver metadata directory is not owned by the current user: \(name)")
                 }
@@ -1906,7 +1947,7 @@ public struct Installer: Sendable {
                 try removeManifestEntry(
                     named: quarantine, relative: childRelative,
                     expected: TransactionFileSnapshot.EntryState(moved), manifest: manifest,
-                    package: package, in: directory)
+                    layout: layout, in: directory)
             }
             guard try GeneratedRoot.names(in: directory).isEmpty else {
                 throw SwiftPodsError("Quarantined generated directory gained an unknown child: \(name)")
@@ -2138,6 +2179,99 @@ public struct Installer: Sendable {
         try project.verifyDirectoryPathBinding()
     }
 
+    private static func overrideDigest(
+        at directory: URL, metadataPaths: [String], budget: inout GitPackageTree.Budget
+    ) throws -> String {
+        var remaining = budget
+        let digest = try SecureFileTree.validate(
+            directory, allowRootSymlink: false,
+            limits: .init(entries: GitPackageTree.maximumEntries, bytes: GitPackageTree.maximumBytes,
+                          depth: 32, internalHardlinksOnly: true),
+            hashingContents: true, skippingTopLevelNames: GeneratedPackageMetadata.directories,
+            beforeHashingContents: { try remaining.consume(entries: $0, bytes: $1) },
+            overrideMetadataPaths: Set(metadataPaths)).1
+        budget = remaining
+        return digest
+    }
+
+    private static func verifiedOverrideTree(
+        _ records: [SwiftPodsLock.Override], at parent: URL, in descriptor: Int32
+    ) throws -> GeneratedEntryToken? {
+        let name = GeneratedPackageMetadata.overridesDirectory
+        guard let before = try GeneratedRoot.mutationToken(named: name, in: descriptor) else { return nil }
+        let directory = parent.appendingPathComponent(name, isDirectory: true)
+        let expected = Set(records.map(\.identity) + [GeneratedPackageMetadata.overridesMarker])
+        let children = Set(before.members.keys.filter { !$0.isEmpty && !$0.contains("/") })
+        guard expected == children else { return nil }
+        var budget = GitPackageTree.Budget()
+        for record in records {
+            guard before.members[record.identity].map({ $0.mode & UInt32(S_IFMT) == UInt32(S_IFDIR) }) == true,
+                try overrideDigest(
+                    at: directory.appendingPathComponent(record.identity, isDirectory: true),
+                    metadataPaths: record.metadataPaths, budget: &budget) == record.sha256
+            else { return nil }
+        }
+        guard try GeneratedRoot.mutationToken(named: name, in: descriptor) == before else {
+            throw SwiftPodsError("Package override tree changed while it was verified")
+        }
+        return before
+    }
+
+    private static func stageOverrides(
+        _ packages: [Package], locked: [String: SwiftPodsLock.Override], catalog: GitCatalog, staging: GeneratedStaging
+    ) throws -> [SwiftPodsLock.Override] {
+        let name = GeneratedPackageMetadata.overridesDirectory
+        let location = staging.root.url.appendingPathComponent(staging.name).appendingPathComponent(name)
+        var budget = GitPackageTree.Budget()
+        var digestBudget = GitPackageTree.Budget()
+        var records: [SwiftPodsLock.Override] = []
+        try staging.writeTree(named: name) { root in
+            try GeneratedRoot.writeExclusive(
+                Data(GeneratedPackageMetadata.overridesOwnership.utf8), named: GeneratedPackageMetadata.overridesMarker,
+                in: root)
+            for package in packages {
+                guard case .pinnedOverride(let url, let revision, let submodules) = package.location else { continue }
+                let directory = try GeneratedRoot.openDirectory([package.identity], from: root, create: true)
+                defer { close(directory) }
+                do {
+                    let metadata = try catalog.exportPackageTree(
+                        url: url, revision: revision, submodules: submodules, budget: &budget
+                    ) { entry, bytes in
+                        switch entry.kind {
+                        case .directory, .submodule:
+                            let child = try GeneratedRoot.openDirectory(
+                                entry.path.split(separator: "/").map(String.init), from: directory, create: true)
+                            close(child)
+                        case .file(let executable):
+                            try GeneratedRoot.writeExclusive(
+                                bytes!, named: entry.path, in: directory, mode: executable ? 0o755 : 0o644)
+                        case .symbolicLink:
+                            let target = try GitPackageTree.linkTarget(bytes!, at: entry.path)
+                            let path = entry.path.split(separator: "/").map(String.init)
+                            let parent = try GeneratedRoot.openDirectory(Array(path.dropLast()), from: directory, create: true)
+                            defer { close(parent) }
+                            guard symlinkat(target, parent, path.last!) == 0 else {
+                                throw SwiftPodsError("Cannot create package override symbolic link at \(entry.path)")
+                            }
+                        }
+                    }
+                    let digest = try overrideDigest(
+                        at: location.appendingPathComponent(package.identity), metadataPaths: metadata, budget: &digestBudget)
+                    let record = SwiftPodsLock.Override(
+                        identity: package.identity, url: url, revision: revision, submodules: submodules,
+                        sha256: digest, metadataPaths: metadata)
+                    if let previous = locked[package.identity], previous.matches(package), previous != record {
+                        throw SwiftPodsError("The exported tree does not match the digest recorded in SwiftPods.lock")
+                    }
+                    records.append(record)
+                } catch {
+                    throw SwiftPodsError("Cannot install package override \(package.identity): \(error)", file: package.declaredAt.description)
+                }
+            }
+        }
+        return records
+    }
+
     private func performInstall(_ options: InstallOptions) throws -> InstallReport {
         let workspaceLock = try WorkspaceLock(directory: directory)
         defer { withExtendedLifetime(workspaceLock) {} }
@@ -2166,30 +2300,31 @@ public struct Installer: Sendable {
             requiresLock: options.deployment, lockProvider: lockProvider)
         let manifest = try manifest(using: catalog)
         try Self.verifyManifestFiles(manifest)
-        let resolvedLock = SwiftPodsLock(resolutions: catalog.resolutions)
-        let freshnessLockContents: Data?
-        if resolvedLock.isEmpty {
-            freshnessLockContents = nil
-        } else if options.deployment {
-            guard let contents = try lockRead.contents() else {
-                throw SwiftPodsError("Deployment requires SwiftPods.lock", file: lockFile.path)
+        let usedOverrides = Set(manifest.targets.flatMap { $0.packageOverrides ?? [] })
+        let overrides = manifest.packages.filter { usedOverrides.contains($0.identity) }
+        guard overrides.count <= GitPackageTree.maximumOverrides else {
+            throw SwiftPodsError("A Podfile cannot install more than \(GitPackageTree.maximumOverrides) package overrides", file: manifest.file)
+        }
+        let usesLock = !overrides.isEmpty || !catalog.resolutions.isEmpty
+        let existingLock = usesLock && honorsExistingLock ? try lockRead.lock() : nil
+        if usesLock && !honorsExistingLock { _ = try lockRead.replacementState() }
+        if options.deployment && usesLock && existingLock == nil {
+            throw SwiftPodsError("Deployment requires SwiftPods.lock", file: lockFile.path)
+        }
+        let lockedOverrides = Dictionary(uniqueKeysWithValues: (existingLock?.pinnedOverrides ?? []).map { ($0.identity, $0) })
+        let matchingOverrides = overrides.compactMap { package in lockedOverrides[package.identity].flatMap {
+            $0.matches(package) ? $0 : nil
+        } }
+        if options.deployment, let existingLock {
+            let planned = SwiftPodsLock(resolutions: catalog.resolutions, overrides: matchingOverrides)
+            var problems = existingLock.problems(comparedTo: planned)
+            if matchingOverrides.count != overrides.count {
+                problems.append("Every package override requires a matching URL, commit and submodule option")
             }
-            freshnessLockContents = contents
-        } else {
-            freshnessLockContents = try resolvedLock.data()
-        }
-        let existingLock: SwiftPodsLock?
-        if resolvedLock.isEmpty || !honorsExistingLock {
-            existingLock = nil
-        } else {
-            existingLock = try lockRead.lock()
-        }
-        if options.deployment, !resolvedLock.isEmpty, let existingLock {
-            let problems = existingLock.problems(comparedTo: resolvedLock)
-            if !problems.isEmpty {
+            guard problems.isEmpty else {
                 throw SwiftPodsError(
                     "SwiftPods.lock does not satisfy the Podfile:\n  " + problems.joined(separator: "\n  "), file: lockFile.path,
-                    hint: "Review the changes and run `swiftpods install` without --deployment; add --update-sources only if catalog revisions must move")
+                    hint: "Review the changes and run swiftpods install without --deployment; add --update-sources only if catalog revisions must move")
             }
         }
         let projectWorkspaceDescriptor = try workspaceLock.duplicateDirectoryDescriptor()
@@ -2208,6 +2343,10 @@ public struct Installer: Sendable {
             if targetsByProject[path] == nil { projectPaths.append(path) }
             targetsByProject[path, default: []].append(target)
         }
+        let packagesByProject = Dictionary(uniqueKeysWithValues: projectPaths.map { path in
+            let used = Set(targetsByProject[path]!.flatMap { $0.products.map(\.package) + ($0.packageOverrides ?? []) })
+            return (path, manifest.packages.filter { used.contains($0.identity) })
+        })
         var projects: [String: XcodeProject] = [:]
         var projectIdentities: [String: String] = [:]
         let manifestProjectPaths = Set(manifest.targets.compactMap(\.project))
@@ -2271,8 +2410,7 @@ public struct Installer: Sendable {
         var deploymentSnapshots: [String: PackageResolved.PathSnapshot] = [:]
         if options.deployment {
             for path in projectPaths {
-                let used = Set(targetsByProject[path]!.flatMap { $0.products.map(\.package) })
-                let declaredPackages = manifest.packages.filter { used.contains($0.identity) }
+                let declaredPackages = packagesByProject[path]!
                 guard !declaredPackages.isEmpty else { continue }
                 let projectURL = projects[path]!.path
                 let file = PackageResolved.location(project: projectURL)
@@ -2280,8 +2418,7 @@ public struct Installer: Sendable {
                     project: projectURL, projectDescriptor: projectDirectories[path]!.descriptor)
                 deploymentSnapshots[path] = snapshot
                 // A catalog that moved a name since Package.resolved was committed leaves that package without a pin.
-                let packages = declaredPackages.filter { $0.requirement != nil }
-                let problems = try PackageResolved(snapshot: snapshot, file: file).problems(for: packages)
+                let problems = try PackageResolved(snapshot: snapshot, file: file).problems(for: declaredPackages)
                 if !problems.isEmpty {
                     throw SwiftPodsError(
                         "Package.resolved does not satisfy the Podfile:\n  " + problems.joined(separator: "\n  "), file: file.path,
@@ -2294,8 +2431,38 @@ public struct Installer: Sendable {
         generatedMutationHook?(.beforeGeneratedRootOpen)
         try workspaceLock.verifyIdentity()
         try Self.verifyManifestFiles(manifest)
-        let generatedRoot = try ensureGeneratedRoot(workspaceLock: workspaceLock)
+        let generatedRoot: GeneratedRoot
+        if options.deployment && !overrides.isEmpty {
+            guard try Self.entryType(at: generated) == S_IFDIR else {
+                throw SwiftPodsError(
+                    "Deployment requires the materialized package overrides",
+                    hint: "Run swiftpods install to restore SwiftPods/Overrides first")
+            }
+            generatedRoot = try GeneratedRoot(
+                workspaceLock: workspaceLock, name: Self.generatedDirectory, create: false,
+                mutationHook: generatedMutationHook)
+            try validateGeneratedRoot(generatedRoot)
+        } else {
+            generatedRoot = try ensureGeneratedRoot(workspaceLock: workspaceLock)
+        }
         defer { try? generatedRoot.removeRootIfEmpty(removingMarker: true) }
+        let overridesName = GeneratedPackageMetadata.overridesDirectory
+        let ownsOverrides = try generatedRoot.hasManagedOverrides()
+        if options.deployment && ownsOverrides && overrides.isEmpty {
+            throw SwiftPodsError(
+                "Deployment has a materialized override directory that the Podfile no longer uses",
+                hint: "Run swiftpods install to remove obsolete overrides")
+        }
+        if !overrides.isEmpty, !ownsOverrides, try generatedRoot.status(named: overridesName) != nil {
+            throw SwiftPodsError("Refusing to replace an unowned SwiftPods/Overrides directory")
+        }
+        let overridesMatch = !overrides.isEmpty && matchingOverrides.count == overrides.count && ownsOverrides
+            && ((try? Self.verifiedOverrideTree(matchingOverrides, at: generated, in: generatedRoot.descriptor)) != nil)
+        if options.deployment && !overrides.isEmpty && !overridesMatch {
+            throw SwiftPodsError(
+                "Deployment package overrides do not match SwiftPods.lock",
+                hint: "Restore the locked tree with swiftpods install, or swiftpods install --offline with a warm cache")
+        }
         let staging = try generatedRoot.makeStaging()
         var cleanStagingOnExit = true
         defer { if cleanStagingOnExit { try? staging.cleanup() } }
@@ -2303,6 +2470,25 @@ public struct Installer: Sendable {
         defer { try? fileManager.removeItem(at: renderStaging) }
         var staged: [String] = []
         var obsolete: [String] = []
+        let overrideRecords: [SwiftPodsLock.Override]
+        if overrides.isEmpty {
+            overrideRecords = []
+            if ownsOverrides { obsolete.append(overridesName) }
+        } else if overridesMatch {
+            overrideRecords = matchingOverrides
+        } else {
+            overrideRecords = try Self.stageOverrides(overrides, locked: lockedOverrides, catalog: catalog, staging: staging)
+            staged.append(overridesName)
+        }
+        let resolvedLock = SwiftPodsLock(resolutions: catalog.resolutions, overrides: overrideRecords)
+        let freshnessLockContents: Data?
+        if resolvedLock.isEmpty {
+            freshnessLockContents = nil
+        } else if options.deployment {
+            freshnessLockContents = try lockRead.contents()
+        } else {
+            freshnessLockContents = try resolvedLock.data()
+        }
         var stagedEntryCount = 0
         var stagedTextBytes = 0
 
@@ -2443,8 +2629,6 @@ public struct Installer: Sendable {
         func productBase(_ target: Target, _ path: String) -> String {
             targetCounts[target.name]! > 1 ? projectFolders[path]! + "-" + target.name : target.name
         }
-        let used = Set(manifest.targets.flatMap { $0.products.map(\.package) })
-        let usedPackages = manifest.packages.filter { used.contains($0.identity) }
         var productSpecifications: [(name: String, dependencies: [(product: String, package: String)])] = []
         for path in projectPaths {
             for target in targetsByProject[path]! {
@@ -2663,7 +2847,7 @@ public struct Installer: Sendable {
                     "name": .string(BinaryPackage.directoryName), "path": .string(relative), "sourceTree": "SOURCE_ROOT",
                 ]))
             }
-            for declared in usedPackages where targets.contains(where: { $0.products.contains { $0.package == declared.identity } }) {
+            for declared in packagesByProject[path]! {
                 switch declared.location {
                 case .remote(let url):
                     let key = "package:" + PackageLocation.canonical(url)
@@ -2673,7 +2857,12 @@ public struct Installer: Sendable {
                     ])
                     packagesByIdentity[declared.identity] = reference
                     plan.packages.append(reference)
-                case .local(let declaredPath):
+                case .local, .pinnedOverride:
+                    let declaredPath: String
+                    switch declared.location {
+                    case .local(let path): declaredPath = path
+                    default: declaredPath = Self.generatedDirectory + "/" + overridesName + "/" + declared.identity
+                    }
                     let relative = Paths.relative(
                         from: projectDirectory, to: directory.appendingPathComponent(declaredPath))
                     let key = "package:local:" + relative
@@ -2748,7 +2937,20 @@ public struct Installer: Sendable {
             lockPolicy: transactionLockPolicy,
             plannedLock: transactionLockPolicy == .replace ? freshnessLockContents : nil)
         var commitRecordingStarted = false
+        let trackedOverrideMetadata = Set(overrideRecords.flatMap { record in
+            record.metadataPaths.map { record.identity + "/" + $0 }
+        })
+        func verifyInstalledOverrides() throws -> GeneratedEntryToken? {
+            guard !overrideRecords.isEmpty else { return nil }
+            try generatedRoot.verifyIdentity()
+            guard try generatedRoot.hasManagedOverrides(),
+                let token = try Self.verifiedOverrideTree(overrideRecords, at: generated, in: generatedRoot.descriptor)
+            else { throw SwiftPodsError("Package override contents changed during installation") }
+            try generatedRoot.verifyIdentity()
+            return token
+        }
         func resolvePackages(_ arguments: [String], project: XcodeProject, directory: RetainedProjectDirectory) throws {
+            let before = try verifyInstalledOverrides()
             var resolutionError: (any Error)?
             do {
                 try runPackageResolver(arguments, project: project, directory: directory)
@@ -2757,6 +2959,11 @@ public struct Installer: Sendable {
             }
             // Even a failing resolver may have created legitimate derived state. First authenticate every managed
             // member and durably record the complete new tree; cleanup never blindly ignores .swiftpm or .build.
+            if let before, let after = try verifyInstalledOverrides(),
+                !after.preservesManagedMembers(of: before, layout: .overrides, trackedMetadata: trackedOverrideMetadata)
+            {
+                throw SwiftPodsError("Resolver changed managed package override contents")
+            }
             try transactionJournal.confirmResolverGeneratedMetadata()
             generatedMutations = try generatedMutations.map { try generatedRoot.acceptingResolverMetadata($0) }
             if let resolutionError { throw resolutionError }
@@ -2839,8 +3046,7 @@ public struct Installer: Sendable {
 
             if options.deployment {
                 for path in projectPaths {
-                    let used = Set(targetsByProject[path]!.flatMap { $0.products.map(\.package) })
-                    let declaredPackages = manifest.packages.filter { used.contains($0.identity) }
+                    let declaredPackages = packagesByProject[path]!
                     guard !declaredPackages.isEmpty else { continue }
                     let projectURL = projects[path]!.path
                     let projectDirectory = projectDirectories[path]!
@@ -2856,7 +3062,7 @@ public struct Installer: Sendable {
                     let before = try PackageResolved.snapshotAfterProjectWrite(
                         originalDeploymentSnapshot, project: projectURL,
                         projectDescriptor: projectDirectory.descriptor)
-                    let frozenPackages = declaredPackages.filter { $0.requirement != nil }
+                    let frozenPackages = declaredPackages
                     let frozenProblems = try PackageResolved(snapshot: before, file: file).problems(for: frozenPackages)
                     if !frozenProblems.isEmpty {
                         throw SwiftPodsError(
@@ -2945,8 +3151,7 @@ public struct Installer: Sendable {
                         try resolvePackages(
                             ["xcodebuild", "-resolvePackageDependencies"],
                             project: projects[path]!, directory: projectDirectory)
-                        let used = Set(targetsByProject[path]!.flatMap { $0.products.map(\.package) })
-                        let packages = manifest.packages.filter { used.contains($0.identity) && $0.requirement != nil }
+                        let packages = packagesByProject[path]!
                         let file = PackageResolved.location(project: projectURL)
                         let resolved = try PackageResolved.snapshot(
                             project: projectURL, projectDescriptor: projectDirectory.descriptor)
@@ -3016,6 +3221,7 @@ public struct Installer: Sendable {
             for mutation in generatedMutations {
                 try generatedRoot.verifyCommitted(mutation, staging: staging)
             }
+            _ = try verifyInstalledOverrides()
             if options.deployment, !resolvedLock.isEmpty {
                 try SwiftPodsLock.verifyUnchanged(at: lockFile, since: lockRead.replacementState())
             }
@@ -3201,10 +3407,12 @@ public struct Installer: Sendable {
         )] = []
         do {
             if let generatedRoot, let staging {
-                for name in [
+                var names = [
                     BinaryPackage.directoryName, DependencyPackage.directoryName,
                     TargetScripts.directoryName, "Settings",
-                ] {
+                ]
+                if try generatedRoot.hasManagedOverrides() { names.append(GeneratedPackageMetadata.overridesDirectory) }
+                for name in names {
                     if let mutation = try generatedRoot.withdraw(name, to: staging) {
                         generatedMutations.append(mutation)
                     }

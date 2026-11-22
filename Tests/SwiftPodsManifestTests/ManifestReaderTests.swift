@@ -31,6 +31,65 @@ final class ManifestReaderTests: XCTestCase {
         if let line { XCTAssertEqual(error.location?.line, line, error.description, file: file, line: sourceLine) }
     }
 
+    func testPinnedPackageOverrideSeparatesProjectReferenceFromTargetProducts() throws {
+        let revision = String(repeating: "A", count: 64)
+        let manifest = try read("""
+            group :graph do
+              spm 'https://example.com/OverrideKit.git', revision: '\(revision)', override: true, submodules: true
+            end
+            target 'App' do
+              use :graph
+            end
+            target 'Tool' do
+              spm 'https://example.com/OverrideKit.git', revision: '\(revision)', override: true,
+                  submodules: true, products: ['Kit'], link: false
+            end
+            target 'Unrelated' do
+            end
+            """)
+        XCTAssertEqual(manifest.packages.count, 1)
+        XCTAssertEqual(manifest.packages.first?.location, .pinnedOverride(
+            url: "https://example.com/OverrideKit.git", revision: revision.lowercased(), submodules: true))
+        XCTAssertNil(manifest.packages.first?.requirement)
+        XCTAssertEqual(manifest.targets.map(\.packageOverrides), [["overridekit"], ["overridekit"], nil])
+        XCTAssertTrue(manifest.targets[0].products.isEmpty)
+        XCTAssertEqual(manifest.targets[1].products.map(\.product), ["Kit"])
+        XCTAssertEqual(manifest.targets[1].products.map(\.link), [false])
+    }
+
+    func testPinnedPackageOverrideDiagnostics() {
+        let url = "https://example.com/OverrideKit.git"
+        let revision = String(repeating: "a", count: 40)
+        for options in [
+            "override: true",
+            "branch: 'main', override: true",
+            "revision: '\(revision)', version: '1.0', override: true",
+            "revision: '\(revision)', exact: '1.0', override: true",
+            "'1.0', revision: '\(revision)', override: true",
+            "revision: '\(revision)', path: 'Vendor/OverrideKit', override: true",
+        ] {
+            assertError("target 'App' do\n  spm '\(url)', \(options)\nend", "requires a Git URL and only a full", line: 2)
+        }
+        assertError("target 'App' do\nspm '\(url)', revision: 'abc123', override: true\nend", "full 40- or 64-character")
+        assertError("target 'App' do\nspm '\(url)', branch: 'main', submodules: true\nend", "requires `override: true`")
+        assertError("target 'App' do\nspm 'OverrideKit', revision: '\(revision)', override: true\nend", "requires a Git URL")
+        for conflicting in [
+            "spm '\(url)', revision: '\(revision)'",
+            "spm 'Other', path: 'Vendor/overridekit'",
+            "spm '\(url)', revision: '\(revision)', override: true, submodules: true",
+        ] {
+            let problem = error("""
+                target 'App' do
+                  spm '\(url)', revision: '\(revision)', override: true
+                  \(conflicting)
+                end
+                """)
+            XCTAssertEqual(problem?.location?.line, 3)
+            XCTAssertEqual(problem?.related?.line, 2)
+            XCTAssertNotNil(problem?.hint)
+        }
+    }
+
     func testFilesystemManifestRetainsSnapshotsForLaterTrustBoundaries() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(
             "swiftpods-manifest-snapshot-\(UUID().uuidString)", isDirectory: true)

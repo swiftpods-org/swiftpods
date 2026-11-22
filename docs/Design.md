@@ -80,8 +80,8 @@ reads them from the package's tags; a package is registered once, not per releas
   is optional; do it when clean checkouts must reproduce the same metadata.
   Deployment requires the matching file to be present (not necessarily committed),
   requires complete evidence, rejects entry drift and never writes the lock. A Podfile
-  whose packages and binaries all have explicit locations does not create or
-  require this lock; `Package.resolved` remains its only dependency lock.
+  with only ordinary explicit packages and binaries does not create or require
+  this lock. `Package.resolved` remains its only dependency lock.
 - An entry may also list releases of a prebuilt SDK, each an archive URL with
   its SHA-256, plus how to link it. A Podfile then writes
   `binary 'HyprMX', '6.4.2'`. One name can have both a package and binary
@@ -94,6 +94,34 @@ reads them from the package's tags; a package is registered once, not per releas
   `swiftpods catalog lint`. Whoever controls a catalog controls where names
   point, so redirects are reviewed like new entries.
 
+## ADR-013: pinned local package overrides
+
+`spm '<Git URL>', revision: '<full commit ID>', override: true` installs a local
+SwiftPM package in `SwiftPods/Overrides/<identity>`. The directory name gives
+Xcode the identity of the remote package it replaces throughout that project's
+graph. Declare `products:` to link directly from a target. An override without
+products contributes only the package reference. Xcode resolves the remaining
+graph and omits the local identity from `Package.resolved`.
+
+- The override requires an exact 40- or 64-character commit ID and a supported
+  HTTPS or SSH URL. SwiftPods reads the complete tree through its protected
+  bare Git cache. It preserves regular file bytes and the executable bit and
+  accepts relative links that resolve inside the managed tree.
+- `submodules: true` on an override permits one level of gitlinks. Each must
+  have a corresponding path and absolute HTTPS or SSH URL in the committed
+  `.gitmodules`. The gitlink selects the exact child commit. Each origin goes
+  through the same fetch policy and contributes to the same export limits.
+  Nested gitlinks are rejected.
+- SwiftPods stages the complete override directory with the other generated
+  files. `SwiftPods.lock` records the origin, commit, submodule option and
+  SHA-256 of the materialized tree, including any tracked paths in `.swiftpm`
+  and `.build`. The lock lists those paths so resolver-created entries in the
+  same directories can follow the transaction rules above.
+- Ordinary install creates or restores the tree. `--offline` can restore it
+  from the warmed bare cache. Deployment requires the matching lock and
+  materialized tree, verifies the digest and leaves the override payload
+  untouched. It still asks Xcode to validate the remaining frozen graph.
+
 ## Supported scenarios
 
 1. Declare remote and local Swift packages and the products each target links.
@@ -104,8 +132,8 @@ reads them from the package's tags; a package is registered once, not per releas
    nesting, `abstract_target`).
 4. Declare build settings and script phases per target.
 5. Reproduce the integration in CI: `install --deployment` requires a present
-   `Package.resolved` that satisfies every declared requirement and, only when
-   catalog entries are used, a matching `SwiftPods.lock`. The command verifies
+   `Package.resolved` that satisfies every declared requirement. Catalog entries
+   and package overrides also require a matching `SwiftPods.lock`. The command verifies
    contents, not whether either file is committed; version-control them only
    when a clean checkout must be reproducible. Xcode then
    validates the complete transitive graph with automatic resolution and

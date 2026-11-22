@@ -158,18 +158,27 @@ final class InstallTransactionJournal {
     struct TreeToken: Codable, Equatable {
         let members: [String: TreeMember]
 
-        func preservesManagedMembers(of other: Self) -> Bool {
-            let managed = members.filter { !GeneratedPackageMetadata.contains($0.key) }
-            let previous = other.members.filter { !GeneratedPackageMetadata.contains($0.key) }
+        func preservesManagedMembers(of other: Self, layout: GeneratedPackageMetadata.Layout) -> Bool {
+            func isManaged(_ path: String) -> Bool {
+                !layout.contains(path) || (layout == .overrides && other.members[path] != nil)
+            }
+            let managed = members.filter { isManaged($0.key) }
+            let previous = other.members.filter { isManaged($0.key) }
             guard Set(managed.keys) == Set(previous.keys) else { return false }
             return managed.allSatisfy { path, member in
                 guard let before = previous[path], member.payloadSHA256 == before.payloadSHA256,
                     member.securitySHA256 == before.securitySHA256
                 else { return false }
-                return path.isEmpty
+                if path.isEmpty, layout == .overrides {
+                    return member.entry.representsAfterRename(before.entry)
+                }
+                let receivesResolverFiles = layout.isPackageRoot(path)
+                    || (layout == .overrides && layout.contains(path)
+                        && before.entry.mode & UInt32(S_IFMT) == UInt32(S_IFDIR))
+                return receivesResolverFiles
                     ? member.entry.isSameDirectoryObject(as: before.entry) : member.entry == before.entry
-            } && GeneratedPackageMetadata.directories.allSatisfy { path in
-                guard let root = members[path] else { return true }
+            } && members.allSatisfy { path, root in
+                guard layout.isResolverRoot(path) else { return true }
                 return root.entry.mode & UInt32(S_IFMT) == UInt32(S_IFDIR)
                     && root.entry.owner == geteuid()
             }
@@ -565,10 +574,11 @@ final class InstallTransactionJournal {
         }
         var updates: [Int: TreeToken] = [:]
         for (index, record) in manifest.generated.enumerated() {
-            guard record.kind == .publish, GeneratedPackageMetadata.isPackage(record.name) else { continue }
+            let layout = GeneratedPackageMetadata.Layout(record.name)
+            guard record.kind == .publish, layout != .none else { continue }
             guard let before = record.stagingBefore,
                 let current = try Self.captureTree(named: record.name, in: descriptors.root),
-                current.preservesManagedMembers(of: before),
+                current.preservesManagedMembers(of: before, layout: layout),
                 Self.treeMatches(try Self.captureTree(named: record.name, in: descriptors.staging!), record.rootBefore)
             else { throw SwiftPodsError("Resolver changed managed generated package contents: \(record.name)") }
             updates[index] = current

@@ -1794,8 +1794,12 @@ struct PackageResolved {
             let origin = PackageLocation.fetchIdentity(pin.location)
             if pinsByOrigin.updateValue(pin, forKey: origin) != nil { duplicateOrigins.insert(origin) }
         }
+        let remoteIdentities = Set(pins.map { PackageLocation.identity($0.location) })
         var result: [String] = []
         for package in packages {
+            if package.isOverride, remoteIdentities.contains(package.identity) {
+                result.append("\(package.name) is a local override and must not have a remote pin")
+            }
             guard case .remote(let url) = package.location, let requirement = package.requirement else { continue }
             let origin = PackageLocation.fetchIdentity(url)
             if duplicateOrigins.contains(origin) {

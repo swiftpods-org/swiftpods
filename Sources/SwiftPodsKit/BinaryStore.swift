@@ -1004,7 +1004,8 @@ enum SecureFileTree {
         _ directory: URL, allowRootSymlink: Bool, limits: Limits, hashingContents: Bool,
         skippingTopLevelNames: Set<String> = [],
         beforeHashingContents: ((_ entries: Int, _ bytes: Int64) throws -> Void)? = nil,
-        normalizingPermissionsForDigest: Bool = false
+        normalizingPermissionsForDigest: Bool = false,
+        overrideMetadataPaths: Set<String>? = nil
     ) throws -> (URL, String, entries: Int, bytes: Int64) {
         let root = try resolvedDirectory(directory, allowRootSymlink: allowRootSymlink)
         let rootPath = root.standardizedFileURL.path
@@ -1024,7 +1025,7 @@ enum SecureFileTree {
             let relative = String(standardizedPath.dropFirst(rootPath.count + 1))
             let status = try statusNoFollow(url)
             if let first = relative.split(separator: "/", omittingEmptySubsequences: false).first,
-                skippingTopLevelNames.contains(String(first))
+                skippingTopLevelNames.contains(String(first)), overrideMetadataPaths?.contains(relative) != true
             {
                 if isDirectory(status) { enumerator.skipDescendants() }
                 continue
@@ -1043,6 +1044,7 @@ enum SecureFileTree {
 
             if isSymbolicLink(status) {
                 let destination = try fileManager.destinationOfSymbolicLink(atPath: url.path)
+                if overrideMetadataPaths != nil { _ = try GitPackageTree.linkTarget(Data(destination.utf8), at: relative) }
                 let lexical = destination.hasPrefix("/")
                     ? URL(fileURLWithPath: destination)
                     : url.deletingLastPathComponent().appendingPathComponent(destination)
@@ -1052,6 +1054,13 @@ enum SecureFileTree {
                 let resolved = try realURL(url)
                 guard contains(resolved, in: root, allowRoot: true) else {
                     throw SwiftPodsError("Symbolic link escapes the binary root: \(relative) -> \(destination)")
+                }
+                if overrideMetadataPaths != nil,
+                    skippingTopLevelNames.contains(where: {
+                        contains(resolved, in: root.appendingPathComponent($0), allowRoot: true)
+                    })
+                {
+                    throw SwiftPodsError("Package override symbolic link refers to resolver metadata: \(relative)")
                 }
                 if isDirectory(try statusNoFollow(resolved)), contains(url.deletingLastPathComponent(), in: resolved, allowRoot: true) {
                     throw SwiftPodsError("Symbolic link creates a directory cycle: \(relative) -> \(destination)")
@@ -1063,6 +1072,13 @@ enum SecureFileTree {
                 totalBytes += status.st_size
             } else if !isDirectory(status) {
                 throw SwiftPodsError("Binary tree contains a special file: \(relative)")
+            }
+            if overrideMetadataPaths != nil {
+                guard status.st_uid == geteuid(),
+                    isSymbolicLink(status) || status.st_mode & 0o022 == 0,
+                    !isRegularFile(status) || status.st_nlink == 1,
+                    try !hasExtendedACL(url, followSymbolicLink: false)
+                else { throw SwiftPodsError("Package override contains an unsafe managed entry: \(relative)") }
             }
         }
         if let enumerationError { throw enumerationError }
@@ -1084,9 +1100,14 @@ enum SecureFileTree {
         var hasher = SHA256()
         for node in nodes {
             update(node.relative, into: &hasher)
-            let mode = normalizingPermissionsForDigest
-                ? node.status.st_mode & 0o1777 & ~mode_t(0o022)
-                : node.status.st_mode & 0o7777
+            let mode: mode_t
+            if overrideMetadataPaths != nil, isSymbolicLink(node.status) {
+                mode = 0
+            } else {
+                mode = normalizingPermissionsForDigest
+                    ? node.status.st_mode & 0o1777 & ~mode_t(0o022)
+                    : node.status.st_mode & 0o7777
+            }
             var permissions = UInt64(mode).bigEndian
             withUnsafeBytes(of: &permissions) { hasher.update(data: Data($0)) }
             if isDirectory(node.status) {

@@ -161,6 +161,39 @@ A remote package needs exactly one requirement:
 Versions must have at most three numeric components. A lower bound without an
 upper bound is rejected.
 
+#### Pin a transitive package to a commit
+
+Use an override when a package such as Neon requires SwiftTreeSitter from
+a branch and you need to build against an exact commit. SwiftPods installs the
+commit as a local package with the same identity in
+`SwiftPods/Overrides/swifttreesitter`.
+
+```ruby
+target 'Napu' do
+  spm 'https://github.com/slsrepo/Neon.git',
+      revision: '38cf4a6a05a6aa1e038b65a16f773c77d4145efc'
+  spm 'https://github.com/ChimeHQ/SwiftTreeSitter',
+      revision: 'cbe31cb3601aa29c1f64b6e4328733511126d6d5',
+      override: true, submodules: true
+end
+```
+
+Xcode uses the local SwiftTreeSitter for Neon and omits it from
+`Package.resolved`. Add `products: ['SwiftTreeSitter']` when you want a direct
+product link on the target. An override requires a Git URL and a full commit
+ID. Each package identity can have one source and revision.
+
+`submodules: true` includes direct submodules from their exact Git commits.
+Each needs an absolute HTTPS or SSH URL in the committed `.gitmodules`.
+Nested submodules are rejected. SwiftPods reads Git blobs directly, so an LFS
+pointer remains a pointer. It includes tracked files under `.swiftpm` and `.build`
+in the tree digest.
+
+Keep `SwiftPods.lock` and `Package.resolved` to reproduce this integration.
+Run `swiftpods install` to materialize the overrides, or use `--offline` with
+a warm cache. `install --deployment` checks the existing override payload
+against `SwiftPods.lock` and Xcode validates the rest of the frozen graph.
+
 #### Compile an SDK into the application, use it from static plugins
 
 `link: false` builds the package and makes its modules and public headers

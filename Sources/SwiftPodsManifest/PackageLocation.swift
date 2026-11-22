@@ -66,6 +66,12 @@ public enum PackageLocation {
         return value.precomposedStringWithCanonicalMapping.lowercased()
     }
 
+    package static func isSafeOverrideIdentity(_ identity: String) -> Bool {
+        isSafeRelativePath(identity) && !identity.contains("/") && identity.utf8.count <= 255
+            && identity == self.identity(identity)
+            && ![".build", ".swiftpm", ".swiftpods-overrides-owner", "swiftpodsbinaries", "swiftpodsdependencies"].contains(identity)
+    }
+
     /// A repository's fetch origin. Unlike ``canonical(_:)``, this keeps the
     /// transport, port, path case and percent encoding: those can select
     /// different content even when Swift Package Manager gives both locations

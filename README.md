@@ -95,7 +95,7 @@ See the [Podfile reference](docs/Podfile.md) for target inheritance,
 swiftpods check                 # read the Podfile and show what each target gets
 swiftpods search Datadog        # find a package in the catalog
 swiftpods install               # write it into the Xcode projects
-swiftpods install --deployment  # CI: verify dependency lock and any used catalog lock
+swiftpods install --deployment  # CI: verify the frozen dependency graph
 swiftpods install --project ../Build/App.xcodeproj  # the project of targets that name none
 swiftpods deintegrate           # remove everything SwiftPods added
 swiftpods deintegrate --cocoapods  # also remove a CocoaPods or SwiftPods 0.1 integration
@@ -110,14 +110,13 @@ while `install --update-sources` updates it. Version-controlling
 `SwiftPods.lock` together with `Package.resolved` is optional; do it when clean
 checkouts must reproduce the same metadata. Without it, every clean checkout
 resolves the catalog again and can select different dependency metadata.
-`--deployment` verifies `Package.resolved` and, when catalog entries are used,
-`SwiftPods.lock`; it asks Xcode to validate the complete package graph using
+`--deployment` verifies `Package.resolved` and, when catalog entries or
+[package overrides](docs/Podfile.md#pin-a-transitive-package-to-a-commit) are used,
+`SwiftPods.lock`. It asks Xcode to validate the complete package graph using
 only `Package.resolved`, with automatic resolution and package updates disabled.
-It requires a matching `SwiftPods.lock` to be present when
-catalog entries are used, but does not require that file to be committed. It fails if Xcode
-changes `Package.resolved`. A Podfile made only of
-explicit `git`, `path` and binary `url` declarations neither creates nor
-requires `SwiftPods.lock`.
+For overrides, run `swiftpods install` first to materialize the locked tree.
+A Podfile with only ordinary explicit `git`, `path` and binary `url`
+declarations needs only `Package.resolved`.
 
 `install` rewrites each generated package, settings and scripts folder as a whole,
 so files written into one, such as build products, are removed.

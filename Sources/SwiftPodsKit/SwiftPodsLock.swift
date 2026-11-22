@@ -3,13 +3,11 @@ import Darwin
 import Foundation
 import SwiftPodsManifest
 
-/// Reproducible provenance for catalog-backed declarations.
-///
-/// Explicit package and binary declarations do not need this file. A catalog lookup records the exact Git commit
-/// and SHA-256 of every raw catalog entry that contributed metadata to the evaluated Podfile.
+/// Reproducible provenance for catalog lookups and materialized package overrides.
 struct SwiftPodsLock: Sendable, Codable, Equatable {
     static let fileName = "SwiftPods.lock"
     static let schemaVersion = 1
+    private static let overrideSchemaVersion = 2
     private static let maximumBytes = 16 * 1_024 * 1_024
     private static let maximumCatalogs = 32
     private static let maximumEntries = 256
@@ -156,15 +154,36 @@ struct SwiftPodsLock: Sendable, Codable, Equatable {
         }
     }
 
+    struct Override: Sendable, Codable, Equatable {
+        let identity: String
+        let url: String
+        let revision: String
+        let submodules: Bool
+        let sha256: String
+        /// Tracked paths under .swiftpm and .build are part of the digest even though adjacent resolver output is not.
+        let metadataPaths: [String]
+
+        func matches(_ package: Package) -> Bool {
+            guard case .pinnedOverride(let origin, let commit, let includesSubmodules) = package.location else {
+                return false
+            }
+            return package.identity == identity && url.utf8.elementsEqual(origin.utf8)
+                && revision == commit && submodules == includesSubmodules
+        }
+    }
+
     let version: Int
     let catalogs: [Catalog]
+    private let overrides: [Override]?
 
-    var isEmpty: Bool { catalogs.isEmpty }
+    var pinnedOverrides: [Override] { overrides ?? [] }
+    var isEmpty: Bool { catalogs.isEmpty && pinnedOverrides.isEmpty }
 
-    init(resolutions: [GitCatalog.Resolution]) {
+    init(resolutions: [GitCatalog.Resolution], overrides: [Override] = []) {
         self.init(
-            version: Self.schemaVersion,
-            catalogs: resolutions.map { Catalog(url: $0.url, revision: $0.revision, entries: $0.entries) })
+            version: overrides.isEmpty ? Self.schemaVersion : Self.overrideSchemaVersion,
+            catalogs: resolutions.map { Catalog(url: $0.url, revision: $0.revision, entries: $0.entries) },
+            overrides: overrides.isEmpty ? nil : overrides.sorted { $0.identity < $1.identity })
     }
 
     init(contentsOf file: URL) throws {
@@ -198,9 +217,10 @@ struct SwiftPodsLock: Sendable, Codable, Equatable {
         try validate(file: file.path)
     }
 
-    private init(version: Int, catalogs: [Catalog]) {
+    private init(version: Int, catalogs: [Catalog], overrides: [Override]?) {
         self.version = version
         self.catalogs = catalogs.sorted { Data($0.url.utf8).lexicographicallyPrecedes(Data($1.url.utf8)) }
+        self.overrides = overrides
     }
 
     func catalog(url: String) -> Catalog? { catalogs.first { $0.url.utf8.elementsEqual(url.utf8) } }
@@ -504,11 +524,18 @@ struct SwiftPodsLock: Sendable, Codable, Equatable {
                 }
             }
         }
+        if pinnedOverrides.sorted(by: { $0.identity < $1.identity })
+            != actual.pinnedOverrides.sorted(by: { $0.identity < $1.identity })
+        {
+            problems.append("Package overrides do not match the locked origins, revisions and tree digests")
+        }
         return problems
     }
 
     private func validate(file: String) throws {
-        guard version == Self.schemaVersion else {
+        guard (version == Self.schemaVersion && overrides == nil)
+            || (version == Self.overrideSchemaVersion && !pinnedOverrides.isEmpty)
+        else {
             throw SwiftPodsError("SwiftPods.lock has unsupported version \(version)", file: file)
         }
         guard catalogs.count <= Self.maximumCatalogs else {
@@ -543,6 +570,32 @@ struct SwiftPodsLock: Sendable, Codable, Equatable {
                 }
             }
         }
+        try validateOverrides(file: file)
+    }
+
+    private func validateOverrides(file: String) throws {
+        guard pinnedOverrides.count <= GitPackageTree.maximumOverrides else {
+            throw SwiftPodsError("SwiftPods.lock contains too many package overrides", file: file)
+        }
+        var identities: Set<String> = []
+        var pathBudget = GitPackageTree.maximumEntries
+        for entry in pinnedOverrides {
+            guard PackageLocation.isSafeOverrideIdentity(entry.identity),
+                identities.insert(entry.identity).inserted,
+                entry.url.utf8.count <= 4_096, PackageLocation.isSafeRemote(entry.url),
+                PackageLocation.identity(entry.url) == entry.identity, Self.isFullObjectID(entry.revision),
+                entry.sha256.utf8.count == 64, entry.sha256.allSatisfy(Self.isLowerHex),
+                entry.metadataPaths.count <= pathBudget
+            else { throw SwiftPodsError("SwiftPods.lock contains an invalid package override", file: file) }
+            pathBudget -= entry.metadataPaths.count
+            let paths = Set(entry.metadataPaths)
+            guard paths.count == entry.metadataPaths.count, entry.metadataPaths == entry.metadataPaths.sorted(),
+                paths.allSatisfy({ path in
+                    GitPackageTree.isSafePath(path) && GeneratedPackageMetadata.contains(path)
+                        && (path.lastIndex(of: "/").map { paths.contains(String(path[..<$0])) } ?? true)
+                })
+            else { throw SwiftPodsError("SwiftPods.lock contains invalid override metadata paths", file: file) }
+        }
     }
 
     private static func isFullObjectID(_ text: String) -> Bool {
@@ -551,10 +604,18 @@ struct SwiftPodsLock: Sendable, Codable, Equatable {
 
     private static func validateJSONSchema(_ data: Data, file: String) throws {
         guard let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            Set(root.keys) == ["catalogs", "version"],
+            Set(root.keys) == ["catalogs", "version"] || Set(root.keys) == ["catalogs", "overrides", "version"],
             let catalogs = root["catalogs"] as? [Any], catalogs.count <= maximumCatalogs
         else {
             throw SwiftPodsError("SwiftPods.lock has unexpected or missing top-level fields", file: file)
+        }
+        if let value = root["overrides"] {
+            guard let entries = value as? [[String: Any]], !entries.isEmpty,
+                entries.count <= GitPackageTree.maximumOverrides,
+                entries.allSatisfy({
+                    Set($0.keys) == ["identity", "metadataPaths", "revision", "sha256", "submodules", "url"]
+                })
+            else { throw SwiftPodsError("SwiftPods.lock overrides have unexpected or missing fields", file: file) }
         }
         var totalEntries = 0
         for (catalogIndex, value) in catalogs.enumerated() {

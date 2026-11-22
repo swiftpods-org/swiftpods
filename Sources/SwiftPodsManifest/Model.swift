@@ -103,17 +103,23 @@ public struct Package: Sendable, Codable, Equatable {
         case remote(url: String)
         /// Relative to the directory of the Podfile.
         case local(path: String)
+        case pinnedOverride(url: String, revision: String, submodules: Bool)
     }
 
     public var name: String
     public var location: Location
-    /// Nil exactly for local packages.
+    /// Nil for filesystem packages and overrides, which are local to Xcode.
     public var requirement: Requirement?
     /// Swift Package Manager's identity; products refer to packages by it.
     public var identity: String
     /// The catalog that supplied the location, when the Podfile named the package only.
     public var catalog: String?
     public var declaredAt: SourceLocation
+
+    public var isOverride: Bool {
+        if case .pinnedOverride = location { return true }
+        return false
+    }
 }
 
 public struct Binary: Sendable, Codable, Equatable {
@@ -186,6 +192,8 @@ public struct Target: Sendable, Codable, Equatable {
     public var project: String?
     public var platform: Platform?
     public var products: [ProductUse]
+    /// Override identities in this target's project, including declarations without products.
+    public var packageOverrides: [String]? = nil
     /// Names of binaries the target links.
     public var binaries: [String]
     public var settings: [BuildSetting]
